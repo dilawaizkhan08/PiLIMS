@@ -18,23 +18,344 @@ class BaseModel(models.Model):
         ordering = ["-id"]
 
 
+from django.contrib.auth.models import AbstractUser
+from django.db import models
+from django.utils.translation import gettext_lazy as _
+from . import choices  # make sure this is correctly imported based on your project structure
+
 class User(AbstractUser, BaseModel):
-    username = models.CharField(max_length=150, null=True, blank=True)
-    email = models.EmailField(_("Email"), unique=True, null=False)
-    role = models.CharField(max_length=20,choices=choices.UserRole.choices,default=choices.UserRole.USER,)
-    profile_picture = models.ImageField(upload_to="profile_pictures/", null=True, blank=True)
-    name = models.CharField(max_length=255, blank=True, null=True)
+    # Overridden fields
+    username = models.CharField(max_length=150, unique=True, null=False, blank=False)  # mandatory
+    email = models.EmailField(_("Email"), unique=True, null=False, blank=False)        # mandatory
+    password = models.CharField(max_length=128, null=False, blank=False)               # mandatory
+    name = models.CharField(_("Full Name"), max_length=255, null=False, blank=False)   # mandatory
+
+    # Additional fields
+    idle_time = models.DurationField(null=True, blank=True)
+    dob = models.DateField(_("Date of Birth"), null=True, blank=True)
     phone_number = models.CharField(max_length=20, null=True, blank=True)
-    created_by = models.ForeignKey('self', null=True, blank=True, on_delete=models.SET_NULL, related_name='created_users')
+    address = models.TextField(null=True, blank=True)
+    profile_picture = models.ImageField(upload_to="profile_pictures/", null=True, blank=True)
+
+    # System fields
+    role = models.CharField(
+        max_length=20,
+        choices=choices.UserRole.choices,
+        default=choices.UserRole.USER,
+    )
+    created_by = models.ForeignKey(
+        'self', null=True, blank=True, on_delete=models.SET_NULL, related_name='created_users'
+    )
     last_login = models.DateTimeField(blank=True, null=True)
-    
     is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)
 
-
     USERNAME_FIELD = "email"
-    REQUIRED_FIELDS = ["name"]
+    REQUIRED_FIELDS = ["name", "username"]
 
     def __str__(self):
         return self.email
+
+    
+
+class UserGroup(BaseModel):
+    name = models.CharField(max_length=255, unique=True)
+    users = models.ManyToManyField(settings.AUTH_USER_MODEL, related_name='user_groups', blank=True)
+
+    def __str__(self):
+        return self.name
+
+
+class TestMethod(BaseModel):
+    name = models.CharField(max_length=255)
+    user_group = models.ForeignKey(UserGroup,on_delete=models.CASCADE,related_name='test_methods')
+    description = models.TextField(blank=True, null=True)
+
+    def __str__(self):
+        return self.name
+
+
+
+
+# ===================== Analyses ====================
+
+
+
+class Analysis(BaseModel):
+    name = models.CharField(max_length=255)
+    alias_name = models.CharField(max_length=255, null=True, blank=True)
+    version = models.PositiveIntegerField(default=1)
+
+    user_group = models.ForeignKey('UserGroup', on_delete=models.SET_NULL, null=True, blank=True)
+    type =  models.CharField(max_length=255, null=True, blank=True)
+    test_method = models.ForeignKey(TestMethod, on_delete=models.SET_NULL, null=True)
+    price = models.FloatField(null=True, blank=True)
+    description = models.TextField(blank=True)
+
+    def __str__(self):
+        return self.name
+
+
+class AnalysisAttachment(BaseModel):
+    analysis = models.ForeignKey(Analysis, related_name='attachments', on_delete=models.CASCADE)
+    file = models.FileField(upload_to='analysis_attachments/')
+
+    def __str__(self):
+        return self.file.name
+
+
+class Component(BaseModel):
+    analysis = models.ForeignKey(Analysis, related_name='components', on_delete=models.CASCADE)
+    name = models.CharField(max_length=255)
+    type = models.CharField(max_length=50,choices=choices.ComponentTypes.choices)
+    unit = models.CharField(max_length=50, null=True, blank=True)
+    spec_limits = models.CharField(max_length=255, null=True, blank=True)
+    description = models.TextField(null=True, blank=True)
+    optional = models.BooleanField(default=False)
+    calculated = models.BooleanField(default=False)
+
+    minimum = models.FloatField(null=True, blank=True)
+    maximum = models.FloatField(null=True, blank=True)
+    rounding = models.IntegerField(null=True, blank=True)
+    decimal_places = models.IntegerField(null=True, blank=True)
+    listname = models.CharField(max_length=50,choices=choices.ListNameChoices.choices,null=True,blank=True)
+
+    def __str__(self):
+        return f"{self.name} ({self.analysis.name})"
+
+# ============================================
+
+# ========= Functions =====================
+
+class CustomFunction(BaseModel):
+    name = models.CharField(max_length=255, unique=True)
+    variables = models.CharField(max_length=255)
+    script = models.TextField()
+
+    def __str__(self):
+        return self.name
+    
+# ==============================================
+
+# =============  Instruments ==============
+
+class Instrument(BaseModel):
+    name = models.CharField(max_length=255)
+    user_groups = models.ForeignKey('UserGroup',on_delete=models.SET_NULL,null=True,related_name='instruments_as_user_group')
+    vendor = models.CharField(max_length=255)
+    manufacturer = models.CharField(max_length=255, blank=True, null=True)  # 👈 New field added
+    serial_no = models.CharField(max_length=255, blank=True, null=True)
+    model_no = models.CharField(max_length=255, blank=True, null=True)
+    description = models.TextField(blank=True, null=True)
+    calibration_period = models.IntegerField(blank=True, null=True)  # in days
+    next_calibration_date = models.DateField(blank=True, null=True)
+    prevention_period = models.IntegerField(blank=True, null=True)   # in days
+    next_prevention_date = models.DateField(blank=True, null=True)
+
+    def __str__(self):
+        return self.name
+    
+
+
+class InstrumentHistory(BaseModel):
+    instrument = models.ForeignKey(Instrument, on_delete=models.CASCADE, related_name='history')
+    action_type = models.CharField(max_length=100,choices=choices.ActionType.choices)
+    start_date = models.DateField()
+
+    def __str__(self):
+        return f"{self.instrument.name} - {self.action_type} on {self.start_date}"
+    
+
+# ================================== 
+
+
+class Unit(BaseModel):
+    name = models.CharField(max_length=255)  # Required
+    symbol = models.CharField(max_length=50)  # Required
+    user_group = models.ForeignKey(UserGroup,on_delete=models.CASCADE,related_name="units")
+    description = models.TextField(blank=True, null=True)  # Optional
+
+    def __str__(self):
+        return self.name
+
+
+class Inventory(BaseModel):
+    name = models.CharField(max_length=255)
+    type =  models.CharField(max_length=255, null=True, blank=True)
+    user_group = models.ForeignKey('UserGroup', on_delete=models.SET_NULL, null=True)
+    location = models.CharField(max_length=255)
+    unit = models.ForeignKey('Unit', on_delete=models.SET_NULL, null=True)
+    total_quantity = models.IntegerField(default=0)
+    description = models.TextField(blank=True, null=True)
+
+    def __str__(self):
+        return self.name
+
+
+class Stock(BaseModel):
+    inventory = models.ForeignKey(Inventory, on_delete=models.CASCADE, related_name='stocks')
+    stock_date = models.DateField(blank=True, null=True)
+    expiration_date = models.DateField(blank=True, null=True)
+    notes = models.TextField(blank=True, null=True)
+    quantity = models.IntegerField()
+
+    def __str__(self):
+        return f"{self.inventory.name} - {self.quantity}"
+
+    def save(self, *args, **kwargs):
+        super().save(*args, **kwargs)
+        # Update total quantity in inventory
+        total = sum(stock.quantity for stock in self.inventory.stocks.all())
+        self.inventory.total_quantity = total
+        self.inventory.save()
+
+
+
+class List(BaseModel):
+    name = models.CharField(max_length=255)
+    type =  models.CharField(max_length=20,choices=choices.ListType.choices,)
+    user_group = models.ForeignKey('UserGroup', on_delete=models.CASCADE)
+    description = models.TextField(blank=True, null=True)
+
+    def __str__(self):
+        return self.name
+
+
+class Value(BaseModel):
+    list = models.ForeignKey(List, related_name='values', on_delete=models.CASCADE)
+    value = models.CharField(max_length=255)
+
+    def __str__(self):
+        return self.value
+    
+
+
+class SampleForm(BaseModel):
+    sample_name = models.CharField(max_length=255)
+    version = models.IntegerField(default=1)
+    group_analysis_list = models.CharField(max_length=255, blank=True, null=True)
+    user_groups = models.ManyToManyField(UserGroup, related_name="sample_forms")
+    description = models.TextField(blank=True, null=True)
+
+    def __str__(self):
+        return self.sample_name
+
+
+class SampleField(BaseModel):
+    FIELD_PROPERTY_CHOICES = [
+        ('text', 'Text'),
+        ('numeric', 'Numeric'),
+        ('date_time', 'Date & Time'),
+        ('list', 'List'),
+        ('link_to_table', 'Link to Table'),
+        ('attachment', 'Attachment'),
+    ]
+
+    sample_form = models.ForeignKey(SampleForm, on_delete=models.CASCADE, related_name="fields")
+    field_name = models.CharField(max_length=255)
+    field_property = models.CharField(max_length=50, choices=FIELD_PROPERTY_CHOICES)
+
+    list_ref = models.ForeignKey(List, on_delete=models.SET_NULL, null=True, blank=True)  # if 'list'
+    link_to_table = models.CharField(max_length=255, blank=True, null=True)  # if 'link_to_table'
+    order = models.IntegerField(default=0)
+    required = models.BooleanField(default=False) 
+
+    def __str__(self):
+        return f"{self.field_name} ({self.sample_form.sample_name})"
+
+
+
+class DynamicFormEntry(BaseModel):
+    form = models.ForeignKey(SampleForm, on_delete=models.CASCADE)
+    data = models.JSONField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    
+
+
+
+class Customer(BaseModel):
+    name = models.CharField(max_length=255)  # Required
+    email = models.EmailField(unique=True)   # Required & unique
+    mobile = models.CharField(max_length=20) # Required
+    company_name = models.CharField(max_length=255)  # Required
+
+    country = models.CharField(max_length=100, blank=True, null=True)
+    city = models.CharField(max_length=100, blank=True, null=True)
+    address = models.TextField(blank=True, null=True)
+    description = models.TextField(blank=True, null=True)
+
+    def __str__(self):
+        return f"{self.name} ({self.company_name})"
+    
+
+class RequestForm(BaseModel):
+    REQUEST_TYPE_CHOICES = [
+        ('urgent', 'Urgent'),
+        ('normal', 'Normal'),
+        ('internal', 'Internal'),
+        ('external', 'External'),
+    ]
+
+    request_name = models.CharField(max_length=255)
+    version = models.IntegerField(default=1)
+    request_type = models.CharField(max_length=50, choices=REQUEST_TYPE_CHOICES)
+    sample_form = models.ForeignKey(SampleForm, on_delete=models.CASCADE, related_name="request_forms")
+    customer_name = models.ForeignKey(Customer, on_delete=models.CASCADE, related_name="requests")  # assumes Customer model exists
+    user_groups = models.ManyToManyField(UserGroup, related_name="request_forms")
+    description = models.TextField(blank=True, null=True)
+
+    def __str__(self):
+        return self.request_name
+
+
+class RequestField(BaseModel):
+    FIELD_PROPERTY_CHOICES = [
+        ('text', 'Text'),
+        ('numeric', 'Numeric'),
+        ('date_time', 'Date & Time'),
+        ('list', 'List'),
+        ('link_to_table', 'Link to Table'),
+        ('attachment', 'Attachment'),
+    ]
+
+    request_form = models.ForeignKey(RequestForm, on_delete=models.CASCADE, related_name="fields")
+    field_name = models.CharField(max_length=255)
+    field_property = models.CharField(max_length=50, choices=FIELD_PROPERTY_CHOICES)
+
+    list_ref = models.ForeignKey(List, on_delete=models.SET_NULL, null=True, blank=True)  # if 'list'
+    link_to_table = models.CharField(max_length=255, blank=True, null=True)  # if 'link_to_table'
+    order = models.IntegerField(default=0)
+    required = models.BooleanField(default=False)  # ✅ same as SampleField
+
+    def __str__(self):
+        return f"{self.field_name} ({self.request_form.request_name})"
+
+
+class DynamicRequestEntry(BaseModel):
+    request_form = models.ForeignKey(RequestForm, on_delete=models.CASCADE)
+    data = models.JSONField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+
+
+
+class Product(BaseModel):
+    name = models.CharField(max_length=255)
+    version = models.PositiveIntegerField(default=1)
+    user_group = models.ForeignKey('UserGroup', on_delete=models.SET_NULL, null=True)
+    description = models.TextField(blank=True)
+
+    analyses = models.ManyToManyField('Analysis', through='ProductAnalysis')
+
+    def __str__(self):
+        return self.name
+
+
+class ProductAnalysis(BaseModel):
+    product = models.ForeignKey(Product, on_delete=models.CASCADE)
+    analysis = models.ForeignKey(Analysis, on_delete=models.CASCADE)
+    components = models.ManyToManyField(Component, blank=True)
+
+    def __str__(self):
+        return f"{self.product.name} - {self.analysis.name}"
 

@@ -1,6 +1,4 @@
-# Basic-Django-template
-
-# Phonebox
+# PiLIMS
 
 ### 1. Clone the Repository
 
