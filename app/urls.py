@@ -26,6 +26,9 @@ router.register(r'sample-forms', views.SampleFormViewSet, basename='sample-forms
 router.register(r'request-forms', views.RequestFormViewSet, basename='requestform')
 router.register(r'products', views.ProductViewSet, basename='products')
 
+router.register(r'roles', views.RoleViewSet,  basename="roles")
+router.register(r'modules', views.ModuleViewSet, basename="modules")
+
 
 
 urlpatterns = [

@@ -556,9 +556,6 @@ def build_dynamic_serializer(fields):
     return type('DynamicSerializer', (serializers.Serializer,), field_dict)
 
 
-
-
-
 class RequestFieldSerializer(serializers.ModelSerializer):
     id = serializers.IntegerField(required=False)
 
@@ -724,3 +721,52 @@ class ProductSerializer(serializers.ModelSerializer):
         return data
 
 
+
+class PermissionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = models.Permission
+        fields = ["id", "module", "action"]
+
+    def validate_module(self, value):
+        """Check if the given module (table name) exists in DB"""
+        all_tables = [m._meta.db_table for m in apps.get_models()]
+        if value not in all_tables:
+            raise serializers.ValidationError(f"Invalid module '{value}'. Table does not exist in DB.")
+        return value
+
+
+class RoleSerializer(serializers.ModelSerializer):
+    permissions = PermissionSerializer(many=True)
+    users = serializers.PrimaryKeyRelatedField(
+        many=True,
+        queryset=models.User.objects.all()
+    )
+
+    class Meta:
+        model = models.Role
+        fields = ["id", "name", "users", "permissions"]
+
+    def create(self, validated_data):
+        users = validated_data.pop("users", [])
+        permissions_data = validated_data.pop("permissions", [])
+        role = models.Role.objects.create(**validated_data)
+        role.users.set(users)
+
+        for perm in permissions_data:
+            models.Permission.objects.create(role=role, **perm)
+        return role
+
+    def update(self, instance, validated_data):
+        users = validated_data.pop("users", [])
+        permissions_data = validated_data.pop("permissions", [])
+
+        instance.name = validated_data.get("name", instance.name)
+        instance.save()
+        instance.users.set(users)
+
+        # replace permissions
+        instance.permissions.all().delete()
+        for perm in permissions_data:
+            models.Permission.objects.create(role=instance, **perm)
+
+        return instance

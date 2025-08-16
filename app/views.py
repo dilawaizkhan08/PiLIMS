@@ -235,7 +235,7 @@ class StockViewSet(viewsets.ModelViewSet):
 class UnitViewSet(viewsets.ModelViewSet):
     queryset = models.Unit.objects.all()
     serializer_class = UnitSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated,HasModulePermission]
 
 class CustomerViewSet(viewsets.ModelViewSet):
     queryset = models.Customer.objects.all().order_by('-created_at')
@@ -513,3 +513,20 @@ class ProductViewSet(viewsets.ModelViewSet):
     
 
 
+class RoleViewSet(viewsets.ModelViewSet):
+    queryset = models.Role.objects.all()
+    serializer_class = RoleSerializer
+
+from rest_framework import viewsets, mixins
+class ModuleViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
+    """
+    Read-only endpoint to list all DB tables (modules) with CRUD actions
+    """
+    def list(self, request, *args, **kwargs):
+        modules = []
+        for model in apps.get_models():
+            modules.append({
+                "module": model._meta.db_table,
+                "actions": ["create", "view", "update", "delete"]
+            })
+        return Response(modules)

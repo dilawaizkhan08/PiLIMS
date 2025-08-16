@@ -359,3 +359,33 @@ class ProductAnalysis(BaseModel):
     def __str__(self):
         return f"{self.product.name} - {self.analysis.name}"
 
+
+PERMISSION_CHOICES = [
+    ("create", "Create"),
+    ("view", "View"),
+    ("update", "Update"),
+    ("delete", "Delete"),
+]
+
+
+class Role(models.Model):
+    name = models.CharField(max_length=100, unique=True)
+    users = models.ManyToManyField(User, related_name="roles", blank=True)
+
+    def __str__(self):
+        return self.name
+
+
+class Permission(models.Model):
+    role = models.ForeignKey(Role, on_delete=models.CASCADE, related_name="permissions")
+    module = models.CharField(max_length=200)  # dynamic module name
+    action = models.CharField(max_length=10, choices=PERMISSION_CHOICES)
+
+    class Meta:
+        unique_together = ("role", "module", "action")
+
+    def __str__(self):
+        return f"{self.role.name} - {self.module} - {self.action}"
+    
+
+    
