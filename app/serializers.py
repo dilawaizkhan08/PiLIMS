@@ -202,9 +202,18 @@ class AnalysisAttachmentSerializer(serializers.ModelSerializer):
         fields = ['id', 'file']
 
 
+
 class AnalysisSerializer(serializers.ModelSerializer):
     attachments = AnalysisAttachmentSerializer(many=True, read_only=True)
     components = ComponentSerializer(many=True, read_only=True)
+
+    # ✅ Instead of PrimaryKeyRelatedField, use nested serializer for GET
+    user_groups = UserGroupSerializer(many=True, read_only=True)
+
+    # ✅ Allow writing user_groups by ID (for POST/PUT)
+    user_groups_ids = serializers.PrimaryKeyRelatedField(
+        many=True, queryset=models.UserGroup.objects.all(), write_only=True
+    )
 
     class Meta:
         model = models.Analysis
@@ -213,7 +222,8 @@ class AnalysisSerializer(serializers.ModelSerializer):
             "name",
             "version",
             "alias_name",
-            "user_group",
+            "user_groups",      # returns {id, name}
+            "user_groups_ids",  # accepts IDs for write
             "type",
             "test_method",
             "price",
@@ -221,6 +231,24 @@ class AnalysisSerializer(serializers.ModelSerializer):
             "attachments",
             "components",
         ]
+
+    def create(self, validated_data):
+        user_groups = validated_data.pop("user_groups_ids", [])
+        analysis = models.Analysis.objects.create(**validated_data)
+        analysis.user_groups.set(user_groups)
+        return analysis
+
+    def update(self, instance, validated_data):
+        user_groups = validated_data.pop("user_groups_ids", None)
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+
+        if user_groups is not None:
+            instance.user_groups.set(user_groups)
+        return instance
+    
+
 
 
 class CustomFunctionSerializer(serializers.ModelSerializer):
@@ -243,9 +271,11 @@ class InstrumentHistorySerializer(serializers.ModelSerializer):
             'instrument': {'required': False}
         }
 
-
 class InstrumentSerializer(serializers.ModelSerializer):
     history = InstrumentHistorySerializer(many=True)
+    user_groups = serializers.PrimaryKeyRelatedField(
+        many=True, queryset=models.UserGroup.objects.all()
+    )
 
     class Meta:
         model = models.Instrument
@@ -253,24 +283,37 @@ class InstrumentSerializer(serializers.ModelSerializer):
             'id', 'created_at', 'updated_at', 'is_deleted',
             'name', 'vendor', 'manufacturer', 'serial_no', 'model_no',
             'description', 'calibration_period', 'next_calibration_date',
-            'prevention_period', 'next_prevention_date', 'user_groups', 'history'
+            'prevention_period', 'next_prevention_date',
+            'user_groups',   # ✅ handle M2M
+            'history'
         ]
 
     def create(self, validated_data):
         history_data = validated_data.pop('history', [])
+        user_groups = validated_data.pop('user_groups', [])
+
         instrument = models.Instrument.objects.create(**validated_data)
+        instrument.user_groups.set(user_groups)  # ✅ assign M2M
+
         for hist in history_data:
             models.InstrumentHistory.objects.create(instrument=instrument, **hist)
+
         return instrument
 
     def update(self, instance, validated_data):
         history_data = validated_data.pop('history', None)
+        user_groups = validated_data.pop('user_groups', None)
 
         # Update instrument fields
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
         instance.save()
 
+        # ✅ Update M2M if provided
+        if user_groups is not None:
+            instance.user_groups.set(user_groups)
+
+        # Update or create history entries
         if history_data is not None:
             existing_ids = {h.id: h for h in instance.history.all()}
             sent_ids = []
@@ -313,28 +356,47 @@ class StockSerializer(serializers.ModelSerializer):
 
 class InventorySerializer(serializers.ModelSerializer):
     stocks = StockSerializer(many=True)
+    user_groups = serializers.PrimaryKeyRelatedField(
+        many=True, queryset=models.UserGroup.objects.all()
+    )
+    user_group_names = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = models.Inventory
         fields = [
-            'id', 'name', 'type', 'user_group', 'location',
-            'unit', 'total_quantity', 'description', 'stocks'
+            'id', 'name', 'type',
+            'user_groups',        # ✅ accept IDs
+            'user_group_names',   # ✅ show names in response
+            'location', 'unit', 'total_quantity',
+            'description', 'stocks'
         ]
+
+    def get_user_group_names(self, obj):
+        return [ug.name for ug in obj.user_groups.all()]
 
     def create(self, validated_data):
         stocks_data = validated_data.pop('stocks', [])
+        user_groups = validated_data.pop('user_groups', [])
+
         inventory = models.Inventory.objects.create(**validated_data)
+        inventory.user_groups.set(user_groups)  # ✅ assign M2M
+
         for stock_data in stocks_data:
             models.Stock.objects.create(inventory=inventory, **stock_data)
+
         return inventory
 
     def update(self, instance, validated_data):
         stocks_data = validated_data.pop('stocks', None)
+        user_groups = validated_data.pop('user_groups', None)
 
         # Update inventory fields
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
         instance.save()
+
+        if user_groups is not None:
+            instance.user_groups.set(user_groups)  # ✅ update M2M
 
         if stocks_data is not None:
             existing_ids = {s.id: s for s in instance.stocks.all()}
@@ -363,13 +425,43 @@ class InventorySerializer(serializers.ModelSerializer):
         return instance
 
 
-
 class UnitSerializer(serializers.ModelSerializer):
-    user_group_name = serializers.CharField(source='user_group.name', read_only=True)
+    # Show user group names in response
+    user_group_names = serializers.SerializerMethodField(read_only=True)
+
+    # Accept multiple IDs for assignment
+    user_groups = serializers.PrimaryKeyRelatedField(
+        many=True, queryset=models.UserGroup.objects.all()
+    )
 
     class Meta:
         model = models.Unit
-        fields = ['id', 'name', 'symbol', 'user_group', 'user_group_name', 'description', 'created_at', 'updated_at']
+        fields = [
+            'id', 'name', 'symbol',
+            'user_groups',        # ✅ M2M IDs
+            'user_group_names',   # ✅ readable names
+            'description', 'created_at', 'updated_at'
+        ]
+
+    def get_user_group_names(self, obj):
+        return [ug.name for ug in obj.user_groups.all()]
+
+    def create(self, validated_data):
+        user_groups = validated_data.pop("user_groups", [])
+        unit = models.Unit.objects.create(**validated_data)
+        unit.user_groups.set(user_groups)  # ✅ assign M2M
+        return unit
+
+    def update(self, instance, validated_data):
+        user_groups = validated_data.pop("user_groups", None)
+
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+
+        if user_groups is not None:
+            instance.user_groups.set(user_groups)  # ✅ update M2M
+        return instance
 
 
 class CustomerSerializer(serializers.ModelSerializer):
@@ -510,6 +602,22 @@ class SampleFormSerializer(serializers.ModelSerializer):
         return instance
 
 
+class DynamicFormEntrySerializer(serializers.ModelSerializer):
+    form_name = serializers.CharField(source="form.sample_name", read_only=True)
+    logged_by_name = serializers.CharField(source="logged_by.username", read_only=True)
+    analyst_name = serializers.CharField(source="analyst.username", read_only=True)
+    analyses = serializers.PrimaryKeyRelatedField(
+        queryset=models.Analysis.objects.all(), many=True, required=False
+    )
+
+    class Meta:
+        model = models.DynamicFormEntry
+        fields = [
+            "id", "form_name", "data", "status", 
+            "analyst_name", "logged_by_name", "created_at",
+            "analyses"
+        ]
+
 
 import inflection
 
@@ -554,7 +662,6 @@ def build_dynamic_serializer(fields):
             field_dict[field.field_name] = serializers.CharField(required=False, allow_blank=True)
 
     return type('DynamicSerializer', (serializers.Serializer,), field_dict)
-
 
 
 
@@ -662,13 +769,35 @@ def build_dynamic_request_serializer(fields):
     return type('DynamicRequestSerializer', (serializers.Serializer,), field_dict)
 
 
+class DynamicRequestEntrySerializer(serializers.ModelSerializer):
+    form_name = serializers.CharField(source="request_form.request_name", read_only=True)
+    logged_by_name = serializers.CharField(source="logged_by.username", read_only=True)
+    analyst_name = serializers.CharField(source="analyst.username", read_only=True)
+
+    class Meta:
+        model = models.DynamicRequestEntry
+        fields = [
+            "id", "form_name", "data", "analyst_name",
+            "logged_by_name", "created_at", "status"
+        ]
+
+
+
 
 class TestMethodSerializer(serializers.ModelSerializer):
-    user_group_name = serializers.CharField(source='user_group.name', read_only=True)
+    user_groups = serializers.PrimaryKeyRelatedField(
+        many=True,
+        queryset=models.UserGroup.objects.all()
+    )
+    user_group_names = serializers.SerializerMethodField()
 
     class Meta:
         model = models.TestMethod
-        fields = ['id', 'name', 'user_group', 'user_group_name', 'description']
+        fields = ['id', 'name', 'description', 'user_groups', 'user_group_names']
+
+    def get_user_group_names(self, obj):
+        return [ug.name for ug in obj.user_groups.all()]
+
 
 
 class CustomerSerializer(serializers.ModelSerializer):
@@ -686,27 +815,30 @@ class ProductAnalysisSerializer(serializers.Serializer):
 
 class ProductSerializer(serializers.ModelSerializer):
     analyses_data = ProductAnalysisSerializer(many=True, write_only=True)
+    user_groups = serializers.PrimaryKeyRelatedField(
+        many=True, queryset=models.UserGroup.objects.all()
+    )
 
     class Meta:
         model = models.Product
-        fields = ["name", "version", "user_group", "description", "analyses_data"]
+        fields = ["name", "version", "user_groups", "description", "analyses_data"]
 
     def create(self, validated_data):
         analyses_data = validated_data.pop("analyses_data", [])
+        user_groups = validated_data.pop("user_groups", [])
+
         product = models.Product.objects.create(**validated_data)
+        product.user_groups.set(user_groups)  # ✅ assign M2M
 
         for analysis_item in analyses_data:
             analysis_id = analysis_item["analysis_id"]
             component_ids = analysis_item.get("component_ids", [])
-
             analysis = models.Analysis.objects.get(id=analysis_id)
             pa = models.ProductAnalysis.objects.create(product=product, analysis=analysis)
-
             if component_ids:
                 components = models.Component.objects.filter(id__in=component_ids, analysis=analysis)
             else:
                 components = analysis.components.all()
-
             pa.components.set(components)
 
         return product
@@ -724,3 +856,52 @@ class ProductSerializer(serializers.ModelSerializer):
         return data
 
 
+
+class PermissionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = models.Permission
+        fields = ["id", "module", "action"]
+
+    def validate_module(self, value):
+        """Check if the given module (table name) exists in DB"""
+        all_tables = [m._meta.db_table for m in apps.get_models()]
+        if value not in all_tables:
+            raise serializers.ValidationError(f"Invalid module '{value}'. Table does not exist in DB.")
+        return value
+
+
+class RoleSerializer(serializers.ModelSerializer):
+    permissions = PermissionSerializer(many=True)
+    users = serializers.PrimaryKeyRelatedField(
+        many=True,
+        queryset=models.User.objects.all()
+    )
+
+    class Meta:
+        model = models.Role
+        fields = ["id", "name", "users", "permissions"]
+
+    def create(self, validated_data):
+        users = validated_data.pop("users", [])
+        permissions_data = validated_data.pop("permissions", [])
+        role = models.Role.objects.create(**validated_data)
+        role.users.set(users)
+
+        for perm in permissions_data:
+            models.Permission.objects.create(role=role, **perm)
+        return role
+
+    def update(self, instance, validated_data):
+        users = validated_data.pop("users", [])
+        permissions_data = validated_data.pop("permissions", [])
+
+        instance.name = validated_data.get("name", instance.name)
+        instance.save()
+        instance.users.set(users)
+
+        # replace permissions
+        instance.permissions.all().delete()
+        for perm in permissions_data:
+            models.Permission.objects.create(role=instance, **perm)
+
+        return instance

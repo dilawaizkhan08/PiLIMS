@@ -23,8 +23,14 @@ router.register(r'customer', views.CustomerViewSet, basename='customer')
 router.register(r'lists', views.ListViewSet, basename='lists')
 router.register(r'values', views.ValueViewSet, basename='values')
 router.register(r'sample-forms', views.SampleFormViewSet, basename='sample-forms')
+router.register(r"sample-entries", views.DynamicSampleFormEntryViewSet, basename='sample-entries')
 router.register(r'request-forms', views.RequestFormViewSet, basename='requestform')
+router.register(r"request-entries", views.DynamicRequestFormEntryViewSet, basename='request-entries')
+
 router.register(r'products', views.ProductViewSet, basename='products')
+
+router.register(r'roles', views.RoleViewSet,  basename="roles")
+router.register(r'modules', views.ModuleViewSet, basename="modules")
 
 
 
