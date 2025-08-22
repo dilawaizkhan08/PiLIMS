@@ -109,8 +109,8 @@ REST_FRAMEWORK = {
         "rest_framework.filters.OrderingFilter",
     ),
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
-    "DEFAULT_PAGINATION_CLASS": "app.pagination.CustomPageNumberPagination",
-    "PAGE_SIZE": 10,
+    # "DEFAULT_PAGINATION_CLASS": "app.pagination.CustomPageNumberPagination",
+    # "PAGE_SIZE": 10,
     'DATETIME_FORMAT': "%Y-%m-%d %H:%M:%S",
 }
 

@@ -235,7 +235,7 @@ class StockViewSet(viewsets.ModelViewSet):
 class UnitViewSet(viewsets.ModelViewSet):
     queryset = models.Unit.objects.all()
     serializer_class = UnitSerializer
-    permission_classes = [IsAuthenticated,HasModulePermission]
+    permission_classes = [IsAuthenticated]
 
 class CustomerViewSet(viewsets.ModelViewSet):
     queryset = models.Customer.objects.all().order_by('-created_at')
@@ -349,15 +349,41 @@ class SampleFormSubmitView(APIView):
 
         if serializer.is_valid():
             clean_data = convert_datetimes_to_strings(serializer.validated_data)
-            models.DynamicFormEntry.objects.create(
+
+            # ✅ Create entry
+            entry = models.DynamicFormEntry.objects.create(
                 form=sample_form,
-                data=clean_data
+                data=clean_data,
+                logged_by=request.user
             )
+
+            # ✅ Handle analyses if provided
+            analyses = request.data.get("analyses", [])
+            if analyses:
+                entry.analyses.set(models.Analysis.objects.filter(id__in=analyses))
+
             return Response({"message": "Form submitted successfully"}, status=status.HTTP_201_CREATED)
-        
-        print("Validation errors:", serializer.errors)  # <--- Add this
+
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+
+
+class DynamicSampleFormEntryViewSet(viewsets.ModelViewSet):
+    queryset = models.DynamicFormEntry.objects.all().order_by("-created_at")
+    serializer_class = DynamicFormEntrySerializer
+
+    # extra endpoint to update status (like your Action dropdown)
+    @action(detail=True, methods=["post"])
+    def update_status(self, request, pk=None):
+        entry = self.get_object()
+        new_status = request.data.get("status")
+
+        if new_status not in dict(models.DynamicFormEntry.STATUS_CHOICES):
+            return Response({"error": "Invalid status"}, status=400)
+
+        entry.status = new_status
+        entry.save()
+        return Response({"message": f"Status updated to {new_status}"})
 
 
 class RequestFormViewSet(viewsets.ModelViewSet):
@@ -462,48 +488,62 @@ def convert_datetimes_to_strings(data):
     return new_data
 
 
+from django.db import transaction
+
 class RequestFormSubmitView(APIView):
     def post(self, request, form_id):
         request_form = get_object_or_404(models.RequestForm, pk=form_id)
 
-        # ------------------ VALIDATE REQUEST FORM FIELDS ------------------
+        # ------------------ VALIDATE REQUEST FORM ------------------
         req_serializer_class = build_dynamic_request_serializer(request_form.fields.all())
         req_serializer = req_serializer_class(data=request.data.get("request_form", {}))
-
-        if not req_serializer.is_valid():
-            print("RequestForm validation errors:", req_serializer.errors)
-            return Response(req_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-        # ------------------ SAVE REQUEST FORM ENTRY ------------------
+        req_serializer.is_valid(raise_exception=True)
         req_clean_data = convert_datetimes_to_strings(req_serializer.validated_data)
-        models.DynamicRequestEntry.objects.create(
-            request_form=request_form,
-            data=req_clean_data
-        )
 
-        # ------------------ VALIDATE & SAVE SAMPLE FORM (IF EXISTS) ------------------
-        if request_form.sample_form:
+        # ------------------ VALIDATE MULTIPLE SAMPLE FORMS ------------------
+        sample_clean_list = []
+        if request_form.sample_form and "sample_forms" in request.data:
             sample_form = request_form.sample_form
             sample_serializer_class = build_dynamic_serializer(sample_form.fields.all())
-            sample_serializer = sample_serializer_class(data=request.data.get("sample_form", {}))
 
-            if not sample_serializer.is_valid():
-                print("SampleForm validation errors:", sample_serializer.errors)
-                return Response(
-                    {"sample_form_errors": sample_serializer.errors},
-                    status=status.HTTP_400_BAD_REQUEST
+            for sample in request.data.get("sample_forms", []):
+                sample_serializer = sample_serializer_class(data=sample)
+                sample_serializer.is_valid(raise_exception=True)
+                sample_clean_list.append(
+                    convert_datetimes_to_strings(sample_serializer.validated_data)
                 )
 
-            sample_clean_data = convert_datetimes_to_strings(sample_serializer.validated_data)
-            models.DynamicFormEntry.objects.create(
-                form=sample_form,
-                data=sample_clean_data
-            )
-
-        return Response(
-            {"message": "RequestForm and SampleForm submitted successfully"},
-            status=status.HTTP_201_CREATED
+        # ------------------ SAVE ENTRY ------------------
+        entry = models.DynamicRequestEntry.objects.create(
+            request_form=request_form,
+            data={
+                "request_form": req_clean_data,
+                "sample_forms": sample_clean_list
+            },
+            logged_by=request.user
         )
+
+        return Response(DynamicRequestEntrySerializer(entry).data, status=status.HTTP_201_CREATED)
+
+
+class DynamicRequestFormEntryViewSet(viewsets.ModelViewSet):
+    queryset = models.DynamicRequestEntry.objects.all().order_by("-created_at")
+    serializer_class = DynamicRequestEntrySerializer
+
+    # extra endpoint to update status (like your Action dropdown)
+    @action(detail=True, methods=["post"])
+    def update_status(self, request, pk=None):
+        entry = self.get_object()
+        new_status = request.data.get("status")
+
+        if new_status not in dict(models.DynamicRequestEntry.STATUS_CHOICES):
+            return Response({"error": "Invalid status"}, status=400)
+
+        entry.status = new_status
+        entry.save()
+        return Response({"message": f"Status updated to {new_status}"})
+
+
 
 
 class ProductViewSet(viewsets.ModelViewSet):

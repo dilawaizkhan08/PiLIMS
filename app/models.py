@@ -68,7 +68,7 @@ class UserGroup(BaseModel):
 
 class TestMethod(BaseModel):
     name = models.CharField(max_length=255)
-    user_group = models.ForeignKey(UserGroup,on_delete=models.CASCADE,related_name='test_methods')
+    user_groups = models.ManyToManyField(UserGroup, blank=True, related_name='test_methods')
     description = models.TextField(blank=True, null=True)
 
     def __str__(self):
@@ -86,7 +86,7 @@ class Analysis(BaseModel):
     alias_name = models.CharField(max_length=255, null=True, blank=True)
     version = models.PositiveIntegerField(default=1)
 
-    user_group = models.ForeignKey('UserGroup', on_delete=models.SET_NULL, null=True, blank=True)
+    user_groups = models.ManyToManyField(UserGroup, null=True, blank=True)
     type =  models.CharField(max_length=255, null=True, blank=True)
     test_method = models.ForeignKey(TestMethod, on_delete=models.SET_NULL, null=True)
     price = models.FloatField(null=True, blank=True)
@@ -141,7 +141,7 @@ class CustomFunction(BaseModel):
 
 class Instrument(BaseModel):
     name = models.CharField(max_length=255)
-    user_groups = models.ForeignKey('UserGroup',on_delete=models.SET_NULL,null=True,related_name='instruments_as_user_group')
+    user_groups = models.ManyToManyField(UserGroup, blank=True, null=True,related_name='instruments_as_user_group')
     vendor = models.CharField(max_length=255)
     manufacturer = models.CharField(max_length=255, blank=True, null=True)  # 👈 New field added
     serial_no = models.CharField(max_length=255, blank=True, null=True)
@@ -172,7 +172,7 @@ class InstrumentHistory(BaseModel):
 class Unit(BaseModel):
     name = models.CharField(max_length=255)  # Required
     symbol = models.CharField(max_length=50)  # Required
-    user_group = models.ForeignKey(UserGroup,on_delete=models.CASCADE,related_name="units")
+    user_groups = models.ManyToManyField(UserGroup,blank=True, related_name="units")
     description = models.TextField(blank=True, null=True)  # Optional
 
     def __str__(self):
@@ -182,7 +182,7 @@ class Unit(BaseModel):
 class Inventory(BaseModel):
     name = models.CharField(max_length=255)
     type =  models.CharField(max_length=255, null=True, blank=True)
-    user_group = models.ForeignKey('UserGroup', on_delete=models.SET_NULL, null=True)
+    user_groups = models.ManyToManyField(UserGroup, blank=True, null=True)
     location = models.CharField(max_length=255)
     unit = models.ForeignKey('Unit', on_delete=models.SET_NULL, null=True)
     total_quantity = models.IntegerField(default=0)
@@ -214,7 +214,7 @@ class Stock(BaseModel):
 class List(BaseModel):
     name = models.CharField(max_length=255)
     type =  models.CharField(max_length=20,choices=choices.ListType.choices,)
-    user_group = models.ForeignKey('UserGroup', on_delete=models.CASCADE)
+    user_groups = models.ManyToManyField(UserGroup, blank=True)
     description = models.TextField(blank=True, null=True)
 
     def __str__(self):
@@ -234,7 +234,7 @@ class SampleForm(BaseModel):
     sample_name = models.CharField(max_length=255)
     version = models.IntegerField(default=1)
     group_analysis_list = models.CharField(max_length=255, blank=True, null=True)
-    user_groups = models.ManyToManyField(UserGroup, related_name="sample_forms")
+    user_groups = models.ManyToManyField(UserGroup, blank=True, related_name="sample_forms")
     description = models.TextField(blank=True, null=True)
 
     def __str__(self):
@@ -266,9 +266,33 @@ class SampleField(BaseModel):
 
 
 class DynamicFormEntry(BaseModel):
+    STATUS_CHOICES = [
+        ("initiated", "Initiated"),
+        ("received", "Received"),
+        ("completed", "Completed"),
+        ("authorized", "Authorized"),
+        ("rejected", "Rejected"),
+        ("cancelled", "Cancelled"),
+        ("restored", "Restored"),
+    ]
+
     form = models.ForeignKey(SampleForm, on_delete=models.CASCADE)
     data = models.JSONField()
+
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="initiated")  # ✅ add this
+
+    analyst = models.ForeignKey(
+        User, null=True, blank=True, on_delete=models.SET_NULL, related_name="analyzed_samples"
+    )
+    logged_by = models.ForeignKey(
+        User, null=True, blank=True, on_delete=models.SET_NULL, related_name="logged_samples"
+    )
     created_at = models.DateTimeField(auto_now_add=True)
+    analyses = models.ManyToManyField("Analysis", related_name="entries", blank=True)
+
+    def __str__(self):
+        return f"Entry {self.id} - {self.form.sample_name} ({self.status})"
+
     
 
 
@@ -332,9 +356,31 @@ class RequestField(BaseModel):
 
 
 class DynamicRequestEntry(BaseModel):
+    STATUS_CHOICES = [
+        ("initiated", "Initiated"),
+        ("received", "Received"),
+        ("completed", "Completed"),
+        ("authorized", "Authorized"),
+        ("rejected", "Rejected"),
+        ("cancelled", "Cancelled"),
+        ("restored", "Restored"),
+    ]
+
     request_form = models.ForeignKey(RequestForm, on_delete=models.CASCADE)
     data = models.JSONField()
     created_at = models.DateTimeField(auto_now_add=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="initiated") 
+
+    analyst = models.ForeignKey(
+        User, null=True, blank=True, on_delete=models.SET_NULL, related_name="analyzed_request"
+    )
+    logged_by = models.ForeignKey(
+        User, null=True, blank=True, on_delete=models.SET_NULL, related_name="logged_request"
+    )
+
+
+    
+
 
 
 
@@ -342,7 +388,7 @@ class DynamicRequestEntry(BaseModel):
 class Product(BaseModel):
     name = models.CharField(max_length=255)
     version = models.PositiveIntegerField(default=1)
-    user_group = models.ForeignKey('UserGroup', on_delete=models.SET_NULL, null=True)
+    user_groups = models.ManyToManyField(UserGroup, blank=True, null=True)
     description = models.TextField(blank=True)
 
     analyses = models.ManyToManyField('Analysis', through='ProductAnalysis')
