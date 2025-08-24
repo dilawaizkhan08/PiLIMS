@@ -271,10 +271,16 @@ class InstrumentHistorySerializer(serializers.ModelSerializer):
             'instrument': {'required': False}
         }
 
+
 class InstrumentSerializer(serializers.ModelSerializer):
     history = InstrumentHistorySerializer(many=True)
-    user_groups = serializers.PrimaryKeyRelatedField(
-        many=True, queryset=models.UserGroup.objects.all()
+
+    # ✅ Nested serializer for GET
+    user_groups = UserGroupSerializer(many=True, read_only=True)
+
+    # ✅ Accept IDs for write
+    user_groups_ids = serializers.PrimaryKeyRelatedField(
+        many=True, queryset=models.UserGroup.objects.all(), write_only=True
     )
 
     class Meta:
@@ -284,16 +290,17 @@ class InstrumentSerializer(serializers.ModelSerializer):
             'name', 'vendor', 'manufacturer', 'serial_no', 'model_no',
             'description', 'calibration_period', 'next_calibration_date',
             'prevention_period', 'next_prevention_date',
-            'user_groups',   # ✅ handle M2M
+            'user_groups',       # ✅ GET → {id, name}
+            'user_groups_ids',   # ✅ POST/PUT → [1,2]
             'history'
         ]
 
     def create(self, validated_data):
         history_data = validated_data.pop('history', [])
-        user_groups = validated_data.pop('user_groups', [])
+        user_groups = validated_data.pop('user_groups_ids', [])
 
         instrument = models.Instrument.objects.create(**validated_data)
-        instrument.user_groups.set(user_groups)  # ✅ assign M2M
+        instrument.user_groups.set(user_groups)
 
         for hist in history_data:
             models.InstrumentHistory.objects.create(instrument=instrument, **hist)
@@ -302,7 +309,7 @@ class InstrumentSerializer(serializers.ModelSerializer):
 
     def update(self, instance, validated_data):
         history_data = validated_data.pop('history', None)
-        user_groups = validated_data.pop('user_groups', None)
+        user_groups = validated_data.pop('user_groups_ids', None)
 
         # Update instrument fields
         for attr, value in validated_data.items():
@@ -356,30 +363,31 @@ class StockSerializer(serializers.ModelSerializer):
 
 class InventorySerializer(serializers.ModelSerializer):
     stocks = StockSerializer(many=True)
-    user_groups = serializers.PrimaryKeyRelatedField(
-        many=True, queryset=models.UserGroup.objects.all()
+
+    # ✅ Nested serializer for GET
+    user_groups = UserGroupSerializer(many=True, read_only=True)
+
+    # ✅ Accept IDs for write
+    user_groups_ids = serializers.PrimaryKeyRelatedField(
+        many=True, queryset=models.UserGroup.objects.all(), write_only=True
     )
-    user_group_names = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = models.Inventory
         fields = [
             'id', 'name', 'type',
-            'user_groups',        # ✅ accept IDs
-            'user_group_names',   # ✅ show names in response
+            'user_groups',        # ✅ GET → [{id, name}]
+            'user_groups_ids',    # ✅ POST/PUT → [1,2]
             'location', 'unit', 'total_quantity',
             'description', 'stocks'
         ]
 
-    def get_user_group_names(self, obj):
-        return [ug.name for ug in obj.user_groups.all()]
-
     def create(self, validated_data):
         stocks_data = validated_data.pop('stocks', [])
-        user_groups = validated_data.pop('user_groups', [])
+        user_groups = validated_data.pop('user_groups_ids', [])
 
         inventory = models.Inventory.objects.create(**validated_data)
-        inventory.user_groups.set(user_groups)  # ✅ assign M2M
+        inventory.user_groups.set(user_groups)
 
         for stock_data in stocks_data:
             models.Stock.objects.create(inventory=inventory, **stock_data)
@@ -388,16 +396,18 @@ class InventorySerializer(serializers.ModelSerializer):
 
     def update(self, instance, validated_data):
         stocks_data = validated_data.pop('stocks', None)
-        user_groups = validated_data.pop('user_groups', None)
+        user_groups = validated_data.pop('user_groups_ids', None)
 
         # Update inventory fields
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
         instance.save()
 
+        # ✅ Update M2M if provided
         if user_groups is not None:
-            instance.user_groups.set(user_groups)  # ✅ update M2M
+            instance.user_groups.set(user_groups)
 
+        # ✅ Update or create stock entries
         if stocks_data is not None:
             existing_ids = {s.id: s for s in instance.stocks.all()}
             sent_ids = []
@@ -424,7 +434,6 @@ class InventorySerializer(serializers.ModelSerializer):
 
         return instance
 
-
 class UnitSerializer(serializers.ModelSerializer):
     # Show user group names in response
     user_group_names = serializers.SerializerMethodField(read_only=True)
@@ -447,27 +456,34 @@ class UnitSerializer(serializers.ModelSerializer):
         return [ug.name for ug in obj.user_groups.all()]
 
     def create(self, validated_data):
+        # Extract and remove M2M field
         user_groups = validated_data.pop("user_groups", [])
+        # Create instance without M2M
         unit = models.Unit.objects.create(**validated_data)
-        unit.user_groups.set(user_groups)  # ✅ assign M2M
+        # Assign M2M
+        unit.user_groups.set(user_groups)
         return unit
 
     def update(self, instance, validated_data):
+        # Handle M2M only if present
         user_groups = validated_data.pop("user_groups", None)
 
+        # Update normal fields
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
         instance.save()
 
+        # Update M2M (set only if provided, supports PATCH)
         if user_groups is not None:
-            instance.user_groups.set(user_groups)  # ✅ update M2M
+            instance.user_groups.set(user_groups)
         return instance
 
 
-class CustomerSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = models.Customer
-        fields = ['id', 'name']
+# class CustomerSerializer(serializers.ModelSerializer):
+#     class Meta:
+#         model = models.Customer
+#         fields = ['id', 'name']
+
 
 
 
@@ -483,13 +499,29 @@ class ValueSerializer(serializers.ModelSerializer):
 class ListSerializer(serializers.ModelSerializer):
     values = ValueSerializer(many=True)
 
+    # ✅ Nested serializer for GET
+    user_groups = UserGroupSerializer(many=True, read_only=True)
+
+    # ✅ Accept IDs for write
+    user_groups_ids = serializers.PrimaryKeyRelatedField(
+        many=True, queryset=models.UserGroup.objects.all(), write_only=True
+    )
+
     class Meta:
         model = models.List
-        fields = ['id', 'name', 'type', 'user_group', 'description', 'values']
+        fields = [
+            'id', 'name', 'type',
+            'user_groups',      # ✅ GET → [{id, name}]
+            'user_groups_ids',  # ✅ POST/PUT/PATCH → [1,2]
+            'description', 'values'
+        ]
 
     def create(self, validated_data):
         values_data = validated_data.pop('values', [])
+        user_groups = validated_data.pop('user_groups_ids', [])
+
         list_obj = models.List.objects.create(**validated_data)
+        list_obj.user_groups.set(user_groups)
 
         for value_data in values_data:
             models.Value.objects.create(list=list_obj, **value_data)
@@ -498,32 +530,36 @@ class ListSerializer(serializers.ModelSerializer):
 
     def update(self, instance, validated_data):
         values_data = validated_data.pop('values', None)
+        user_groups = validated_data.pop('user_groups_ids', None)
 
         # Update main List fields
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
         instance.save()
 
+        # ✅ Update M2M if provided
+        if user_groups is not None:
+            instance.user_groups.set(user_groups)
+
+        # ✅ Update or create values
         if values_data is not None:
             existing_ids = {v.id: v for v in instance.values.all()}
             sent_ids = []
 
             for value_data in values_data:
-                value_id = value_data.pop('id', None)  # remove id so create doesn't get it
+                value_id = value_data.pop('id', None)
 
                 if value_id and value_id in existing_ids:
-                    # Update existing record
                     value_obj = existing_ids[value_id]
                     for attr, val in value_data.items():
                         setattr(value_obj, attr, val)
                     value_obj.save()
                     sent_ids.append(value_id)
                 else:
-                    # Create new record without id
                     new_value = models.Value.objects.create(list=instance, **value_data)
                     sent_ids.append(new_value.id)
 
-            # Optional: delete records not sent in payload
+            # Optional: delete records not sent
             for val_id, val_obj in existing_ids.items():
                 if val_id not in sent_ids:
                     val_obj.delete()
@@ -532,8 +568,8 @@ class ListSerializer(serializers.ModelSerializer):
 
 
 
-
 from django.apps import apps
+
 
 
 
@@ -542,20 +578,35 @@ class SampleFieldSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = models.SampleField
-        fields = ['id', 'field_name', 'field_property', 'list_ref', 'link_to_table', 'order', 'required']
+        fields = [
+            'id', 'field_name', 'field_property', 'list_ref',
+            'link_to_table', 'order', 'required'
+        ]
 
 
 class SampleFormSerializer(serializers.ModelSerializer):
     fields = SampleFieldSerializer(many=True)
-    user_groups = serializers.PrimaryKeyRelatedField(many=True, queryset=models.UserGroup.objects.all())
+
+    # ✅ Read-only names
+    user_groups = UserGroupSerializer(many=True, read_only=True)
+
+    # ✅ Write-only IDs
+    user_groups_ids = serializers.PrimaryKeyRelatedField(
+        many=True, queryset=models.UserGroup.objects.all(), write_only=True
+    )
 
     class Meta:
         model = models.SampleForm
-        fields = ['id', 'sample_name', 'version', 'group_analysis_list', 'user_groups', 'description', 'fields']
+        fields = [
+            'id', 'sample_name', 'version', 'group_analysis_list',
+            'user_groups',       # ✅ GET
+            'user_groups_ids',   # ✅ POST/PUT/PATCH
+            'description', 'fields'
+        ]
 
     def create(self, validated_data):
         fields_data = validated_data.pop('fields', [])
-        user_groups = validated_data.pop('user_groups', [])
+        user_groups = validated_data.pop('user_groups_ids', [])
 
         # Create form
         sample_form = models.SampleForm.objects.create(**validated_data)
@@ -570,8 +621,8 @@ class SampleFormSerializer(serializers.ModelSerializer):
         return sample_form
 
     def update(self, instance, validated_data):
-        fields_data = validated_data.pop('fields', [])
-        user_groups = validated_data.pop('user_groups', None)
+        fields_data = validated_data.pop('fields', None)
+        user_groups = validated_data.pop('user_groups_ids', None)
 
         # Update basic form fields
         for attr, value in validated_data.items():
@@ -582,24 +633,33 @@ class SampleFormSerializer(serializers.ModelSerializer):
         if user_groups is not None:
             instance.user_groups.set(user_groups)
 
-        # Existing fields lookup
-        existing_fields = {field.id: field for field in instance.fields.all()}
+        # Update / create / delete nested fields
+        if fields_data is not None:
+            existing_fields = {field.id: field for field in instance.fields.all()}
+            sent_ids = []
 
-        for field_data in fields_data:
-            field_id = field_data.get('id', None)
+            for field_data in fields_data:
+                field_id = field_data.pop('id', None)
 
-            if field_id and field_id in existing_fields:
-                # Update
-                field_instance = existing_fields[field_id]
-                for attr, value in field_data.items():
-                    if attr != 'id':
+                if field_id and field_id in existing_fields:
+                    # Update existing
+                    field_instance = existing_fields[field_id]
+                    for attr, value in field_data.items():
                         setattr(field_instance, attr, value)
-                field_instance.save()
-            else:
-                # Create new
-                models.SampleField.objects.create(sample_form=instance, **field_data)
+                    field_instance.save()
+                    sent_ids.append(field_id)
+                else:
+                    # Create new
+                    new_field = models.SampleField.objects.create(sample_form=instance, **field_data)
+                    sent_ids.append(new_field.id)
+
+            # Delete missing ones
+            for field_id, field_obj in existing_fields.items():
+                if field_id not in sent_ids:
+                    field_obj.delete()
 
         return instance
+
 
 
 class DynamicFormEntrySerializer(serializers.ModelSerializer):
@@ -671,25 +731,40 @@ class RequestFieldSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = models.RequestField
-        fields = ['id', 'field_name', 'field_property', 'list_ref', 'link_to_table', 'order', 'required']
+        fields = [
+            "id", "field_name", "field_property",
+            "list_ref", "link_to_table", "order", "required"
+        ]
 
 
 class RequestFormSerializer(serializers.ModelSerializer):
     fields = RequestFieldSerializer(many=True)
-    user_groups = serializers.PrimaryKeyRelatedField(many=True, queryset=models.UserGroup.objects.all())
+
+    # ✅ Read-only nested
+    user_groups = UserGroupSerializer(many=True, read_only=True)
+
+    # ✅ Write-only IDs
+    user_groups_ids = serializers.PrimaryKeyRelatedField(
+        many=True, queryset=models.UserGroup.objects.all(), write_only=True
+    )
+
     customer_name = serializers.PrimaryKeyRelatedField(queryset=models.Customer.objects.all())
+    sample_form = serializers.PrimaryKeyRelatedField(queryset=models.SampleForm.objects.all())
 
     class Meta:
         model = models.RequestForm
         fields = [
-            'id', 'request_name', 'version', 'request_type',
-            'sample_form', 'customer_name', 'user_groups', 'description', 'fields'
+            "id", "request_name", "version", "request_type",
+            "sample_form", "customer_name",
+            "user_groups",      # ✅ GET
+            "user_groups_ids",  # ✅ POST/PUT/PATCH
+            "description", "fields"
         ]
 
     def create(self, validated_data):
-        fields_data = validated_data.pop('fields', [])
-        user_groups = validated_data.pop('user_groups', [])
-        
+        fields_data = validated_data.pop("fields", [])
+        user_groups = validated_data.pop("user_groups_ids", [])
+
         request_form = models.RequestForm.objects.create(**validated_data)
         request_form.user_groups.set(user_groups)
 
@@ -699,8 +774,8 @@ class RequestFormSerializer(serializers.ModelSerializer):
         return request_form
 
     def update(self, instance, validated_data):
-        fields_data = validated_data.pop('fields', [])
-        user_groups = validated_data.pop('user_groups', None)
+        fields_data = validated_data.pop("fields", None)
+        user_groups = validated_data.pop("user_groups_ids", None)
 
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
@@ -709,19 +784,26 @@ class RequestFormSerializer(serializers.ModelSerializer):
         if user_groups is not None:
             instance.user_groups.set(user_groups)
 
-        existing_fields = {field.id: field for field in instance.fields.all()}
+        if fields_data is not None:
+            existing_fields = {field.id: field for field in instance.fields.all()}
+            sent_ids = []
 
-        for field_data in fields_data:
-            field_id = field_data.get('id', None)
+            for field_data in fields_data:
+                field_id = field_data.pop("id", None)
 
-            if field_id and field_id in existing_fields:
-                field_instance = existing_fields[field_id]
-                for attr, value in field_data.items():
-                    if attr != 'id':
+                if field_id and field_id in existing_fields:
+                    field_instance = existing_fields[field_id]
+                    for attr, value in field_data.items():
                         setattr(field_instance, attr, value)
-                field_instance.save()
-            else:
-                models.RequestField.objects.create(request_form=instance, **field_data)
+                    field_instance.save()
+                    sent_ids.append(field_id)
+                else:
+                    new_field = models.RequestField.objects.create(request_form=instance, **field_data)
+                    sent_ids.append(new_field.id)
+
+            for field_id, field_obj in existing_fields.items():
+                if field_id not in sent_ids:
+                    field_obj.delete()
 
         return instance
 
@@ -785,18 +867,19 @@ class DynamicRequestEntrySerializer(serializers.ModelSerializer):
 
 
 class TestMethodSerializer(serializers.ModelSerializer):
-    user_groups = serializers.PrimaryKeyRelatedField(
+    # Instead of only IDs, nest full serializer
+    user_groups = UserGroupSerializer(many=True, read_only=True)
+    # Allow writing by IDs
+    user_group_ids = serializers.PrimaryKeyRelatedField(
         many=True,
-        queryset=models.UserGroup.objects.all()
+        queryset=models.UserGroup.objects.all(),
+        source="user_groups",
+        write_only=True
     )
-    user_group_names = serializers.SerializerMethodField()
 
     class Meta:
         model = models.TestMethod
-        fields = ['id', 'name', 'description', 'user_groups', 'user_group_names']
-
-    def get_user_group_names(self, obj):
-        return [ug.name for ug in obj.user_groups.all()]
+        fields = ['id', 'name', 'description', 'user_groups', 'user_group_ids']
 
 
 
@@ -804,6 +887,7 @@ class CustomerSerializer(serializers.ModelSerializer):
     class Meta:
         model = models.Customer
         fields = '__all__'
+
 
 
 class ProductAnalysisSerializer(serializers.Serializer):
@@ -814,34 +898,72 @@ class ProductAnalysisSerializer(serializers.Serializer):
 
 
 class ProductSerializer(serializers.ModelSerializer):
-    analyses_data = ProductAnalysisSerializer(many=True, write_only=True)
-    user_groups = serializers.PrimaryKeyRelatedField(
-        many=True, queryset=models.UserGroup.objects.all()
+    # ✅ Nested read serializer (response)
+    user_groups = UserGroupSerializer(many=True, read_only=True)
+
+    # ✅ Write-only field for IDs (request)
+    user_group_ids = serializers.PrimaryKeyRelatedField(
+        many=True, queryset=models.UserGroup.objects.all(), write_only=True
     )
+
+    analyses_data = ProductAnalysisSerializer(many=True, write_only=True)
 
     class Meta:
         model = models.Product
-        fields = ["name", "version", "user_groups", "description", "analyses_data"]
+        fields = [
+            "id", "name", "version",
+            "user_groups",       # ✅ GET full details
+            "user_group_ids",    # ✅ POST/PUT/PATCH IDs only
+            "description", "analyses_data"
+        ]
 
     def create(self, validated_data):
         analyses_data = validated_data.pop("analyses_data", [])
-        user_groups = validated_data.pop("user_groups", [])
+        user_groups = validated_data.pop("user_group_ids", [])
 
         product = models.Product.objects.create(**validated_data)
         product.user_groups.set(user_groups)  # ✅ assign M2M
 
+        self._save_product_analyses(product, analyses_data)
+        return product
+
+    def update(self, instance, validated_data):
+        analyses_data = validated_data.pop("analyses_data", None)
+        user_groups = validated_data.pop("user_group_ids", None)
+
+        # Update base fields
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+
+        # Update M2M if provided
+        if user_groups is not None:
+            instance.user_groups.set(user_groups)
+
+        # Update analyses if provided
+        if analyses_data is not None:
+            # clear old product analyses
+            models.ProductAnalysis.objects.filter(product=instance).delete()
+            self._save_product_analyses(instance, analyses_data)
+
+        return instance
+
+    def _save_product_analyses(self, product, analyses_data):
         for analysis_item in analyses_data:
             analysis_id = analysis_item["analysis_id"]
             component_ids = analysis_item.get("component_ids", [])
             analysis = models.Analysis.objects.get(id=analysis_id)
+
             pa = models.ProductAnalysis.objects.create(product=product, analysis=analysis)
+
             if component_ids:
-                components = models.Component.objects.filter(id__in=component_ids, analysis=analysis)
+                components = models.Component.objects.filter(
+                    id__in=component_ids, analysis=analysis
+                )
             else:
                 components = analysis.components.all()
-            pa.components.set(components)
 
-        return product
+            pa.components.set(components)
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
@@ -849,12 +971,11 @@ class ProductSerializer(serializers.ModelSerializer):
         data["analyses_data"] = [
             {
                 "analysis_id": pa.analysis.id,
-                "component_ids": list(pa.components.values_list('id', flat=True))
+                "component_ids": list(pa.components.values_list("id", flat=True)),
             }
             for pa in product_analyses
         ]
         return data
-
 
 
 class PermissionSerializer(serializers.ModelSerializer):
