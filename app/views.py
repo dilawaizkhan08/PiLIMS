@@ -22,10 +22,15 @@ from rest_framework.parsers import MultiPartParser, FormParser
 from django.contrib.auth import authenticate
 from .models import User
 from .serializers import *
-from datetime import timedelta
-from django.utils.timezone import now
-from django.db.models.functions import TruncDay
-import calendar
+
+
+
+from django.shortcuts import get_object_or_404
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from datetime import datetime
+from . import models
+from .serializers import build_dynamic_request_serializer, build_dynamic_serializer
 
 class RegisterView(views.APIView):
     permission_classes = [AllowAny]
@@ -408,13 +413,6 @@ class RequestFormViewSet(viewsets.ModelViewSet):
         return Response({"type": field_property, "options": []})
 
 
-from django.shortcuts import get_object_or_404
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from datetime import datetime
-from . import models
-from .serializers import build_dynamic_request_serializer, build_dynamic_serializer
-
 
 class RequestFormSchemaView(APIView):
     def get(self, request, form_id):
@@ -522,6 +520,11 @@ class RequestFormSubmitView(APIView):
             },
             logged_by=request.user
         )
+
+        # ✅ Handle analyses if provided
+        analyses = request.data.get("analyses", [])
+        if analyses:
+            entry.analyses.set(models.Analysis.objects.filter(id__in=analyses))
 
         return Response(DynamicRequestEntrySerializer(entry).data, status=status.HTTP_201_CREATED)
 

@@ -120,6 +120,8 @@ class Component(BaseModel):
     decimal_places = models.IntegerField(null=True, blank=True)
     listname = models.CharField(max_length=50,choices=choices.ListNameChoices.choices,null=True,blank=True)
 
+    custom_function = models.ForeignKey('CustomFunction',on_delete=models.SET_NULL,null=True,blank=True,related_name='components')
+
     def __str__(self):
         return f"{self.name} ({self.analysis.name})"
 
@@ -377,6 +379,8 @@ class DynamicRequestEntry(BaseModel):
     logged_by = models.ForeignKey(
         User, null=True, blank=True, on_delete=models.SET_NULL, related_name="logged_request"
     )
+
+    analyses = models.ManyToManyField("Analysis", related_name="requests_entries", blank=True)
 
 
     

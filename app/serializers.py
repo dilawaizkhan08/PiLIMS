@@ -173,17 +173,33 @@ class UserGroupSerializer(serializers.ModelSerializer):
         model = models.UserGroup
         fields = ['id', 'name', 'users']
 
+class CustomFunctionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = models.CustomFunction
+        fields = ['id', 'name', 'variables', 'script']
 
 
 class ComponentSerializer(serializers.ModelSerializer):
     analysis_id = serializers.IntegerField(write_only=True)
 
+    # for writing (dropdown)
+    function_id = serializers.PrimaryKeyRelatedField(
+        queryset=models.CustomFunction.objects.all(),
+        source="custom_function",
+        write_only=True,
+        required=False
+    )
+
+    # for reading (full function details)
+    function = CustomFunctionSerializer(source="custom_function", read_only=True)
+
     class Meta:
         model = models.Component
         fields = [
             'id', 'analysis_id', 'name', 'type', 'unit', 'spec_limits', 'description',
-            'optional', 'calculated', 'minimum', 'maximum',
-            'rounding', 'decimal_places', 'listname'
+            'optional', 'calculated',
+            'function_id', 'function',   # ✅ consistent now
+            'minimum', 'maximum', 'rounding', 'decimal_places', 'listname'
         ]
 
     def create(self, validated_data):
@@ -194,6 +210,7 @@ class ComponentSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Analysis with given ID does not exist.")
         
         return models.Component.objects.create(analysis=analysis, **validated_data)
+
 
 
 class AnalysisAttachmentSerializer(serializers.ModelSerializer):
@@ -221,7 +238,7 @@ class AnalysisSerializer(serializers.ModelSerializer):
             "id",
             "name",
             "version",
-            "alias_name",
+            
             "user_groups",      # returns {id, name}
             "user_groups_ids",  # accepts IDs for write
             "type",
@@ -248,15 +265,6 @@ class AnalysisSerializer(serializers.ModelSerializer):
             instance.user_groups.set(user_groups)
         return instance
     
-
-
-
-class CustomFunctionSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = models.CustomFunction
-        fields = ['id', 'name', 'variables', 'script']
-
-
 
 class InstrumentHistorySerializer(serializers.ModelSerializer):
     id = serializers.IntegerField(required=False)  # Allow PATCH with ID
@@ -666,9 +674,7 @@ class DynamicFormEntrySerializer(serializers.ModelSerializer):
     form_name = serializers.CharField(source="form.sample_name", read_only=True)
     logged_by_name = serializers.CharField(source="logged_by.username", read_only=True)
     analyst_name = serializers.CharField(source="analyst.username", read_only=True)
-    analyses = serializers.PrimaryKeyRelatedField(
-        queryset=models.Analysis.objects.all(), many=True, required=False
-    )
+    analyses = AnalysisSerializer(many=True, read_only=True)
 
     class Meta:
         model = models.DynamicFormEntry
@@ -855,12 +861,15 @@ class DynamicRequestEntrySerializer(serializers.ModelSerializer):
     form_name = serializers.CharField(source="request_form.request_name", read_only=True)
     logged_by_name = serializers.CharField(source="logged_by.username", read_only=True)
     analyst_name = serializers.CharField(source="analyst.username", read_only=True)
+    analyses = serializers.PrimaryKeyRelatedField(
+        queryset=models.Analysis.objects.all(), many=True, required=False
+    )
 
     class Meta:
         model = models.DynamicRequestEntry
         fields = [
             "id", "form_name", "data", "analyst_name",
-            "logged_by_name", "created_at", "status"
+            "logged_by_name", "created_at", "status","analyses"
         ]
 
 
@@ -898,6 +907,7 @@ class ProductAnalysisSerializer(serializers.Serializer):
 
 
 class ProductSerializer(serializers.ModelSerializer):
+    
     # ✅ Nested read serializer (response)
     user_groups = UserGroupSerializer(many=True, read_only=True)
 
