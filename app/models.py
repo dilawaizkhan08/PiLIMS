@@ -6,6 +6,11 @@ from django.conf import settings
 import uuid
 from app import choices
 from django.utils import timezone
+from django.contrib.auth.models import AbstractUser
+from django.db import models
+from django.utils.translation import gettext_lazy as _
+from . import choices  # make sure this is correctly imported based on your project structure
+
 
 
 class BaseModel(models.Model):
@@ -18,10 +23,6 @@ class BaseModel(models.Model):
         ordering = ["-id"]
 
 
-from django.contrib.auth.models import AbstractUser
-from django.db import models
-from django.utils.translation import gettext_lazy as _
-from . import choices  # make sure this is correctly imported based on your project structure
 
 class User(AbstractUser, BaseModel):
     # Overridden fields
@@ -131,7 +132,7 @@ class Component(BaseModel):
 
 class CustomFunction(BaseModel):
     name = models.CharField(max_length=255, unique=True)
-    variables = models.CharField(max_length=255)
+    variables = models.JSONField()
     script = models.TextField()
 
     def __str__(self):

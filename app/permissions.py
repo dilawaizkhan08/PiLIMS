@@ -25,17 +25,32 @@ class IsAdminUser(BasePermission):
 class HasModulePermission(BasePermission):
     """
     Check if user has required CRUD permission on a given module (DB table).
+    Works for both APIView and ViewSet.
     """
 
     def has_permission(self, request, view):
-        # 1. Identify module (DB table) from view
-        model = getattr(view, 'queryset', None)
-        if model is None:
+        user = request.user
+        if not user.is_authenticated:
             return False
-        
-        module_name = model.model._meta.db_table  # e.g. app_unit
 
-        # 2. Map DRF actions to our PERMISSION_CHOICES
+        # 1. Identify model
+        model = None
+        if hasattr(view, "queryset") and view.queryset is not None:
+            model = view.queryset.model
+        elif hasattr(view, "get_queryset"):
+            try:
+                model = view.get_queryset().model
+            except Exception:
+                pass
+        elif hasattr(view, "serializer_class") and hasattr(view.serializer_class.Meta, "model"):
+            model = view.serializer_class.Meta.model
+
+        if not model:
+            return True  # fallback: allow if no model is attached
+
+        module_name = model._meta.db_table
+
+        # 2. Map DRF actions → CRUD
         action_map = {
             "create": "create",
             "list": "view",
@@ -45,18 +60,27 @@ class HasModulePermission(BasePermission):
             "destroy": "delete",
         }
 
-        action = action_map.get(view.action)
+        # For APIView (no .action attribute)
+        action = getattr(view, "action", None)
         if action is None:
+            if request.method == "GET":
+                action = "view"
+            elif request.method == "POST":
+                action = "create"
+            elif request.method in ["PUT", "PATCH"]:
+                action = "update"
+            elif request.method == "DELETE":
+                action = "delete"
+
+        action = action_map.get(action)
+        if not action:
             return False
 
-        # 3. Get all roles of user and check permissions
-        user = request.user
-        if not user.is_authenticated:
-            return False
-
+        # 3. Check user roles and permissions
         for role in user.roles.all():
             if role.permissions.filter(module=module_name, action=action).exists():
                 return True
 
         return False
-    
+
+

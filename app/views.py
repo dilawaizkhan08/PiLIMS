@@ -23,7 +23,9 @@ from django.contrib.auth import authenticate
 from .models import User
 from .serializers import *
 
-
+import ast
+from rest_framework import serializers, viewsets
+from rest_framework.decorators import action
 
 from django.shortcuts import get_object_or_404
 from rest_framework.views import APIView
@@ -192,7 +194,7 @@ class ResetPasswordView(APIView):
 class AnalysisViewSet(viewsets.ModelViewSet):
     queryset = models.Analysis.objects.all()
     serializer_class = AnalysisSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated,HasModulePermission]
 
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
@@ -205,7 +207,7 @@ class AnalysisViewSet(viewsets.ModelViewSet):
             models.AnalysisAttachment.objects.create(analysis=analysis, file=f)
 
         return Response(self.get_serializer(analysis).data, status=status.HTTP_201_CREATED)
-    
+
 
 
 class CustomFunctionViewSet(viewsets.ModelViewSet):
@@ -213,68 +215,90 @@ class CustomFunctionViewSet(viewsets.ModelViewSet):
     serializer_class = CustomFunctionSerializer
     permission_classes = [IsAuthenticated]
 
+    # ========= 1) VALIDATE ENDPOINT ==========
+    @action(detail=False, methods=["post"], url_path="validate")
+    def validate_script(self, request):
+        serializer = self.get_serializer(data=request.data)
+        if serializer.is_valid():
+            # Mark as validated in session
+            request.session["last_valid_function"] = request.data
+            return Response({"valid": True, "message": "Function is valid"})
+        return Response(serializer.errors, status=400)
+
+    # ========= 2) OVERRIDE CREATE ==========
+    def create(self, request, *args, **kwargs):
+        # Check if last validated matches the incoming request
+        last_valid = request.session.get("last_valid_function")
+        if not last_valid or last_valid != request.data:
+            return Response(
+                {"error": "Please validate the function before saving."},
+                status=400
+            )
+        # proceed to save
+        return super().create(request, *args, **kwargs)
+
 
 
 class InstrumentViewSet(viewsets.ModelViewSet):
     queryset = models.Instrument.objects.all()
     serializer_class = InstrumentSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated,HasModulePermission]
 
 class InstrumentHistoryViewSet(viewsets.ModelViewSet):
     queryset = models.InstrumentHistory.objects.all()
     serializer_class = InstrumentHistorySerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated,HasModulePermission]
 
 
 class InventoryViewSet(viewsets.ModelViewSet):
     queryset = models.Inventory.objects.all()
     serializer_class = InventorySerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated,HasModulePermission]
 
 
 class StockViewSet(viewsets.ModelViewSet):
     queryset = models.Stock.objects.all()
     serializer_class = StockSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated,HasModulePermission]
 
 class UnitViewSet(viewsets.ModelViewSet):
     queryset = models.Unit.objects.all()
     serializer_class = UnitSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated,HasModulePermission]
 
 class CustomerViewSet(viewsets.ModelViewSet):
     queryset = models.Customer.objects.all().order_by('-created_at')
     serializer_class = CustomerSerializer
-    permission_classes = [IsAuthenticated] 
+    permission_classes = [IsAuthenticated,HasModulePermission] 
 
 
 class ListViewSet(viewsets.ModelViewSet):
     queryset = models.List.objects.all()
     serializer_class = ListSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated,HasModulePermission]
 
 
 class ValueViewSet(viewsets.ModelViewSet):
     queryset = models.Value.objects.all()
     serializer_class = ValueSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated,HasModulePermission]
 
 
 class UserGroupViewSet(viewsets.ModelViewSet):
     queryset = models.UserGroup.objects.all()
     serializer_class = UserGroupSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated,HasModulePermission]
 
 
 class TestMethodViewSet(viewsets.ModelViewSet):
     queryset = models.TestMethod.objects.all()
     serializer_class = TestMethodSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated,HasModulePermission]
 
 class ComponentViewSet(viewsets.ModelViewSet):
     queryset = models.Component.objects.all()
     serializer_class = ComponentSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated,HasModulePermission]
 
 
 
@@ -283,6 +307,7 @@ from django.apps import apps
 class SampleFormViewSet(viewsets.ModelViewSet):
     queryset = models.SampleForm.objects.all()
     serializer_class = SampleFormSerializer
+    permission_classes = [IsAuthenticated,HasModulePermission]
 
     @action(detail=False, methods=['get'])
     def property_options(self, request):
@@ -306,6 +331,8 @@ from django.shortcuts import get_object_or_404
 from datetime import datetime
 
 class SampleFormSchemaView(APIView):
+    permission_classes = [IsAuthenticated,HasModulePermission]
+
     def get(self, request, form_id):
         sample_form = get_object_or_404(models.SampleForm, pk=form_id)
         fields_qs = sample_form.fields.all()
@@ -347,6 +374,7 @@ def convert_datetimes_to_strings(data):
     return new_data
 
 class SampleFormSubmitView(APIView):
+    permission_classes = [IsAuthenticated,HasModulePermission]
     def post(self, request, form_id):
         sample_form = get_object_or_404(models.SampleForm, pk=form_id)
         serializer_class = build_dynamic_serializer(sample_form.fields.all())
@@ -376,6 +404,7 @@ class SampleFormSubmitView(APIView):
 class DynamicSampleFormEntryViewSet(viewsets.ModelViewSet):
     queryset = models.DynamicFormEntry.objects.all().order_by("-created_at")
     serializer_class = DynamicFormEntrySerializer
+    permission_classes = [IsAuthenticated,HasModulePermission]
 
     # extra endpoint to update status (like your Action dropdown)
     @action(detail=True, methods=["post"])
@@ -394,6 +423,7 @@ class DynamicSampleFormEntryViewSet(viewsets.ModelViewSet):
 class RequestFormViewSet(viewsets.ModelViewSet):
     queryset = models.RequestForm.objects.all()
     serializer_class = RequestFormSerializer
+    permission_classes = [IsAuthenticated,HasModulePermission]
 
     @action(detail=False, methods=['get'])
     def property_options(self, request):
@@ -415,6 +445,7 @@ class RequestFormViewSet(viewsets.ModelViewSet):
 
 
 class RequestFormSchemaView(APIView):
+    permission_classes = [IsAuthenticated,HasModulePermission]
     def get(self, request, form_id):
         # Get the request form
         request_form = get_object_or_404(models.RequestForm, pk=form_id)
@@ -489,6 +520,7 @@ def convert_datetimes_to_strings(data):
 from django.db import transaction
 
 class RequestFormSubmitView(APIView):
+    permission_classes = [IsAuthenticated,HasModulePermission]
     def post(self, request, form_id):
         request_form = get_object_or_404(models.RequestForm, pk=form_id)
 
@@ -521,7 +553,7 @@ class RequestFormSubmitView(APIView):
             logged_by=request.user
         )
 
-        # ✅ Handle analyses if provided
+        # Handle analyses if provided
         analyses = request.data.get("analyses", [])
         if analyses:
             entry.analyses.set(models.Analysis.objects.filter(id__in=analyses))
@@ -532,6 +564,7 @@ class RequestFormSubmitView(APIView):
 class DynamicRequestFormEntryViewSet(viewsets.ModelViewSet):
     queryset = models.DynamicRequestEntry.objects.all().order_by("-created_at")
     serializer_class = DynamicRequestEntrySerializer
+    permission_classes = [IsAuthenticated,HasModulePermission]
 
     # extra endpoint to update status (like your Action dropdown)
     @action(detail=True, methods=["post"])
@@ -548,11 +581,10 @@ class DynamicRequestFormEntryViewSet(viewsets.ModelViewSet):
 
 
 
-
 class ProductViewSet(viewsets.ModelViewSet):
     queryset = models.Product.objects.all()
     serializer_class = ProductSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated,HasModulePermission]
     
 
 

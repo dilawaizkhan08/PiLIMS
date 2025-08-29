@@ -8,6 +8,7 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from app import choices
 from django.contrib.auth import password_validation
 from rest_framework.exceptions import ValidationError
+import ast
 
 
 ALLOWED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/gif']  # Allowed MIME types
@@ -173,10 +174,69 @@ class UserGroupSerializer(serializers.ModelSerializer):
         model = models.UserGroup
         fields = ['id', 'name', 'users']
 
+
+
 class CustomFunctionSerializer(serializers.ModelSerializer):
+    # Force variables to be a list of strings
+    variables = serializers.ListField(
+        child=serializers.CharField(), allow_empty=False
+    )
+
     class Meta:
         model = models.CustomFunction
         fields = ['id', 'name', 'variables', 'script']
+
+    def validate(self, data):
+        variables = data.get("variables", [])
+        script = data.get("script", "")
+
+        # 1. Syntax check
+        try:
+            tree = ast.parse(script)
+        except SyntaxError as e:
+            raise serializers.ValidationError(
+                {"script": f"Invalid Python script: {e}"}
+            )
+
+        # 2. Collect variables actually used
+        used_vars = {
+            node.id
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+        }
+
+        # Allow "result" as output
+        allowed_vars = set(variables + ["result"])
+
+        # 3. Find extra vars not in the list
+        extra_vars = used_vars - allowed_vars
+        if extra_vars:
+            raise serializers.ValidationError(
+                {"script": f"Invalid variable(s) used: {', '.join(extra_vars)}"}
+            )
+
+        return data
+
+
+
+class TestMethodSerializer(serializers.ModelSerializer):
+    # Instead of only IDs, nest full serializer
+    user_groups = UserGroupSerializer(many=True, read_only=True)
+    # Allow writing by IDs
+    user_groups_ids = serializers.PrimaryKeyRelatedField(
+        many=True, queryset=models.UserGroup.objects.all(), required=False
+    )
+
+    class Meta:
+        model = models.TestMethod
+        fields = ['id', 'name', 'description', 'user_groups', 'user_groups_ids']
+
+    def to_representation(self, instance):
+        """Add user_groups_ids to GET response"""
+        data = super().to_representation(instance)
+        data['user_groups_ids'] = list(instance.user_groups.values_list('id', flat=True))
+        return data
+
 
 
 class ComponentSerializer(serializers.ModelSerializer):
@@ -224,12 +284,19 @@ class AnalysisSerializer(serializers.ModelSerializer):
     attachments = AnalysisAttachmentSerializer(many=True, read_only=True)
     components = ComponentSerializer(many=True, read_only=True)
 
-    # ✅ Instead of PrimaryKeyRelatedField, use nested serializer for GET
+    # ✅ Nested (read-only) for GET
     user_groups = UserGroupSerializer(many=True, read_only=True)
+    test_method = TestMethodSerializer(read_only=True)
 
-    # ✅ Allow writing user_groups by ID (for POST/PUT)
+    # ✅ IDs for POST/PATCH
     user_groups_ids = serializers.PrimaryKeyRelatedField(
-        many=True, queryset=models.UserGroup.objects.all(), write_only=True
+        many=True, queryset=models.UserGroup.objects.all(), required=False
+    )
+    test_method_id = serializers.PrimaryKeyRelatedField(
+        queryset=models.TestMethod.objects.all(),
+        source="test_method",  # maps correctly to FK field
+        write_only=True,
+        required=False,
     )
 
     class Meta:
@@ -238,16 +305,22 @@ class AnalysisSerializer(serializers.ModelSerializer):
             "id",
             "name",
             "version",
-            
-            "user_groups",      # returns {id, name}
-            "user_groups_ids",  # accepts IDs for write
+            "user_groups",
+            "user_groups_ids",
             "type",
-            "test_method",
+            "test_method",      # read-only nested
+            "test_method_id",   # write-only ID
             "price",
             "description",
             "attachments",
             "components",
         ]
+
+    def to_representation(self, instance):
+        """Add user_groups_ids to GET response"""
+        data = super().to_representation(instance)
+        data['user_groups_ids'] = list(instance.user_groups.values_list('id', flat=True))
+        return data
 
     def create(self, validated_data):
         user_groups = validated_data.pop("user_groups_ids", [])
@@ -257,14 +330,17 @@ class AnalysisSerializer(serializers.ModelSerializer):
 
     def update(self, instance, validated_data):
         user_groups = validated_data.pop("user_groups_ids", None)
+
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
         instance.save()
 
         if user_groups is not None:
             instance.user_groups.set(user_groups)
+
         return instance
-    
+
+
 
 class InstrumentHistorySerializer(serializers.ModelSerializer):
     id = serializers.IntegerField(required=False)  # Allow PATCH with ID
@@ -280,15 +356,25 @@ class InstrumentHistorySerializer(serializers.ModelSerializer):
         }
 
 
+class NullableDateField(serializers.DateField):
+    def to_internal_value(self, value):
+        if value in ("", None, "null"):   # handle empty, real null, and string "null"
+            return None
+        return super().to_internal_value(value)
+
 class InstrumentSerializer(serializers.ModelSerializer):
-    history = InstrumentHistorySerializer(many=True)
+    history = InstrumentHistorySerializer(many=True, required=False)
+
+    # ✅ Date fields should allow null
+    next_calibration_date = NullableDateField(required=False, allow_null=True)
+    next_prevention_date = NullableDateField(required=False, allow_null=True)
 
     # ✅ Nested serializer for GET
     user_groups = UserGroupSerializer(many=True, read_only=True)
 
     # ✅ Accept IDs for write
     user_groups_ids = serializers.PrimaryKeyRelatedField(
-        many=True, queryset=models.UserGroup.objects.all(), write_only=True
+        many=True, queryset=models.UserGroup.objects.all(), required=False
     )
 
     class Meta:
@@ -298,10 +384,17 @@ class InstrumentSerializer(serializers.ModelSerializer):
             'name', 'vendor', 'manufacturer', 'serial_no', 'model_no',
             'description', 'calibration_period', 'next_calibration_date',
             'prevention_period', 'next_prevention_date',
-            'user_groups',       # ✅ GET → {id, name}
-            'user_groups_ids',   # ✅ POST/PUT → [1,2]
+            'user_groups',
+            'user_groups_ids',
             'history'
         ]
+
+
+    def to_representation(self, instance):
+        """Add user_groups_ids to GET response"""
+        data = super().to_representation(instance)
+        data['user_groups_ids'] = list(instance.user_groups.values_list('id', flat=True))
+        return data
 
     def create(self, validated_data):
         history_data = validated_data.pop('history', [])
@@ -377,7 +470,7 @@ class InventorySerializer(serializers.ModelSerializer):
 
     # ✅ Accept IDs for write
     user_groups_ids = serializers.PrimaryKeyRelatedField(
-        many=True, queryset=models.UserGroup.objects.all(), write_only=True
+        many=True, queryset=models.UserGroup.objects.all(), required=False
     )
 
     class Meta:
@@ -441,6 +534,13 @@ class InventorySerializer(serializers.ModelSerializer):
                     stock_obj.delete()
 
         return instance
+    
+
+    def to_representation(self, instance):
+        """Add user_groups_ids to GET response"""
+        data = super().to_representation(instance)
+        data['user_groups_ids'] = list(instance.user_groups.values_list('id', flat=True))
+        return data
 
 class UnitSerializer(serializers.ModelSerializer):
     # Show user group names in response
@@ -512,7 +612,7 @@ class ListSerializer(serializers.ModelSerializer):
 
     # ✅ Accept IDs for write
     user_groups_ids = serializers.PrimaryKeyRelatedField(
-        many=True, queryset=models.UserGroup.objects.all(), write_only=True
+        many=True, queryset=models.UserGroup.objects.all(), required=False
     )
 
     class Meta:
@@ -523,6 +623,12 @@ class ListSerializer(serializers.ModelSerializer):
             'user_groups_ids',  # ✅ POST/PUT/PATCH → [1,2]
             'description', 'values'
         ]
+
+    def to_representation(self, instance):
+        """Add user_groups_ids to GET response"""
+        data = super().to_representation(instance)
+        data['user_groups_ids'] = list(instance.user_groups.values_list('id', flat=True))
+        return data
 
     def create(self, validated_data):
         values_data = validated_data.pop('values', [])
@@ -600,7 +706,7 @@ class SampleFormSerializer(serializers.ModelSerializer):
 
     # ✅ Write-only IDs
     user_groups_ids = serializers.PrimaryKeyRelatedField(
-        many=True, queryset=models.UserGroup.objects.all(), write_only=True
+        many=True, queryset=models.UserGroup.objects.all(), required=False
     )
 
     class Meta:
@@ -611,6 +717,12 @@ class SampleFormSerializer(serializers.ModelSerializer):
             'user_groups_ids',   # ✅ POST/PUT/PATCH
             'description', 'fields'
         ]
+
+    def to_representation(self, instance):
+        """Add user_groups_ids to GET response"""
+        data = super().to_representation(instance)
+        data['user_groups_ids'] = list(instance.user_groups.values_list('id', flat=True))
+        return data
 
     def create(self, validated_data):
         fields_data = validated_data.pop('fields', [])
@@ -751,7 +863,7 @@ class RequestFormSerializer(serializers.ModelSerializer):
 
     # ✅ Write-only IDs
     user_groups_ids = serializers.PrimaryKeyRelatedField(
-        many=True, queryset=models.UserGroup.objects.all(), write_only=True
+        many=True, queryset=models.UserGroup.objects.all(), required=False
     )
 
     customer_name = serializers.PrimaryKeyRelatedField(queryset=models.Customer.objects.all())
@@ -766,6 +878,12 @@ class RequestFormSerializer(serializers.ModelSerializer):
             "user_groups_ids",  # ✅ POST/PUT/PATCH
             "description", "fields"
         ]
+
+    def to_representation(self, instance):
+        """Add user_groups_ids to GET response"""
+        data = super().to_representation(instance)
+        data['user_groups_ids'] = list(instance.user_groups.values_list('id', flat=True))
+        return data
 
     def create(self, validated_data):
         fields_data = validated_data.pop("fields", [])
@@ -875,23 +993,6 @@ class DynamicRequestEntrySerializer(serializers.ModelSerializer):
 
 
 
-class TestMethodSerializer(serializers.ModelSerializer):
-    # Instead of only IDs, nest full serializer
-    user_groups = UserGroupSerializer(many=True, read_only=True)
-    # Allow writing by IDs
-    user_group_ids = serializers.PrimaryKeyRelatedField(
-        many=True,
-        queryset=models.UserGroup.objects.all(),
-        source="user_groups",
-        write_only=True
-    )
-
-    class Meta:
-        model = models.TestMethod
-        fields = ['id', 'name', 'description', 'user_groups', 'user_group_ids']
-
-
-
 class CustomerSerializer(serializers.ModelSerializer):
     class Meta:
         model = models.Customer
@@ -907,29 +1008,30 @@ class ProductAnalysisSerializer(serializers.Serializer):
 
 
 class ProductSerializer(serializers.ModelSerializer):
-    
     # ✅ Nested read serializer (response)
     user_groups = UserGroupSerializer(many=True, read_only=True)
 
-    # ✅ Write-only field for IDs (request)
-    user_group_ids = serializers.PrimaryKeyRelatedField(
-        many=True, queryset=models.UserGroup.objects.all(), write_only=True
+    # ✅ IDs for write, but also returned in GET
+    user_groups_ids = serializers.PrimaryKeyRelatedField(
+        many=True, queryset=models.UserGroup.objects.all(), required=False
     )
 
-    analyses_data = ProductAnalysisSerializer(many=True, write_only=True)
+    # ✅ Accept analyses data in request
+    analyses_data = ProductAnalysisSerializer(many=True, write_only=True, required=False)
 
     class Meta:
         model = models.Product
         fields = [
             "id", "name", "version",
-            "user_groups",       # ✅ GET full details
-            "user_group_ids",    # ✅ POST/PUT/PATCH IDs only
-            "description", "analyses_data"
+            "description",
+            "user_groups",        # GET full details
+            "user_groups_ids",    # POST/PUT/PATCH IDs + show in GET
+            "analyses_data"       # write-only in request, rebuilt in response
         ]
 
     def create(self, validated_data):
         analyses_data = validated_data.pop("analyses_data", [])
-        user_groups = validated_data.pop("user_group_ids", [])
+        user_groups = validated_data.pop("user_groups_ids", [])
 
         product = models.Product.objects.create(**validated_data)
         product.user_groups.set(user_groups)  # ✅ assign M2M
@@ -939,20 +1041,19 @@ class ProductSerializer(serializers.ModelSerializer):
 
     def update(self, instance, validated_data):
         analyses_data = validated_data.pop("analyses_data", None)
-        user_groups = validated_data.pop("user_group_ids", None)
+        user_groups = validated_data.pop("user_groups_ids", None)
 
-        # Update base fields
+        # ✅ Update base fields
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
         instance.save()
 
-        # Update M2M if provided
+        # ✅ Update M2M if provided
         if user_groups is not None:
             instance.user_groups.set(user_groups)
 
-        # Update analyses if provided
+        # ✅ Update analyses if provided
         if analyses_data is not None:
-            # clear old product analyses
             models.ProductAnalysis.objects.filter(product=instance).delete()
             self._save_product_analyses(instance, analyses_data)
 
@@ -977,6 +1078,11 @@ class ProductSerializer(serializers.ModelSerializer):
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
+
+        # ✅ include user_groups_ids in GET
+        data["user_groups_ids"] = list(instance.user_groups.values_list("id", flat=True))
+
+        # ✅ include analyses_data in GET
         product_analyses = models.ProductAnalysis.objects.filter(product=instance)
         data["analyses_data"] = [
             {
@@ -986,7 +1092,6 @@ class ProductSerializer(serializers.ModelSerializer):
             for pa in product_analyses
         ]
         return data
-
 
 class PermissionSerializer(serializers.ModelSerializer):
     class Meta:
@@ -1036,3 +1141,4 @@ class RoleSerializer(serializers.ModelSerializer):
             models.Permission.objects.create(role=instance, **perm)
 
         return instance
+    

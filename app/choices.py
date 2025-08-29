@@ -25,7 +25,7 @@ class ListNameChoices(models.TextChoices):
 
 
 class ActionType(models.TextChoices):
-    CALIBRATED = 'Calibrated', 'Calibrated'
+    CALIBRATION = 'Calibration', 'Calibration'
     PREVENTION = 'Prevention', 'Prevention'
 
 class ListType(models.TextChoices):
