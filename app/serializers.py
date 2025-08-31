@@ -701,38 +701,47 @@ class SampleFieldSerializer(serializers.ModelSerializer):
 class SampleFormSerializer(serializers.ModelSerializer):
     fields = SampleFieldSerializer(many=True)
 
-    # ✅ Read-only names
+    # ✅ Read-only nested
     user_groups = UserGroupSerializer(many=True, read_only=True)
+    group_analysis_list = AnalysisSerializer(many=True, read_only=True)
 
     # ✅ Write-only IDs
     user_groups_ids = serializers.PrimaryKeyRelatedField(
         many=True, queryset=models.UserGroup.objects.all(), required=False
     )
+    group_analysis_ids = serializers.PrimaryKeyRelatedField(
+        many=True, queryset=models.Analysis.objects.all(), required=False
+    )
 
     class Meta:
         model = models.SampleForm
         fields = [
-            'id', 'sample_name', 'version', 'group_analysis_list',
-            'user_groups',       # ✅ GET
-            'user_groups_ids',   # ✅ POST/PUT/PATCH
+            'id', 'sample_name', 'version',
+            'group_analysis_list',   # ✅ GET nested analysis objects
+            'group_analysis_ids',    # ✅ POST/PUT with IDs
+            'user_groups',           # ✅ GET nested user groups
+            'user_groups_ids',       # ✅ POST/PUT with IDs
             'description', 'fields'
         ]
 
     def to_representation(self, instance):
-        """Add user_groups_ids to GET response"""
+        """Add *_ids fields to GET response"""
         data = super().to_representation(instance)
         data['user_groups_ids'] = list(instance.user_groups.values_list('id', flat=True))
+        data['group_analysis_ids'] = list(instance.group_analysis_list.values_list('id', flat=True))
         return data
 
     def create(self, validated_data):
         fields_data = validated_data.pop('fields', [])
         user_groups = validated_data.pop('user_groups_ids', [])
+        group_analysis = validated_data.pop('group_analysis_ids', [])
 
         # Create form
         sample_form = models.SampleForm.objects.create(**validated_data)
 
         # Set many-to-many
         sample_form.user_groups.set(user_groups)
+        sample_form.group_analysis_list.set(group_analysis)
 
         # Create related fields
         for field_data in fields_data:
@@ -743,6 +752,7 @@ class SampleFormSerializer(serializers.ModelSerializer):
     def update(self, instance, validated_data):
         fields_data = validated_data.pop('fields', None)
         user_groups = validated_data.pop('user_groups_ids', None)
+        group_analysis = validated_data.pop('group_analysis_ids', None)
 
         # Update basic form fields
         for attr, value in validated_data.items():
@@ -752,6 +762,8 @@ class SampleFormSerializer(serializers.ModelSerializer):
         # Update M2M if provided
         if user_groups is not None:
             instance.user_groups.set(user_groups)
+        if group_analysis is not None:
+            instance.group_analysis_list.set(group_analysis)
 
         # Update / create / delete nested fields
         if fields_data is not None:
@@ -779,7 +791,6 @@ class SampleFormSerializer(serializers.ModelSerializer):
                     field_obj.delete()
 
         return instance
-
 
 
 class DynamicFormEntrySerializer(serializers.ModelSerializer):

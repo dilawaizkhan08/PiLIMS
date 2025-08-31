@@ -407,17 +407,25 @@ class DynamicSampleFormEntryViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated,HasModulePermission]
 
     # extra endpoint to update status (like your Action dropdown)
-    @action(detail=True, methods=["post"])
-    def update_status(self, request, pk=None):
-        entry = self.get_object()
+     
+    @action(detail=False, methods=["post"])  # ✅ no pk, works on multiple
+    def update_status(self, request):
         new_status = request.data.get("status")
+        ids = request.data.get("ids", [])
+
+        if not new_status or not ids:
+            return Response({"error": "Both 'status' and 'ids' are required"}, status=400)
 
         if new_status not in dict(models.DynamicFormEntry.STATUS_CHOICES):
             return Response({"error": "Invalid status"}, status=400)
 
-        entry.status = new_status
-        entry.save()
-        return Response({"message": f"Status updated to {new_status}"})
+        # ✅ Bulk update
+        updated_count = models.DynamicFormEntry.objects.filter(id__in=ids).update(status=new_status)
+
+        return Response({
+            "message": f"Status updated to '{new_status}' for {updated_count} entries",
+            "updated_ids": ids
+        })
 
 
 class RequestFormViewSet(viewsets.ModelViewSet):

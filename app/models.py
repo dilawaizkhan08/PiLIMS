@@ -236,7 +236,7 @@ class Value(BaseModel):
 class SampleForm(BaseModel):
     sample_name = models.CharField(max_length=255)
     version = models.IntegerField(default=1)
-    group_analysis_list = models.CharField(max_length=255, blank=True, null=True)
+    group_analysis_list = models.ManyToManyField("Analysis", related_name="sample_forms", blank=True)
     user_groups = models.ManyToManyField(UserGroup, blank=True, related_name="sample_forms")
     description = models.TextField(blank=True, null=True)
 

@@ -58,6 +58,7 @@ class HasModulePermission(BasePermission):
             "update": "update",
             "partial_update": "update",
             "destroy": "delete",
+            "update_status": "update",
         }
 
         # For APIView (no .action attribute)
