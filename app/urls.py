@@ -49,5 +49,8 @@ urlpatterns = [
 
     path('request-forms/<int:form_id>/schema/', views.RequestFormSchemaView.as_view(), name='request-form-schema'),
     path('request-forms/<int:form_id>/submit/', views.RequestFormSubmitView.as_view(), name='request-form-submit'),
+
+
+    path("table-data/", views.DynamicTableDataView.as_view(), name="table-data"),
     
 ]

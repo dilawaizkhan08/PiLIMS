@@ -797,7 +797,10 @@ class DynamicFormEntrySerializer(serializers.ModelSerializer):
     form_name = serializers.CharField(source="form.sample_name", read_only=True)
     logged_by_name = serializers.CharField(source="logged_by.username", read_only=True)
     analyst_name = serializers.CharField(source="analyst.username", read_only=True)
-    analyses = AnalysisSerializer(many=True, read_only=True)
+    analyses = serializers.PrimaryKeyRelatedField(
+        many=True,
+        queryset=models.Analysis.objects.all()
+    )  # 👈 ab writable ho gaya
 
     class Meta:
         model = models.DynamicFormEntry
@@ -806,6 +809,54 @@ class DynamicFormEntrySerializer(serializers.ModelSerializer):
             "analyst_name", "logged_by_name", "created_at",
             "analyses"
         ]
+
+    def create(self, validated_data):
+        analyses_data = validated_data.pop("analyses", [])
+        request = self.context.get("request")
+        sample_form = validated_data.get("form")
+
+        entry = models.DynamicFormEntry.objects.create(
+            form=sample_form,
+            data={},
+            logged_by=request.user if request else None,
+        )
+
+        # normal fields save
+        clean_data = {}
+        for field in sample_form.fields.all():
+            value = validated_data.get(field.field_name)
+            if field.field_property == "attachment" and value:
+                file_urls = []
+                for file_obj in value:
+                    attachment = models.DynamicFormAttachment.objects.create(
+                        entry=entry,
+                        field=field,
+                        file=file_obj
+                    )
+                    file_urls.append(attachment.file.url)
+                clean_data[field.field_name] = file_urls
+            else:
+                clean_data[field.field_name] = value
+
+        entry.data = clean_data
+        entry.save()
+
+        # ✅ analyses assign karo
+        if analyses_data:
+            entry.analyses.set(analyses_data)
+
+        return entry
+
+    def update(self, instance, validated_data):
+        analyses_data = validated_data.pop("analyses", None)
+
+        # ✅ agar analyses bheja gaya hai to update karo
+        if analyses_data is not None:
+            instance.analyses.set(analyses_data)
+
+        # ✅ baaki normal fields update karo
+        instance = super().update(instance, validated_data)
+        return instance
 
 
 import inflection
@@ -844,6 +895,13 @@ def build_dynamic_serializer(fields):
                 choices=choices,
                 required=bool(choices),
                 allow_null=not bool(choices),
+            )
+
+        elif field.field_property == "attachment":
+            field_dict[field.field_name] = serializers.ListField(
+                child=serializers.FileField(),
+                required=field.required,
+                allow_empty=not field.required
             )
 
         else:

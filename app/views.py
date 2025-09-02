@@ -34,6 +34,16 @@ from datetime import datetime
 from . import models
 from .serializers import build_dynamic_request_serializer, build_dynamic_serializer
 
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status
+from django.apps import apps
+from django.core.serializers import serialize
+import json
+from datetime import datetime, date
+import inflection
+
+
 class RegisterView(views.APIView):
     permission_classes = [AllowAny]
 
@@ -331,7 +341,7 @@ from django.shortcuts import get_object_or_404
 from datetime import datetime
 
 class SampleFormSchemaView(APIView):
-    permission_classes = [IsAuthenticated,HasModulePermission]
+    permission_classes = [IsAuthenticated, HasModulePermission]
 
     def get(self, request, form_id):
         sample_form = get_object_or_404(models.SampleForm, pk=form_id)
@@ -342,13 +352,22 @@ class SampleFormSchemaView(APIView):
 
         field_meta = []
         for sample_field in fields_qs:
-            # Get serializer field for type info
             field_obj = serializer_instance.get_fields().get(sample_field.field_name)
+
+            # 🔑 Map DB field_property → API type
+            mapping = {
+                "text": "CharField",
+                "numeric": "IntegerField",
+                "date_time": "DateTimeField",
+                "list": "ChoiceField",
+                "link_to_table": "ChoiceField",
+                "attachment": "AttachmentField",  # 👈 custom type
+            }
 
             meta = {
                 "name": sample_field.field_name,
-                "type": field_obj.__class__.__name__ if field_obj else None,
-                "required": sample_field.required,  # ✅ from DB
+                "type": mapping.get(sample_field.field_property, field_obj.__class__.__name__),
+                "required": sample_field.required,
             }
 
             if sample_field.list_ref:
@@ -363,7 +382,6 @@ class SampleFormSchemaView(APIView):
             "fields": field_meta
         })
 
-
 def convert_datetimes_to_strings(data):
     new_data = {}
     for k, v in data.items():
@@ -373,32 +391,77 @@ def convert_datetimes_to_strings(data):
             new_data[k] = v
     return new_data
 
+
+from datetime import datetime
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status
+from django.shortcuts import get_object_or_404
+
 class SampleFormSubmitView(APIView):
-    permission_classes = [IsAuthenticated,HasModulePermission]
+    permission_classes = [IsAuthenticated, HasModulePermission]
+
     def post(self, request, form_id):
         sample_form = get_object_or_404(models.SampleForm, pk=form_id)
         serializer_class = build_dynamic_serializer(sample_form.fields.all())
         serializer = serializer_class(data=request.data)
 
         if serializer.is_valid():
-            clean_data = convert_datetimes_to_strings(serializer.validated_data)
-
-            # ✅ Create entry
+            # ✅ Create entry first
             entry = models.DynamicFormEntry.objects.create(
                 form=sample_form,
-                data=clean_data,
+                data={},
                 logged_by=request.user
             )
 
-            # ✅ Handle analyses if provided
-            analyses = request.data.get("analyses", [])
-            if analyses:
-                entry.analyses.set(models.Analysis.objects.filter(id__in=analyses))
+            clean_data = {}
+            for field in sample_form.fields.all():
+                value = (
+                    request.FILES.getlist(field.field_name)
+                    if field.field_property == "attachment"
+                    else serializer.validated_data.get(field.field_name)
+                )
 
-            return Response({"message": "Form submitted successfully"}, status=status.HTTP_201_CREATED)
+                if field.field_property == "attachment" and value:
+                    file_urls = []
+                    for file_obj in value:
+                        attachment = models.DynamicFormAttachment.objects.create(
+                            entry=entry,
+                            field=field,
+                            file=file_obj
+                        )
+                        file_urls.append(attachment.file.url)
+                    clean_data[field.field_name] = file_urls
+
+                elif isinstance(value, datetime):
+                    clean_data[field.field_name] = value.isoformat()
+
+                else:
+                    clean_data[field.field_name] = value
+
+            # ✅ handle analyses separately
+            analyses = request.data.getlist("analyses")  # <-- multiple values supported
+            if analyses:
+                try:
+                    analysis_ids = [int(x) for x in analyses]
+                    entry.analyses.set(models.Analysis.objects.filter(id__in=analysis_ids))
+                    clean_data["analyses"] = analysis_ids  # also keep in JSON
+                except ValueError:
+                    return Response(
+                        {"error": "Analyses must be integers"},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+
+            entry.data = clean_data
+            entry.save()
+
+            return Response({
+                "message": "Form submitted successfully",
+                "entry_id": entry.id,
+                "data": entry.data
+            }, status=status.HTTP_201_CREATED)
 
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
 
 
 class DynamicSampleFormEntryViewSet(viewsets.ModelViewSet):
@@ -426,6 +489,8 @@ class DynamicSampleFormEntryViewSet(viewsets.ModelViewSet):
             "message": f"Status updated to '{new_status}' for {updated_count} entries",
             "updated_ids": ids
         })
+
+
 
 
 class RequestFormViewSet(viewsets.ModelViewSet):
@@ -613,3 +678,68 @@ class ModuleViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
                 "actions": ["create", "view", "update", "delete"]
             })
         return Response(modules)
+
+
+class CustomJSONEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, (datetime, date)):
+            return obj.isoformat()
+        return super().default(obj)
+
+
+class DynamicTableDataView(APIView):
+    """
+    POST request me 'table_name' bhejna hoga (example: 'app_unit')
+    Response: us table ki saari values with IDs
+    """
+    permission_classes = [IsAuthenticated,HasModulePermission]
+    def post(self, request, *args, **kwargs):
+        table_name = request.data.get("table_name")
+
+        if not table_name:
+            return Response(
+                {"error": "table_name is required"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            # ✅ Split app_label and model_name
+            if "_" in table_name:
+                app_label, model_snake = table_name.split("_", 1)
+                model_name = inflection.camelize(model_snake)  # unit -> Unit
+            else:
+                return Response(
+                    {"error": f"Invalid table_name format: {table_name}"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            # ✅ Model dynamically fetch karna
+            model = apps.get_model(app_label, model_name)
+            if not model:
+                return Response(
+                    {"error": f"Model '{model_name}' not found in app '{app_label}'"},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+
+        except LookupError:
+            return Response(
+                {"error": f"Model '{table_name}' not found"},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        # ✅ Query all objects
+        objects = model.objects.all()
+        data = json.loads(serialize("json", objects, cls=CustomJSONEncoder))
+
+        formatted_data = [
+            {
+                "id": obj["pk"],
+                **obj["fields"]
+            }
+            for obj in data
+        ]
+
+        return Response(
+            {"table": table_name, "count": len(formatted_data), "data": formatted_data},
+            status=status.HTTP_200_OK
+        )

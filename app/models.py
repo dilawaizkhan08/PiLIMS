@@ -260,6 +260,7 @@ class SampleField(BaseModel):
 
     list_ref = models.ForeignKey(List, on_delete=models.SET_NULL, null=True, blank=True)  # if 'list'
     link_to_table = models.CharField(max_length=255, blank=True, null=True)  # if 'link_to_table'
+    
     order = models.IntegerField(default=0)
     required = models.BooleanField(default=False) 
 
@@ -296,7 +297,23 @@ class DynamicFormEntry(BaseModel):
     def __str__(self):
         return f"Entry {self.id} - {self.form.sample_name} ({self.status})"
 
-    
+def attachment_upload_path(instance, filename):
+    return f"uploads/sample/{filename}"
+
+
+class DynamicFormAttachment(models.Model):
+    entry = models.ForeignKey(
+        "DynamicFormEntry",
+        on_delete=models.CASCADE,
+        related_name="attachments"
+    )
+    field = models.ForeignKey("SampleField", on_delete=models.CASCADE)
+    file = models.FileField(upload_to=attachment_upload_path)
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.field.field_name} - {self.file.name}"
+
 
 
 

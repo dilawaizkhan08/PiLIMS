@@ -35,3 +35,4 @@ class ListType(models.TextChoices):
     REQUESTFORMFIELD = 'request_form_field', 'Request Form Field',
     MAILLIST = 'mail_list', 'Mail List',
     
+
