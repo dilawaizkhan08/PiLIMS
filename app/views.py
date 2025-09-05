@@ -415,6 +415,10 @@ class SampleFormSubmitView(APIView):
             )
 
             clean_data = {}
+
+            # ✅ Save form_id also in data
+            clean_data["form_id"] = sample_form.id  
+
             for field in sample_form.fields.all():
                 value = (
                     request.FILES.getlist(field.field_name)
@@ -440,12 +444,12 @@ class SampleFormSubmitView(APIView):
                     clean_data[field.field_name] = value
 
             # ✅ handle analyses separately
-            analyses = request.data.getlist("analyses")  # <-- multiple values supported
+            analyses = request.data.getlist("analyses")
             if analyses:
                 try:
                     analysis_ids = [int(x) for x in analyses]
                     entry.analyses.set(models.Analysis.objects.filter(id__in=analysis_ids))
-                    clean_data["analyses"] = analysis_ids  # also keep in JSON
+                    clean_data["analyses"] = analysis_ids
                 except ValueError:
                     return Response(
                         {"error": "Analyses must be integers"},
@@ -457,6 +461,7 @@ class SampleFormSubmitView(APIView):
 
             return Response({
                 "message": "Form submitted successfully",
+                "form_id": sample_form.id,     # ✅ return in response
                 "entry_id": entry.id,
                 "data": entry.data
             }, status=status.HTTP_201_CREATED)
@@ -518,7 +523,8 @@ class RequestFormViewSet(viewsets.ModelViewSet):
 
 
 class RequestFormSchemaView(APIView):
-    permission_classes = [IsAuthenticated,HasModulePermission]
+    permission_classes = [IsAuthenticated, HasModulePermission]
+
     def get(self, request, form_id):
         # Get the request form
         request_form = get_object_or_404(models.RequestForm, pk=form_id)
@@ -531,16 +537,27 @@ class RequestFormSchemaView(APIView):
         req_field_meta = []
         for req_field in req_fields_qs:
             field_obj = req_serializer_instance.get_fields().get(req_field.field_name)
-            meta = {
-                "name": req_field.field_name,
-                "type": field_obj.__class__.__name__ if field_obj else None,
-                "required": req_field.required,
-            }
+
+            # 👇 Handle attachment type explicitly
+            if req_field.field_property == "attachment":
+                meta = {
+                    "name": req_field.field_name,
+                    "type": "Attachment",   # ✅ instead of ListField
+                    "required": req_field.required,
+                }
+            else:
+                meta = {
+                    "name": req_field.field_name,
+                    "type": field_obj.__class__.__name__ if field_obj else None,
+                    "required": req_field.required,
+                }
+
             if req_field.list_ref:
                 meta["list_ref"] = req_field.list_ref.id
                 meta["choices"] = list(
                     req_field.list_ref.values.values_list("value", flat=True)
                 )
+
             req_field_meta.append(meta)
 
         # ------------------ ATTACHED SAMPLE FORM ------------------
@@ -555,16 +572,26 @@ class RequestFormSchemaView(APIView):
             sample_field_meta = []
             for sample_field in sample_fields_qs:
                 field_obj = sample_serializer_instance.get_fields().get(sample_field.field_name)
-                s_meta = {
-                    "name": sample_field.field_name,
-                    "type": field_obj.__class__.__name__ if field_obj else None,
-                    "required": sample_field.required,
-                }
+
+                if sample_field.field_property == "attachment":
+                    s_meta = {
+                        "name": sample_field.field_name,
+                        "type": "Attachment",  # ✅ fix for sample form too
+                        "required": sample_field.required,
+                    }
+                else:
+                    s_meta = {
+                        "name": sample_field.field_name,
+                        "type": field_obj.__class__.__name__ if field_obj else None,
+                        "required": sample_field.required,
+                    }
+
                 if sample_field.list_ref:
                     s_meta["list_ref"] = sample_field.list_ref.id
                     s_meta["choices"] = list(
                         sample_field.list_ref.values.values_list("value", flat=True)
                     )
+
                 sample_field_meta.append(s_meta)
 
             sample_form_meta = {
@@ -592,54 +619,117 @@ def convert_datetimes_to_strings(data):
 
 from django.db import transaction
 
+import json
+from rest_framework.parsers import MultiPartParser, FormParser
+
+
 class RequestFormSubmitView(APIView):
-    permission_classes = [IsAuthenticated,HasModulePermission]
+    permission_classes = [IsAuthenticated, HasModulePermission]
+    parser_classes = (MultiPartParser, FormParser)
+
     def post(self, request, form_id):
         request_form = get_object_or_404(models.RequestForm, pk=form_id)
 
+        # ------------------ PARSE JSON FIELDS ------------------
+        request_form_raw = request.data.get("request_form")
+        sample_forms_raw = request.data.get("sample_forms")
+        analyses_raw = request.data.get("analyses")
+
+        try:
+            request_form_data = json.loads(request_form_raw) if request_form_raw else {}
+        except Exception:
+            return Response({"error": "Invalid request_form JSON"}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            sample_forms_data = json.loads(sample_forms_raw) if sample_forms_raw else []
+        except Exception:
+            return Response({"error": "Invalid sample_forms JSON"}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            analyses_data = json.loads(analyses_raw) if analyses_raw else []
+        except Exception:
+            analyses_data = []
+
         # ------------------ VALIDATE REQUEST FORM ------------------
         req_serializer_class = build_dynamic_request_serializer(request_form.fields.all())
-        req_serializer = req_serializer_class(data=request.data.get("request_form", {}))
+        req_serializer = req_serializer_class(data=request_form_data)
         req_serializer.is_valid(raise_exception=True)
-        req_clean_data = convert_datetimes_to_strings(req_serializer.validated_data)
 
-        # ------------------ VALIDATE MULTIPLE SAMPLE FORMS ------------------
-        sample_clean_list = []
-        if request_form.sample_form and "sample_forms" in request.data:
-            sample_form = request_form.sample_form
-            sample_serializer_class = build_dynamic_serializer(sample_form.fields.all())
+        req_clean_data = {}
 
-            for sample in request.data.get("sample_forms", []):
-                sample_serializer = sample_serializer_class(data=sample)
-                sample_serializer.is_valid(raise_exception=True)
-                sample_clean_list.append(
-                    convert_datetimes_to_strings(sample_serializer.validated_data)
-                )
-
-        # ------------------ SAVE ENTRY ------------------
+        # ------------------ SAVE ENTRY FIRST ------------------
         entry = models.DynamicRequestEntry.objects.create(
             request_form=request_form,
-            data={
-                "request_form": req_clean_data,
-                "sample_forms": sample_clean_list
-            },
+            data={},  # temporary, update later
             logged_by=request.user
         )
 
-        # Handle analyses if provided
-        analyses = request.data.get("analyses", [])
-        if analyses:
-            entry.analyses.set(models.Analysis.objects.filter(id__in=analyses))
+        # ------------------ HANDLE REQUEST FORM FIELDS ------------------
+        for field in request_form.fields.all():
+            value = (
+                request.FILES.getlist(field.field_name)
+                if field.field_property == "attachment"
+                else req_serializer.validated_data.get(field.field_name)
+            )
 
-        return Response(DynamicRequestEntrySerializer(entry).data, status=status.HTTP_201_CREATED)
+            if field.field_property == "attachment" and value:
+                file_list = []
+                for file_obj in value:
+                    attachment = models.DynamicRequestAttachment.objects.create(
+                        entry=entry,
+                        field=field,
+                        file=file_obj
+                    )
+                    file_list.append({
+                        "id": attachment.id,
+                        "url": attachment.file.url,
+                        "path": attachment.file.path
+                    })
+                req_clean_data[field.field_name] = file_list
+            elif isinstance(value, datetime):
+                req_clean_data[field.field_name] = value.isoformat()
+            else:
+                req_clean_data[field.field_name] = value
+
+        # ------------------ VALIDATE MULTIPLE SAMPLE FORMS ------------------
+        sample_clean_list = []
+        if request_form.sample_form and sample_forms_data:
+            sample_form = request_form.sample_form
+            sample_serializer_class = build_dynamic_serializer(sample_form.fields.all())
+
+            for sample in sample_forms_data:
+                sample_serializer = sample_serializer_class(data=sample)
+                sample_serializer.is_valid(raise_exception=True)
+
+                clean_sample = {}
+                for field in sample_form.fields.all():
+                    value = sample_serializer.validated_data.get(field.field_name)
+                    if isinstance(value, datetime):
+                        clean_sample[field.field_name] = value.isoformat()
+                    else:
+                        clean_sample[field.field_name] = value
+                sample_clean_list.append(clean_sample)
+
+        # ------------------ UPDATE ENTRY DATA ------------------
+        entry.data = {
+            "request_form": req_clean_data,
+            "sample_forms": sample_clean_list
+        }
+        entry.save()
+
+        # ------------------ HANDLE ANALYSES ------------------
+        if analyses_data:
+            entry.analyses.set(models.Analysis.objects.filter(id__in=analyses_data))
+
+        return Response(DynamicRequestEntrySerializer(entry, context={"request": request}).data,
+                        status=status.HTTP_201_CREATED)
 
 
 class DynamicRequestFormEntryViewSet(viewsets.ModelViewSet):
     queryset = models.DynamicRequestEntry.objects.all().order_by("-created_at")
     serializer_class = DynamicRequestEntrySerializer
-    permission_classes = [IsAuthenticated,HasModulePermission]
+    permission_classes = [IsAuthenticated, HasModulePermission]
 
-    # extra endpoint to update status (like your Action dropdown)
     @action(detail=True, methods=["post"])
     def update_status(self, request, pk=None):
         entry = self.get_object()
@@ -651,7 +741,6 @@ class DynamicRequestFormEntryViewSet(viewsets.ModelViewSet):
         entry.status = new_status
         entry.save()
         return Response({"message": f"Status updated to {new_status}"})
-
 
 
 class ProductViewSet(viewsets.ModelViewSet):

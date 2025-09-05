@@ -800,12 +800,15 @@ class DynamicFormEntrySerializer(serializers.ModelSerializer):
     analyses = serializers.PrimaryKeyRelatedField(
         many=True,
         queryset=models.Analysis.objects.all()
-    )  # 👈 ab writable ho gaya
+    ) 
+    form_id = serializers.PrimaryKeyRelatedField(
+        source="form", queryset=models.SampleForm.objects.all(), required=False
+    )
 
     class Meta:
         model = models.DynamicFormEntry
         fields = [
-            "id", "form_name", "data", "status", 
+            "id", "form_name", "form_id", "data", "status", 
             "analyst_name", "logged_by_name", "created_at",
             "analyses"
         ]
@@ -1023,10 +1026,10 @@ def build_dynamic_request_serializer(fields):
 
         elif field.field_property == "text":
             field_dict[field.field_name] = serializers.CharField(required=field.required)
-        
+
         elif field.field_property == "date_time":
             field_dict[field.field_name] = serializers.DateTimeField(required=field.required)
-        
+
         elif field.field_property == "list" and field.list_ref:
             list_obj = field.list_ref
             choices = [(str(v), str(v)) for v in list_obj.values.all()]
@@ -1034,6 +1037,13 @@ def build_dynamic_request_serializer(fields):
                 choices=choices,
                 required=field.required,
                 allow_null=not field.required
+            )
+
+        elif field.field_property == "attachment":
+            field_dict[field.field_name] = serializers.ListField(
+                child=serializers.FileField(),
+                required=field.required,
+                allow_empty=not field.required
             )
 
         else:
@@ -1044,6 +1054,26 @@ def build_dynamic_request_serializer(fields):
     return type('DynamicRequestSerializer', (serializers.Serializer,), field_dict)
 
 
+# ------------------ Serializers ------------------
+
+class DynamicRequestAttachmentSerializer(serializers.ModelSerializer):
+    file_url = serializers.SerializerMethodField()
+    file_path = serializers.SerializerMethodField()
+
+    class Meta:
+        model = models.DynamicRequestAttachment
+        fields = ["id", "field", "file", "file_url", "file_path"]
+
+    def get_file_url(self, obj):
+        request = self.context.get("request")
+        if request:
+            return request.build_absolute_uri(obj.file.url)
+        return obj.file.url
+
+    def get_file_path(self, obj):
+        return obj.file.path
+
+
 class DynamicRequestEntrySerializer(serializers.ModelSerializer):
     form_name = serializers.CharField(source="request_form.request_name", read_only=True)
     logged_by_name = serializers.CharField(source="logged_by.username", read_only=True)
@@ -1051,14 +1081,15 @@ class DynamicRequestEntrySerializer(serializers.ModelSerializer):
     analyses = serializers.PrimaryKeyRelatedField(
         queryset=models.Analysis.objects.all(), many=True, required=False
     )
+    attachments = DynamicRequestAttachmentSerializer(many=True, read_only=True)
 
     class Meta:
         model = models.DynamicRequestEntry
         fields = [
             "id", "form_name", "data", "analyst_name",
-            "logged_by_name", "created_at", "status","analyses"
+            "logged_by_name", "created_at", "status",
+            "analyses", "attachments"
         ]
-
 
 
 

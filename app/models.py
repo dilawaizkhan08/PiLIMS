@@ -401,7 +401,13 @@ class DynamicRequestEntry(BaseModel):
     analyses = models.ManyToManyField("Analysis", related_name="requests_entries", blank=True)
 
 
-    
+class DynamicRequestAttachment(models.Model):
+    entry = models.ForeignKey("DynamicRequestEntry", on_delete=models.CASCADE, related_name="attachments")
+    field = models.ForeignKey("RequestField", on_delete=models.CASCADE)
+    file = models.FileField(upload_to="uploads/request/")  # 👈 path set here
+
+    def __str__(self):
+        return f"{self.field.field_name} - {self.file.name}"
 
 
 
