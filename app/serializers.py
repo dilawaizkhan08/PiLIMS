@@ -1083,10 +1083,12 @@ class DynamicRequestEntrySerializer(serializers.ModelSerializer):
     )
     attachments = DynamicRequestAttachmentSerializer(many=True, read_only=True)
 
+    form_id = serializers.IntegerField(source="request_form.id", read_only=True)
+
     class Meta:
         model = models.DynamicRequestEntry
         fields = [
-            "id", "form_name", "data", "analyst_name",
+            "id", "form_name", "form_id","data", "analyst_name",
             "logged_by_name", "created_at", "status",
             "analyses", "attachments"
         ]
