@@ -462,4 +462,14 @@ class Permission(models.Model):
         return f"{self.role.name} - {self.module} - {self.action}"
     
 
+class ComponentResult(models.Model):
+    entry = models.ForeignKey(DynamicFormEntry, related_name="results", on_delete=models.CASCADE)
+    component = models.ForeignKey(Component, related_name="results", on_delete=models.CASCADE)
+    value = models.TextField(null=True, blank=True)
+    numeric_value = models.FloatField(null=True, blank=True)
+    remarks = models.TextField(null=True, blank=True)
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    
+
     

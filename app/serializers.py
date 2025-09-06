@@ -1244,3 +1244,19 @@ class RoleSerializer(serializers.ModelSerializer):
 
         return instance
     
+
+class AnalysisSchemaSerializer(serializers.ModelSerializer):
+    components = ComponentSerializer(many=True)
+
+    class Meta:
+        model = models.Analysis
+        fields = ["id", "name", "components"]
+
+class ComponentResultSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = models.ComponentResult
+        fields = ["id", "value", "numeric_value", "remarks"]
+
+
+
+

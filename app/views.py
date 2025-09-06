@@ -392,12 +392,6 @@ def convert_datetimes_to_strings(data):
     return new_data
 
 
-from datetime import datetime
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework import status
-from django.shortcuts import get_object_or_404
-
 class SampleFormSubmitView(APIView):
     permission_classes = [IsAuthenticated, HasModulePermission]
 
@@ -521,7 +515,6 @@ class RequestFormViewSet(viewsets.ModelViewSet):
         return Response({"type": field_property, "options": []})
 
 
-
 class RequestFormSchemaView(APIView):
     permission_classes = [IsAuthenticated, HasModulePermission]
 
@@ -615,12 +608,6 @@ def convert_datetimes_to_strings(data):
         else:
             new_data[k] = v
     return new_data
-
-
-from django.db import transaction
-
-import json
-from rest_framework.parsers import MultiPartParser, FormParser
 
 
 class RequestFormSubmitView(APIView):
@@ -832,3 +819,51 @@ class DynamicTableDataView(APIView):
             {"table": table_name, "count": len(formatted_data), "data": formatted_data},
             status=status.HTTP_200_OK
         )
+
+
+class AnalysisSchemaView(APIView):
+    def get(self, request, analysis_id):
+        analysis = get_object_or_404(models.Analysis, pk=analysis_id)
+        serializer = AnalysisSchemaSerializer(analysis)
+        return Response(serializer.data)
+
+
+class AnalysisResultSubmitView(APIView):
+    def post(self, request, entry_id, analysis_id):
+        entry = get_object_or_404(models.DynamicFormEntry, pk=entry_id)
+        analysis = get_object_or_404(models.Analysis, pk=analysis_id)
+
+        if not entry.analyses.filter(id=analysis.id).exists():
+            return Response(
+                {"error": "This analysis is not linked with the entry"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        results_data = request.data.get("results", [])
+        saved_results = []
+
+        for res in results_data:
+            comp_id = res.get("component_id")
+            comp = get_object_or_404(models.Component, pk=comp_id, analysis=analysis)
+
+            result, _ = models.ComponentResult.objects.update_or_create(
+                entry=entry,
+                component=comp,
+                defaults={
+                    "value": res.get("value"),
+                    "numeric_value": res.get("numeric_value"),
+                    "remarks": res.get("remarks"),
+                    "created_by": request.user
+                }
+            )
+            saved_results.append(result.id)
+
+        return Response({
+            "message": "Results saved successfully",
+            "entry_id": entry.id,
+            "analysis_id": analysis.id,
+            "saved_result_ids": saved_results
+        })
+    
+
+    
