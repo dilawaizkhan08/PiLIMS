@@ -793,97 +793,76 @@ class SampleFormSerializer(serializers.ModelSerializer):
         return instance
 
 
-class DynamicFormEntrySerializer(serializers.ModelSerializer):
-    form_name = serializers.CharField(source="form.sample_name", read_only=True)
-    logged_by_name = serializers.CharField(source="logged_by.username", read_only=True)
-    analyst_name = serializers.CharField(source="analyst.username", read_only=True)
-    analyses = serializers.PrimaryKeyRelatedField(
-        many=True,
-        queryset=models.Analysis.objects.all()
-    ) 
-    form_id = serializers.PrimaryKeyRelatedField(
-        source="form", queryset=models.SampleForm.objects.all(), required=False
+class EntryAnalysisSerializer(serializers.Serializer):
+    analysis_id = serializers.IntegerField()
+    component_ids = serializers.ListField(
+        child=serializers.IntegerField(), required=False
     )
+
+
+class DynamicFormEntrySerializer(serializers.ModelSerializer):
+    analyses_data = serializers.JSONField(write_only=True, required=False)
+
+    # 👇 Yeh dono extra fields hain, DB me nahi
+    form_name = serializers.SerializerMethodField()
+    form_id = serializers.SerializerMethodField()
 
     class Meta:
         model = models.DynamicFormEntry
         fields = [
-            "id", "form_name", "form_id", "data", "status", 
-            "analyst_name", "logged_by_name", "created_at",
-            "analyses"
+            "id", "form_name", "form_id", "data",
+            "status", "analyses_data", "created_at"
         ]
 
+    def get_form_name(self, obj):
+        return obj.form.sample_name if obj.form else None
+
+    def get_form_id(self, obj):
+        return obj.form.id if obj.form else None
+
     def create(self, validated_data):
-        analyses_data = validated_data.pop("analyses", [])
-        request = self.context.get("request")
-        sample_form = validated_data.get("form")
-
-        entry = models.DynamicFormEntry.objects.create(
-            form=sample_form,
-            data={},
-            logged_by=request.user if request else None,
-        )
-
-        # normal fields save
-        clean_data = {}
-        for field in sample_form.fields.all():
-            value = validated_data.get(field.field_name)
-            if field.field_property == "attachment" and value:
-                file_urls = []
-                for file_obj in value:
-                    attachment = models.DynamicFormAttachment.objects.create(
-                        entry=entry,
-                        field=field,
-                        file=file_obj
-                    )
-                    file_urls.append(attachment.file.url)
-                clean_data[field.field_name] = file_urls
-            else:
-                clean_data[field.field_name] = value
-
-        entry.data = clean_data
-        entry.save()
-
-        # ✅ analyses assign karo
-        if analyses_data:
-            entry.analyses.set(analyses_data)
-
+        analyses_data = validated_data.pop("analyses_data", [])
+        entry = super().create(validated_data)
+        self._save_entry_analyses(entry, analyses_data)
         return entry
 
     def update(self, instance, validated_data):
-        request = self.context.get("request")
+        analyses_data = validated_data.pop("analyses_data", None)
+        entry = super().update(instance, validated_data)
+        if analyses_data is not None:
+            models.DynamicFormEntryAnalysis.objects.filter(entry=instance).delete()
+            self._save_entry_analyses(instance, analyses_data)
+        return entry
 
-        # analyses update
-        analyses_data = request.data.getlist("analyses") if hasattr(request.data, "getlist") else request.data.get("analyses")
-        if analyses_data:
-            instance.analyses.set(analyses_data)
+    def _save_entry_analyses(self, entry, analyses_data):
+        for analysis_item in analyses_data:
+            analysis_id = analysis_item["analysis_id"]
+            component_ids = analysis_item.get("component_ids", [])
+            analysis = models.Analysis.objects.get(id=analysis_id)
 
-        # ✅ handle form-data fields (data[FieldName] style)
-        clean_data = instance.data or {}
-        for field in instance.form.fields.all():
-            key = f"data[{field.field_name}]"
+            ea = models.DynamicFormEntryAnalysis.objects.create(entry=entry, analysis=analysis)
 
-            if field.field_property == "attachment":
-                if key in request.FILES:
-                    files = request.FILES.getlist(key)
-                    file_urls = []
-                    for file_obj in files:
-                        attachment = models.DynamicFormAttachment.objects.create(
-                            entry=instance, field=field, file=file_obj
-                        )
-                        file_urls.append(attachment.file.url)
-                    clean_data[field.field_name] = file_urls
+            if component_ids:
+                components = models.Component.objects.filter(
+                    id__in=component_ids, analysis=analysis
+                )
             else:
-                if key in request.data:
-                    clean_data[field.field_name] = request.data.get(key)
+                components = analysis.components.all()
+            ea.components.set(components)
 
-        # ✅ update status if given
-        if "status" in request.data:
-            instance.status = request.data["status"]
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        entry_analyses = models.DynamicFormEntryAnalysis.objects.filter(entry=instance)
+        data["analyses_data"] = [
+            {
+                "analysis_id": ea.analysis.id,
+                "component_ids": list(ea.components.values_list("id", flat=True)),
+            }
+            for ea in entry_analyses
+        ]
+        return data
 
-        instance.data = clean_data
-        instance.save()
-        return instance
+
 
 
 import inflection
@@ -1218,6 +1197,8 @@ class ProductSerializer(serializers.ModelSerializer):
             for pa in product_analyses
         ]
         return data
+
+
 
 class PermissionSerializer(serializers.ModelSerializer):
     class Meta:

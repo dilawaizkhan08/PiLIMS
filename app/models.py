@@ -269,6 +269,14 @@ class SampleField(BaseModel):
 
 
 
+class DynamicFormEntryAnalysis(BaseModel):
+    entry = models.ForeignKey("DynamicFormEntry", on_delete=models.CASCADE)
+    analysis = models.ForeignKey("Analysis", on_delete=models.CASCADE)
+    components = models.ManyToManyField("Component", blank=True)
+
+    def __str__(self):
+        return f"{self.entry.id} - {self.analysis.name}"
+
 class DynamicFormEntry(BaseModel):
     STATUS_CHOICES = [
         ("initiated", "Initiated"),
@@ -292,7 +300,7 @@ class DynamicFormEntry(BaseModel):
         User, null=True, blank=True, on_delete=models.SET_NULL, related_name="logged_samples"
     )
     created_at = models.DateTimeField(auto_now_add=True)
-    analyses = models.ManyToManyField("Analysis", related_name="entries", blank=True)
+    analyses = models.ManyToManyField("Analysis", through="DynamicFormEntryAnalysis", related_name="entries", blank=True)
 
     def __str__(self):
         return f"Entry {self.id} - {self.form.sample_name} ({self.status})"
