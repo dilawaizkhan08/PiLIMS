@@ -800,6 +800,9 @@ class EntryAnalysisSerializer(serializers.Serializer):
     )
 
 
+from django.core.files.storage import default_storage
+from django.core.files.base import ContentFile
+
 class DynamicFormEntrySerializer(serializers.ModelSerializer):
     analyses_data = serializers.JSONField(write_only=True, required=False)
 
@@ -825,14 +828,54 @@ class DynamicFormEntrySerializer(serializers.ModelSerializer):
         entry = super().create(validated_data)
         self._save_entry_analyses(entry, analyses_data)
         return entry
+    
 
     def update(self, instance, validated_data):
-        analyses_data = validated_data.pop("analyses_data", None)
-        entry = super().update(instance, validated_data)
-        if analyses_data is not None:
+        request_data = self.context.get("request").data
+
+        # ✅ extract dynamic "data" fields
+        if hasattr(request_data, "lists"):
+            data_dict = {}
+            for key, value in request_data.lists():
+                if key.startswith("data[") and key.endswith("]"):
+                    clean_key = key[5:-1]
+                    data_dict[clean_key] = value if len(value) > 1 else value[0]
+        else:
+            data_dict = validated_data.get("data", {})
+
+        new_data = instance.data.copy()
+
+        for key, value in data_dict.items():
+            if hasattr(value, "read"):  # file upload
+                file_name = default_storage.save(
+                    f"uploads/sample/{value.name}",
+                    ContentFile(value.read())
+                )
+                file_path = default_storage.url(file_name)
+                new_data[key] = [file_path]
+            else:
+                new_data[key] = value
+
+        instance.data = new_data
+        instance.status = validated_data.get("status", instance.status)
+        instance.save()
+
+        # ✅ handle analyses_data update
+        analyses_data = request_data.get("analyses_data") or validated_data.get("analyses_data", [])
+        if analyses_data:
+            import json
+            if isinstance(analyses_data, str):
+                try:
+                    analyses_data = json.loads(analyses_data)
+                except Exception:
+                    analyses_data = []
+
+            # clear old analyses first
             models.DynamicFormEntryAnalysis.objects.filter(entry=instance).delete()
             self._save_entry_analyses(instance, analyses_data)
-        return entry
+
+        return instance
+
 
     def _save_entry_analyses(self, entry, analyses_data):
         for analysis_item in analyses_data:
@@ -852,6 +895,23 @@ class DynamicFormEntrySerializer(serializers.ModelSerializer):
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
+
+        # ✅ ensure file path/URL is shown properly in response
+        formatted_data = {}
+        for key, value in instance.data.items():
+            if isinstance(value, str) and value.startswith("uploads/sample/"):
+                # convert relative path to absolute URL if needed
+                request = self.context.get("request")
+                if request:
+                    formatted_data[key] = request.build_absolute_uri(value)
+                else:
+                    formatted_data[key] = value
+            else:
+                formatted_data[key] = value
+
+        data["data"] = formatted_data
+
+        # analyses_data same as before
         entry_analyses = models.DynamicFormEntryAnalysis.objects.filter(entry=instance)
         data["analyses_data"] = [
             {
@@ -861,6 +921,7 @@ class DynamicFormEntrySerializer(serializers.ModelSerializer):
             for ea in entry_analyses
         ]
         return data
+
 
 
 
