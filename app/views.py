@@ -467,6 +467,7 @@ class DynamicSampleFormEntryViewSet(viewsets.ModelViewSet):
     queryset = models.DynamicFormEntry.objects.all().order_by("-created_at")
     serializer_class = DynamicFormEntrySerializer
     permission_classes = [IsAuthenticated,HasModulePermission]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     # extra endpoint to update status (like your Action dropdown)
      
@@ -821,11 +822,48 @@ class DynamicTableDataView(APIView):
         )
 
 
-class AnalysisSchemaView(APIView):
-    def get(self, request, analysis_id):
-        analysis = get_object_or_404(models.Analysis, pk=analysis_id)
-        serializer = AnalysisSchemaSerializer(analysis)
-        return Response(serializer.data)
+
+
+class EntryAnalysesSchemaView(APIView):
+    def get(self, request, entry_id):
+        entry = get_object_or_404(models.DynamicFormEntry, pk=entry_id)
+
+        analyses_data = []
+        for analysis in entry.analyses.all():
+            comps = []
+            for comp in analysis.components.all():
+                if comp.listname:
+                    try:
+                        lst = models.List.objects.get(name=comp.listname)
+                        choices = list(lst.values.values_list("value", flat=True))
+                    except models.List.DoesNotExist:
+                        choices = []
+                else:
+                    choices = None
+
+                comps.append({
+                    "id": comp.id,
+                    "name": comp.name,
+                    "type": comp.type,
+                    "unit": comp.unit,
+                    "minimum": comp.minimum,
+                    "maximum": comp.maximum,
+                    "decimal_places": comp.decimal_places,
+                    "required": not comp.optional,
+                    "choices": choices,
+                })
+
+            analyses_data.append({
+                "analysis_id": analysis.id,
+                "analysis_name": analysis.name,
+                "components": comps
+            })
+
+        return Response({
+            "entry_id": entry.id,
+            "analyses": analyses_data
+        })
+
 
 
 class AnalysisResultSubmitView(APIView):
@@ -856,14 +894,16 @@ class AnalysisResultSubmitView(APIView):
                     "created_by": request.user
                 }
             )
-            saved_results.append(result.id)
+            saved_results.append(result)
+
+        # ✅ Serialize full objects
+        serializer = ComponentResultSerializer(saved_results, many=True)
 
         return Response({
             "message": "Results saved successfully",
             "entry_id": entry.id,
             "analysis_id": analysis.id,
-            "saved_result_ids": saved_results
+            "results": serializer.data
         })
-    
 
     

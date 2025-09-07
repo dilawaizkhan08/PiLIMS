@@ -53,8 +53,7 @@ urlpatterns = [
 
     path("table-data/", views.DynamicTableDataView.as_view(), name="table-data"),
 
-    path("analysis/<int:analysis_id>/schema/", views.AnalysisSchemaView.as_view(), name="analysis-schema"),
+    path("entries/<int:entry_id>/analyses/", views.EntryAnalysesSchemaView.as_view(), name="entry-analyses-schema"),
     path("entries/<int:entry_id>/analysis/<int:analysis_id>/submit/", views.AnalysisResultSubmitView.as_view(), name="analysis-submit"),
-
-    
+     
 ]

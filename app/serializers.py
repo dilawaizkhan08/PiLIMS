@@ -851,14 +851,38 @@ class DynamicFormEntrySerializer(serializers.ModelSerializer):
         return entry
 
     def update(self, instance, validated_data):
-        analyses_data = validated_data.pop("analyses", None)
+        request = self.context.get("request")
 
-        # ✅ agar analyses bheja gaya hai to update karo
-        if analyses_data is not None:
+        # analyses update
+        analyses_data = request.data.getlist("analyses") if hasattr(request.data, "getlist") else request.data.get("analyses")
+        if analyses_data:
             instance.analyses.set(analyses_data)
 
-        # ✅ baaki normal fields update karo
-        instance = super().update(instance, validated_data)
+        # ✅ handle form-data fields (data[FieldName] style)
+        clean_data = instance.data or {}
+        for field in instance.form.fields.all():
+            key = f"data[{field.field_name}]"
+
+            if field.field_property == "attachment":
+                if key in request.FILES:
+                    files = request.FILES.getlist(key)
+                    file_urls = []
+                    for file_obj in files:
+                        attachment = models.DynamicFormAttachment.objects.create(
+                            entry=instance, field=field, file=file_obj
+                        )
+                        file_urls.append(attachment.file.url)
+                    clean_data[field.field_name] = file_urls
+            else:
+                if key in request.data:
+                    clean_data[field.field_name] = request.data.get(key)
+
+        # ✅ update status if given
+        if "status" in request.data:
+            instance.status = request.data["status"]
+
+        instance.data = clean_data
+        instance.save()
         return instance
 
 
@@ -1252,10 +1276,23 @@ class AnalysisSchemaSerializer(serializers.ModelSerializer):
         model = models.Analysis
         fields = ["id", "name", "components"]
 
+
 class ComponentResultSerializer(serializers.ModelSerializer):
+    component_name = serializers.CharField(source="component.name", read_only=True)
+    component_type = serializers.CharField(source="component.type", read_only=True)
+
     class Meta:
         model = models.ComponentResult
-        fields = ["id", "value", "numeric_value", "remarks"]
+        fields = [
+            "id",
+            "component_id",
+            "component_name",
+            "component_type",
+            "value",
+            "numeric_value",
+            "remarks",
+            "created_by",
+        ]
 
 
 
