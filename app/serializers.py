@@ -239,37 +239,124 @@ class TestMethodSerializer(serializers.ModelSerializer):
 
 
 
+class ParameterMappingSerializer(serializers.Serializer):
+    parameter = serializers.CharField()
+    component = serializers.IntegerField()
+
 class ComponentSerializer(serializers.ModelSerializer):
     analysis_id = serializers.IntegerField(write_only=True)
 
-    # for writing (dropdown)
+    # ✅ for writing (dropdown selection)
+    unit_id = serializers.PrimaryKeyRelatedField(
+        queryset=models.Unit.objects.all(),
+        source="unit",
+        required=False
+    )
+
+    # ✅ for reading (nested details)
+    unit = serializers.StringRelatedField(read_only=True)
+
+    list_id = serializers.PrimaryKeyRelatedField(
+        queryset=models.List.objects.all(),
+        source="listname",
+        write_only=True,
+        required=False
+    )
+    listname = serializers.StringRelatedField(read_only=True)
+
     function_id = serializers.PrimaryKeyRelatedField(
         queryset=models.CustomFunction.objects.all(),
         source="custom_function",
         write_only=True,
         required=False
     )
-
-    # for reading (full function details)
     function = CustomFunctionSerializer(source="custom_function", read_only=True)
+    spec_limits = serializers.ListField(
+        child=serializers.CharField(),
+        required=False
+    )
+    rounding_display = serializers.CharField(source='get_rounding_display', read_only=True)
+    parameters = ParameterMappingSerializer(many=True, required=False)
 
     class Meta:
         model = models.Component
         fields = [
-            'id', 'analysis_id', 'name', 'type', 'unit', 'spec_limits', 'description',
+            'id', 'analysis_id', 'name', 'type',
+            'unit_id', 'unit',
+            'spec_limits', 'description',
             'optional', 'calculated',
-            'function_id', 'function',   # ✅ consistent now
-            'minimum', 'maximum', 'rounding', 'decimal_places', 'listname'
+            'function_id', 'function',
+            'minimum', 'maximum', 'rounding', 'rounding_display','decimal_places', 'list_id', 'listname', 'parameters'
         ]
 
     def create(self, validated_data):
         analysis_id = validated_data.pop("analysis_id")
+        parameters_data = validated_data.pop("parameters", [])
+
         try:
             analysis = models.Analysis.objects.get(id=analysis_id)
         except models.Analysis.DoesNotExist:
             raise serializers.ValidationError("Analysis with given ID does not exist.")
-        
-        return models.Component.objects.create(analysis=analysis, **validated_data)
+
+        component = models.Component.objects.create(analysis=analysis, **validated_data)
+
+        # ✅ agar calculated hai aur function assigned hai
+        if component.calculated and component.custom_function:
+            expected_vars = set(component.custom_function.variables)
+            provided_vars = {p["parameter"] for p in parameters_data}
+
+            # check missing variables
+            missing = expected_vars - provided_vars
+            if missing:
+                raise serializers.ValidationError(
+                    {"parameters": f"Missing mappings for variables: {', '.join(missing)}"}
+                )
+
+            # check extra variables
+            extra = provided_vars - expected_vars
+            if extra:
+                raise serializers.ValidationError(
+                    {"parameters": f"Unexpected variables: {', '.join(extra)}"}
+                )
+
+            # save mappings
+            for param in parameters_data:
+                var_name = param["parameter"]
+                comp_id = param["component"]
+
+                try:
+                    mapped_component = models.Component.objects.get(
+                        id=comp_id, analysis=analysis
+                    )
+                except models.Component.DoesNotExist:
+                    raise serializers.ValidationError(
+                        {"parameters": f"Component {comp_id} not found in this analysis"}
+                    )
+
+                models.ComponentFunctionParameter.objects.create(
+                    component=component,
+                    parameter=var_name,
+                    mapped_component=mapped_component
+                )
+
+        return component
+
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if instance.calculated and instance.custom_function:
+            data["parameters"] = [
+                {
+                    "parameter": p.parameter,
+                    "component": {
+                        "id": p.mapped_component.id,
+                        "name": p.mapped_component.name,
+                    }
+                }
+                for p in instance.function_parameters.all()
+            ]
+        return data
+
 
 
 

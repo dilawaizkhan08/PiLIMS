@@ -76,11 +76,26 @@ class TestMethod(BaseModel):
         return self.name
 
 
+class Unit(BaseModel):
+    name = models.CharField(max_length=255)  # Required
+    symbol = models.CharField(max_length=50)  # Required
+    user_groups = models.ManyToManyField(UserGroup,blank=True, related_name="units")
+    description = models.TextField(blank=True, null=True)  # Optional
+
+    def __str__(self):
+        return self.name
+
+class List(BaseModel):
+    name = models.CharField(max_length=255)
+    type =  models.CharField(max_length=20,choices=choices.ListType.choices,)
+    user_groups = models.ManyToManyField(UserGroup, blank=True)
+    description = models.TextField(blank=True, null=True)
+
+    def __str__(self):
+        return self.name
 
 
 # ===================== Analyses ====================
-
-
 
 class Analysis(BaseModel):
     name = models.CharField(max_length=255)
@@ -109,22 +124,43 @@ class Component(BaseModel):
     analysis = models.ForeignKey(Analysis, related_name='components', on_delete=models.CASCADE)
     name = models.CharField(max_length=255)
     type = models.CharField(max_length=50,choices=choices.ComponentTypes.choices)
-    unit = models.CharField(max_length=50, null=True, blank=True)
-    spec_limits = models.CharField(max_length=255, null=True, blank=True)
+    unit = models.ForeignKey(Unit, on_delete=models.SET_NULL, null=True, blank=True, related_name="components")
+    spec_limits = models.JSONField(default=list, blank=True, null=True)
     description = models.TextField(null=True, blank=True)
     optional = models.BooleanField(default=False)
     calculated = models.BooleanField(default=False)
 
     minimum = models.FloatField(null=True, blank=True)
     maximum = models.FloatField(null=True, blank=True)
-    rounding = models.IntegerField(null=True, blank=True)
+    rounding = models.IntegerField(
+        choices=choices.RoundingChoices.choices,
+        null=True,
+        blank=True
+    )
     decimal_places = models.IntegerField(null=True, blank=True)
-    listname = models.CharField(max_length=50,choices=choices.ListNameChoices.choices,null=True,blank=True)
+    listname = models.ForeignKey(List, on_delete=models.SET_NULL, null=True, blank=True, related_name="components")
 
     custom_function = models.ForeignKey('CustomFunction',on_delete=models.SET_NULL,null=True,blank=True,related_name='components')
 
     def __str__(self):
         return f"{self.name} ({self.analysis.name})"
+
+
+class ComponentFunctionParameter(BaseModel):
+    component = models.ForeignKey(
+        "Component",
+        on_delete=models.CASCADE,
+        related_name="function_parameters"
+    )
+    parameter = models.CharField(max_length=255)   # e.g. "a"
+    mapped_component = models.ForeignKey(
+        "Component",
+        on_delete=models.CASCADE,
+        related_name="used_in_functions"
+    )
+
+    class Meta:
+        unique_together = ("component", "parameter")
 
 # ============================================
 
@@ -134,6 +170,18 @@ class CustomFunction(BaseModel):
     name = models.CharField(max_length=255, unique=True)
     variables = models.JSONField()
     script = models.TextField()
+
+    def evaluate(self, **kwargs):
+        # Prepare safe environment
+        local_env = {**kwargs, "result": None}
+        try:
+            exec(self.script, {}, local_env)
+        except Exception as e:
+            raise ValueError(f"Error executing function: {e}")
+
+        if "result" not in local_env:
+            raise ValueError("Script must define a 'result' variable")
+        return local_env["result"]
 
     def __str__(self):
         return self.name
@@ -172,14 +220,6 @@ class InstrumentHistory(BaseModel):
 # ================================== 
 
 
-class Unit(BaseModel):
-    name = models.CharField(max_length=255)  # Required
-    symbol = models.CharField(max_length=50)  # Required
-    user_groups = models.ManyToManyField(UserGroup,blank=True, related_name="units")
-    description = models.TextField(blank=True, null=True)  # Optional
-
-    def __str__(self):
-        return self.name
 
 
 class Inventory(BaseModel):
@@ -213,15 +253,6 @@ class Stock(BaseModel):
         self.inventory.save()
 
 
-
-class List(BaseModel):
-    name = models.CharField(max_length=255)
-    type =  models.CharField(max_length=20,choices=choices.ListType.choices,)
-    user_groups = models.ManyToManyField(UserGroup, blank=True)
-    description = models.TextField(blank=True, null=True)
-
-    def __str__(self):
-        return self.name
 
 
 class Value(BaseModel):

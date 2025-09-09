@@ -845,7 +845,10 @@ class EntryAnalysesSchemaView(APIView):
                     "id": comp.id,
                     "name": comp.name,
                     "type": comp.type,
-                    "unit": comp.unit,
+                    "unit": {
+                        "id": comp.unit.id,
+                        "name": comp.unit.name
+                    } if comp.unit else None,
                     "minimum": comp.minimum,
                     "maximum": comp.maximum,
                     "decimal_places": comp.decimal_places,
@@ -880,9 +883,13 @@ class AnalysisResultSubmitView(APIView):
         results_data = request.data.get("results", [])
         saved_results = []
 
+        # 1️⃣ Save user-entered values for non-calculated components
         for res in results_data:
             comp_id = res.get("component_id")
             comp = get_object_or_404(models.Component, pk=comp_id, analysis=analysis)
+
+            if comp.calculated:
+                continue  # skip user input for calculated fields
 
             result, _ = models.ComponentResult.objects.update_or_create(
                 entry=entry,
@@ -896,9 +903,53 @@ class AnalysisResultSubmitView(APIView):
             )
             saved_results.append(result)
 
-        # ✅ Serialize full objects
-        serializer = ComponentResultSerializer(saved_results, many=True)
+        # 2️⃣ Automatically compute calculated components
+        calculated_components = analysis.components.filter(calculated=True, custom_function__isnull=False)
 
+        for comp in calculated_components:
+            param_values = {}
+
+            # collect variable → mapped_component.value
+            for param in comp.function_parameters.all():
+                mapped_result = models.ComponentResult.objects.filter(
+                    entry=entry, component=param.mapped_component
+                ).first()
+
+                if not mapped_result or mapped_result.numeric_value is None:
+                    param_values[param.parameter] = 0  # default agar user ne value na di ho
+                else:
+                    param_values[param.parameter] = mapped_result.numeric_value
+
+            # sanity check: missing variables
+            missing_vars = [v for v in comp.custom_function.variables if v not in param_values]
+            if missing_vars:
+                return Response(
+                    {"error": f"Missing input for variables: {', '.join(missing_vars)}"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            try:
+                numeric_value = comp.custom_function.evaluate(**param_values)
+            except Exception as e:
+                return Response(
+                    {"error": f"Failed to calculate value for {comp.name}: {str(e)}"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            # Save/update result
+            result, _ = models.ComponentResult.objects.update_or_create(
+                entry=entry,
+                component=comp,
+                defaults={
+                    "value": str(numeric_value),
+                    "numeric_value": numeric_value,
+                    "remarks": "Auto-calculated",
+                    "created_by": request.user
+                }
+            )
+            saved_results.append(result)
+
+        serializer = ComponentResultSerializer(saved_results, many=True)
         return Response({
             "message": "Results saved successfully",
             "entry_id": entry.id,
