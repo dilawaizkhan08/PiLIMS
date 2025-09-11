@@ -308,6 +308,7 @@ class DynamicFormEntryAnalysis(BaseModel):
     def __str__(self):
         return f"{self.entry.id} - {self.analysis.name}"
 
+
 class DynamicFormEntry(BaseModel):
     STATUS_CHOICES = [
         ("initiated", "Initiated"),
@@ -447,8 +448,6 @@ class DynamicRequestAttachment(models.Model):
 
     def __str__(self):
         return f"{self.field.field_name} - {self.file.name}"
-
-
 
 
 

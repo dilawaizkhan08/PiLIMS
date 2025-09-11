@@ -980,6 +980,9 @@ class DynamicFormEntrySerializer(serializers.ModelSerializer):
                 components = analysis.components.all()
             ea.components.set(components)
 
+            
+
+
     def to_representation(self, instance):
         data = super().to_representation(instance)
 
@@ -987,7 +990,6 @@ class DynamicFormEntrySerializer(serializers.ModelSerializer):
         formatted_data = {}
         for key, value in instance.data.items():
             if isinstance(value, str) and value.startswith("uploads/sample/"):
-                # convert relative path to absolute URL if needed
                 request = self.context.get("request")
                 if request:
                     formatted_data[key] = request.build_absolute_uri(value)
@@ -998,17 +1000,18 @@ class DynamicFormEntrySerializer(serializers.ModelSerializer):
 
         data["data"] = formatted_data
 
-        # analyses_data same as before
-        entry_analyses = models.DynamicFormEntryAnalysis.objects.filter(entry=instance)
+        # ✅ fetch analyses + components correctly
+        entry_analyses = models.DynamicFormEntryAnalysis.objects.filter(entry=instance).prefetch_related("components")
         data["analyses_data"] = [
             {
                 "analysis_id": ea.analysis.id,
-                "component_ids": list(ea.components.values_list("id", flat=True)),
+                "component_ids": list(ea.components.values_list("id", flat=True))  # ✅ will now return actual IDs
             }
             for ea in entry_analyses
         ]
-        return data
 
+        return data
+    
 
 
 
@@ -1225,25 +1228,40 @@ class DynamicRequestAttachmentSerializer(serializers.ModelSerializer):
         return obj.file.path
 
 
+
 class DynamicRequestEntrySerializer(serializers.ModelSerializer):
     form_name = serializers.CharField(source="request_form.request_name", read_only=True)
     logged_by_name = serializers.CharField(source="logged_by.username", read_only=True)
     analyst_name = serializers.CharField(source="analyst.username", read_only=True)
-    analyses = serializers.PrimaryKeyRelatedField(
-        queryset=models.Analysis.objects.all(), many=True, required=False
-    )
-    attachments = DynamicRequestAttachmentSerializer(many=True, read_only=True)
 
+    request_form_attachments = serializers.SerializerMethodField()
+    sample_forms = serializers.SerializerMethodField()
     form_id = serializers.IntegerField(source="request_form.id", read_only=True)
 
     class Meta:
         model = models.DynamicRequestEntry
         fields = [
-            "id", "form_name", "form_id","data", "analyst_name",
+            "id", "form_name", "form_id", "data", "analyst_name",
             "logged_by_name", "created_at", "status",
-            "analyses", "attachments"
+            "request_form_attachments", "sample_forms"
         ]
 
+    def get_request_form_attachments(self, obj):
+        attachments = obj.attachments.filter(
+            entry=obj, field__field_property="attachment"
+        )
+        return DynamicRequestAttachmentSerializer(
+            attachments, many=True, context=self.context
+        ).data
+
+    def get_sample_forms(self, obj):
+        sample_list = obj.data.get("sample_forms", [])
+        sample_ids = [entry.get("id") for entry in sample_list if "id" in entry]
+
+        entries = models.DynamicFormEntry.objects.filter(id__in=sample_ids)
+        return DynamicFormEntrySerializer(
+            entries, many=True, context=self.context
+        ).data
 
 
 class CustomerSerializer(serializers.ModelSerializer):
