@@ -9,6 +9,12 @@ from app import choices
 from django.contrib.auth import password_validation
 from rest_framework.exceptions import ValidationError
 import ast
+import inflection
+
+def get_config(key, default=None):
+    from .models import SystemConfiguration
+    config = SystemConfiguration.objects.filter(key=key).first()
+    return config.value if config else default
 
 
 ALLOWED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/gif']  # Allowed MIME types
@@ -42,7 +48,7 @@ class LoginSerializer(serializers.Serializer):
             raise serializers.ValidationError("Email and password are required.")
         return data
 
-
+from django.contrib.auth.password_validation import validate_password as dj_validate_password
 class UserSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, required=True, validators=[validate_password])
     last_login = serializers.DateTimeField(read_only=True)
@@ -74,10 +80,33 @@ class UserSerializer(serializers.ModelSerializer):
         instance.save()
         return instance
     
+    
     def validate_username(self, value):
         if models.User.objects.filter(username=value).exists():
             raise serializers.ValidationError("This username is already taken.")
         return value
+
+    
+    def validate_name(self, value):
+        max_length = int(get_config("max_name_length", 70)) 
+        if len(value) > max_length:
+            raise serializers.ValidationError(
+                f"Name cannot exceed {max_length} characters (limit: {max_length})."
+            )
+        return value
+
+    def validate_password(self, value):
+        min_length = int(get_config("max_name_length", 70))
+        if len(value) < min_length:
+            raise serializers.ValidationError(f"Password must be at least {min_length} characters long.")
+        try:
+            dj_validate_password(value)
+        except ValidationError as e:
+            raise serializers.ValidationError(e.messages)
+        return value
+
+
+
 
 class UserProfileSerializer(serializers.ModelSerializer):
     old_password = serializers.CharField(write_only=True, required=False)
@@ -86,10 +115,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = get_user_model()
-        fields = [
-            "email", "name", "profile_picture", 'phone_number',
-            "old_password", "new_password", "confirm_password"
-        ]
+        exclude = ["password"]
         read_only_fields = ["email"]
 
     def validate(self, data):
@@ -109,6 +135,12 @@ class UserProfileSerializer(serializers.ModelSerializer):
             if not user.check_password(old_password):
                 raise ValidationError({"old_password": "Old password is incorrect."})
 
+            # ✅ Dynamic password length check
+            min_length = int(get_config("min_password_length", 8))
+            if len(new_password) < min_length:
+                raise ValidationError({"new_password": f"Password must be at least {min_length} characters long."})
+
+            # ✅ Django’s default password validators
             password_validation.validate_password(new_password, user=user)
 
         return data
@@ -127,6 +159,12 @@ class UserProfileSerializer(serializers.ModelSerializer):
         instance.save()
         return instance
 
+    def validate_name(self, value):
+        max_length = int(get_config("max_name_length", 70))
+        if len(value) > max_length:
+            raise serializers.ValidationError(f"Name cannot exceed {max_length} characters (limit: {max_length}).")
+        return value
+
     def validate_profile_picture(self, value):
         if value:
             if value.content_type not in ALLOWED_IMAGE_TYPES:
@@ -135,21 +173,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
                 raise ValidationError("The file size is too large. Maximum allowed size is 5 MB.")
         return value
 
-    def to_representation(self, instance):
-        request = self.context.get("request")
-        return {
-            "id": instance.id,
-            "email": instance.email,
-            "name": instance.name,
-            "role": instance.role,
-            "phone_number": instance.phone_number, 
-            "is_active": instance.is_active,
-            "created_at": instance.created_at.strftime("%Y-%m-%d %H:%M:%S"),
-            "updated_at": instance.updated_at.strftime("%Y-%m-%d %H:%M:%S"),
-            "is_deleted": instance.is_deleted,
-            "last_login": instance.last_login.strftime("%Y-%m-%d %H:%M:%S") if instance.last_login else None,
-            "profile_picture": request.build_absolute_uri(instance.profile_picture.url) if instance.profile_picture and request else None
-        }
+
 
 
 class ForgotPasswordSerializer(serializers.Serializer):
@@ -242,6 +266,8 @@ class TestMethodSerializer(serializers.ModelSerializer):
 class ParameterMappingSerializer(serializers.Serializer):
     parameter = serializers.CharField()
     component = serializers.IntegerField()
+
+
 
 class ComponentSerializer(serializers.ModelSerializer):
     analysis_id = serializers.IntegerField(write_only=True)
@@ -359,32 +385,42 @@ class ComponentSerializer(serializers.ModelSerializer):
 
 
 
-
 class AnalysisAttachmentSerializer(serializers.ModelSerializer):
+    url = serializers.SerializerMethodField()
+
     class Meta:
         model = models.AnalysisAttachment
-        fields = ['id', 'file']
+        fields = ['id', 'file', 'url']
+
+    def get_url(self, obj):
+        request = self.context.get("request")
+        if obj.file and request:
+            return request.build_absolute_uri(obj.file.url)
+        return None
 
 
 
 class AnalysisSerializer(serializers.ModelSerializer):
     attachments = AnalysisAttachmentSerializer(many=True, read_only=True)
+    attachment_urls = serializers.ListField(
+        child=serializers.URLField(),
+        write_only=True,
+        required=False
+    )
+
     components = ComponentSerializer(many=True, read_only=True)
 
-    # ✅ Nested (read-only) for GET
-    user_groups = UserGroupSerializer(many=True, read_only=True)
-    test_method = TestMethodSerializer(read_only=True)
-
-    # ✅ IDs for POST/PATCH
+    # ✅ Correct way to handle M2M write-only field
     user_groups_ids = serializers.PrimaryKeyRelatedField(
-        many=True, queryset=models.UserGroup.objects.all(), required=False
-    )
-    test_method_id = serializers.PrimaryKeyRelatedField(
-        queryset=models.TestMethod.objects.all(),
-        source="test_method",  # maps correctly to FK field
+        many=True,
+        queryset=models.UserGroup.objects.all(),
         write_only=True,
-        required=False,
+        source="user_groups",  # important!
+        required=False
     )
+
+    # Nested serializers for GET
+    user_groups = UserGroupSerializer(many=True, read_only=True)
 
     class Meta:
         model = models.Analysis
@@ -395,37 +431,33 @@ class AnalysisSerializer(serializers.ModelSerializer):
             "user_groups",
             "user_groups_ids",
             "type",
-            "test_method",      # read-only nested
-            "test_method_id",   # write-only ID
+            "test_method",
+            "test_method_id",
             "price",
             "description",
             "attachments",
+            "attachment_urls",
             "components",
         ]
 
-    def to_representation(self, instance):
-        """Add user_groups_ids to GET response"""
-        data = super().to_representation(instance)
-        data['user_groups_ids'] = list(instance.user_groups.values_list('id', flat=True))
-        return data
-
     def create(self, validated_data):
-        user_groups = validated_data.pop("user_groups_ids", [])
+        attachment_urls = validated_data.pop("attachment_urls", [])
+        user_groups = validated_data.pop("user_groups", [])  # mapped via source
+
         analysis = models.Analysis.objects.create(**validated_data)
         analysis.user_groups.set(user_groups)
+
+        for url in attachment_urls:
+            file_path = url.split('/media/')[-1]
+            try:
+                attachment = models.AnalysisAttachment.objects.get(file=file_path)
+            except models.AnalysisAttachment.DoesNotExist:
+                raise serializers.ValidationError({"attachment_urls": f"Attachment not found for URL: {url}"})
+            attachment.analysis = analysis
+            attachment.save()
+
         return analysis
 
-    def update(self, instance, validated_data):
-        user_groups = validated_data.pop("user_groups_ids", None)
-
-        for attr, value in validated_data.items():
-            setattr(instance, attr, value)
-        instance.save()
-
-        if user_groups is not None:
-            instance.user_groups.set(user_groups)
-
-        return instance
 
 
 
@@ -1016,7 +1048,7 @@ class DynamicFormEntrySerializer(serializers.ModelSerializer):
 
 
 
-import inflection
+
 
 def build_dynamic_serializer(fields):
     field_dict = {}
@@ -1440,6 +1472,19 @@ class ComponentResultSerializer(serializers.ModelSerializer):
             "remarks",
             "created_by",
         ]
+
+
+
+class SystemConfigurationSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = models.SystemConfiguration
+        fields = ["id", "key", "value", "updated_at"]
+
+
+class BulkConfigUpdateSerializer(serializers.Serializer):
+    id = serializers.IntegerField()
+    value = serializers.CharField(max_length=255)
+
 
 
 

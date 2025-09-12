@@ -13,6 +13,7 @@ router.register(r'analyses', views.AnalysisViewSet, basename='analysis')
 router.register(r'user-groups', views.UserGroupViewSet, basename='usergroup')
 router.register(r'test-methods', views.TestMethodViewSet, basename='testmethod')
 router.register(r'components', views.ComponentViewSet, basename='component')
+router.register(r'attachments', views.AnalysisAttachmentViewSet, basename='attachments')
 router.register(r'functions', views.CustomFunctionViewSet, basename='functions')
 router.register(r'instruments', views.InstrumentViewSet, basename='instrument')
 router.register(r'instrument-history', views.InstrumentHistoryViewSet, basename='instrument-history')
@@ -56,4 +57,8 @@ urlpatterns = [
     path("entries/<int:entry_id>/analyses/", views.EntryAnalysesSchemaView.as_view(), name="entry-analyses-schema"),
     path("entries/<int:entry_id>/analysis/<int:analysis_id>/submit/", views.AnalysisResultSubmitView.as_view(), name="analysis-submit"),
      
+
+    path("configs/", views.SystemConfigurationListCreateView.as_view(), name="config-list"),
+    path("configs/<int:pk>/", views.SystemConfigurationDetailView.as_view(), name="config-detail"),
+    path("configs/bulk-update/", views.BulkConfigUpdateView.as_view(), name="bulk-config-update"),
 ]

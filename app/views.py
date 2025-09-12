@@ -43,7 +43,13 @@ import json
 from datetime import datetime, date
 import inflection
 from rest_framework import viewsets, mixins
+from django.db.models import F
 
+
+def get_config(key, default=None):
+    from .models import SystemConfiguration
+    config = SystemConfiguration.objects.filter(key=key).first()
+    return config.value if config else default
 
 class RegisterView(views.APIView):
     permission_classes = [AllowAny]
@@ -74,19 +80,41 @@ class LoginView(views.APIView):
         if serializer.is_valid():
             email = serializer.validated_data['email']
             password = serializer.validated_data['password']
-            user = authenticate(request, email=email, password=password)
 
-            if user and user.is_active:
+            try:
+                user = User.objects.get(email=email)
+            except User.DoesNotExist:
+                return Response({"error": "Invalid credentials"}, status=status.HTTP_401_UNAUTHORIZED)
+
+            # 🔑 yahan se config table se value uthayega
+            max_attempts = int(get_config("max_wrong_password_attempts", 5))
+
+            if not user.is_active:
+                return Response({"error": "Your account is deactivated. Please contact admin."}, status=status.HTTP_403_FORBIDDEN)
+
+            user_auth = authenticate(request, email=email, password=password)
+
+            if user_auth:
+                user.failed_login_attempts = 0
+                user.save(update_fields=["failed_login_attempts"])
                 token, _ = Token.objects.get_or_create(user=user)
                 update_last_login(None, user)
 
                 user_data = UserSerializer(user, context={'request': request}).data
-                return Response({
-                    "token": token.key,
-                    "user": user_data,
-                }, status=status.HTTP_200_OK)
+                return Response({"token": token.key, "user": user_data}, status=status.HTTP_200_OK)
 
-            return Response({"error": "Invalid credentials"}, status=status.HTTP_401_UNAUTHORIZED)
+            # ❌ Wrong password case
+            user.failed_login_attempts = F("failed_login_attempts") + 1
+            user.save(update_fields=["failed_login_attempts"])
+            user.refresh_from_db()
+
+            if user.failed_login_attempts >= max_attempts:
+                user.is_active = False
+                user.save(update_fields=["is_active"])
+                return Response({"error": "Your account has been locked due to too many failed login attempts."}, status=status.HTTP_403_FORBIDDEN)
+
+            remaining = max_attempts - user.failed_login_attempts
+            return Response({"error": f"Invalid credentials. You have {remaining} attempts left."}, status=status.HTTP_401_UNAUTHORIZED)
 
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
@@ -202,24 +230,20 @@ class ResetPasswordView(APIView):
             return Response({"error": "User not found."}, status=400)
         
 
+class AnalysisAttachmentViewSet(viewsets.ModelViewSet):
+    queryset = models.AnalysisAttachment.objects.all()
+    serializer_class = AnalysisAttachmentSerializer
+    permission_classes = [IsAuthenticated]
+
+    def perform_create(self, serializer):
+        serializer.save()
+
+
 
 class AnalysisViewSet(viewsets.ModelViewSet):
     queryset = models.Analysis.objects.all()
     serializer_class = AnalysisSerializer
-    permission_classes = [IsAuthenticated,HasModulePermission]
-
-    def create(self, request, *args, **kwargs):
-        serializer = self.get_serializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        analysis = serializer.save()
-
-        # Handle multiple files from 'attachments'
-        files = request.FILES.getlist("attachments")
-        for f in files:
-            models.AnalysisAttachment.objects.create(analysis=analysis, file=f)
-
-        return Response(self.get_serializer(analysis).data, status=status.HTTP_201_CREATED)
-
+    permission_classes = [IsAuthenticated, HasModulePermission]
 
 
 class CustomFunctionViewSet(viewsets.ModelViewSet):
@@ -749,7 +773,6 @@ class RequestFormSubmitView(APIView):
 
 
 
-
 class DynamicRequestFormEntryViewSet(viewsets.ModelViewSet):
     queryset = models.DynamicRequestEntry.objects.all().order_by("-created_at")
     serializer_class = DynamicRequestEntrySerializer
@@ -772,6 +795,40 @@ class DynamicRequestFormEntryViewSet(viewsets.ModelViewSet):
             return Response({"error": "Invalid sample_forms JSON"}, status=400)
 
         # ---------------- Update request_form data ----------------
+        # req_clean_data = entry.data.get("request_form", {})
+
+        # for field in entry.request_form.fields.all():
+        #     value = (
+        #         request.FILES.getlist(field.field_name)
+        #         if field.field_property == "attachment"
+        #         else request_form_data.get(field.field_name, req_clean_data.get(field.field_name))
+        #     )
+
+        #     if field.field_property == "attachment" and value:
+        #         existing_files = list(models.DynamicRequestAttachment.objects.filter(entry=entry, field=field))
+        #         file_list = [{"id": f.id, "url": f.file.url, "path": f.file.path} for f in existing_files]
+
+        #         for file_obj in value:
+        #             attachment = models.DynamicRequestAttachment.objects.create(
+        #                 entry=entry,
+        #                 field=field,
+        #                 file=file_obj
+        #             )
+        #             file_list.append({
+        #                 "id": attachment.id,
+        #                 "url": attachment.file.url,
+        #                 "path": attachment.file.path
+        #             })
+        #         req_clean_data[field.field_name] = file_list
+
+        #     elif isinstance(value, datetime):
+        #         req_clean_data[field.field_name] = value.isoformat()
+        #     else:
+        #         req_clean_data[field.field_name] = value
+
+
+
+        # ---------------- Update request_form data ----------------
         req_clean_data = entry.data.get("request_form", {})
 
         for field in entry.request_form.fields.all():
@@ -781,22 +838,34 @@ class DynamicRequestFormEntryViewSet(viewsets.ModelViewSet):
                 else request_form_data.get(field.field_name, req_clean_data.get(field.field_name))
             )
 
-            if field.field_property == "attachment" and value:
-                existing_files = list(models.DynamicRequestAttachment.objects.filter(entry=entry, field=field))
-                file_list = [{"id": f.id, "url": f.file.url, "path": f.file.path} for f in existing_files]
+            if field.field_property == "attachment":
+                if value:  # agar naye files aaye
+                    # ---- Purani files delete kar do ----
+                    existing_files = models.DynamicRequestAttachment.objects.filter(entry=entry, field=field)
+                    for ef in existing_files:
+                        ef.file.delete(save=False)  # storage se bhi delete
+                        ef.delete()
 
-                for file_obj in value:
-                    attachment = models.DynamicRequestAttachment.objects.create(
-                        entry=entry,
-                        field=field,
-                        file=file_obj
-                    )
-                    file_list.append({
-                        "id": attachment.id,
-                        "url": attachment.file.url,
-                        "path": attachment.file.path
-                    })
-                req_clean_data[field.field_name] = file_list
+                    # ---- Naye files add karo ----
+                    file_list = []
+                    for file_obj in value:
+                        attachment = models.DynamicRequestAttachment.objects.create(
+                            entry=entry,
+                            field=field,
+                            file=file_obj
+                        )
+                        file_list.append({
+                            "id": attachment.id,
+                            "url": attachment.file.url,
+                            "path": attachment.file.path
+                        })
+                    req_clean_data[field.field_name] = file_list
+                else:
+                    # Agar naye files nahi bheje to purane hi rakh lo
+                    existing_files = list(models.DynamicRequestAttachment.objects.filter(entry=entry, field=field))
+                    req_clean_data[field.field_name] = [
+                        {"id": f.id, "url": f.file.url, "path": f.file.path} for f in existing_files
+                    ]
 
             elif isinstance(value, datetime):
                 req_clean_data[field.field_name] = value.isoformat()
@@ -840,22 +909,34 @@ class DynamicRequestFormEntryViewSet(viewsets.ModelViewSet):
                         file_key = f"sample_forms[{i}][{field.field_name}]"
                         files = request.FILES.getlist(file_key)
 
-                        existing_files = list(models.DynamicFormAttachment.objects.filter(entry=sample_entry, field=field))
-                        file_list = [{"id": f.id, "url": f.file.url, "path": f.file.path} for f in existing_files]
+                        if files:  # agar naye files bheje gaye
+                            # ---- Purani files delete ----
+                            existing_files = models.DynamicFormAttachment.objects.filter(entry=sample_entry, field=field)
+                            for ef in existing_files:
+                                ef.file.delete(save=False)
+                                ef.delete()
 
-                        for f in files:
-                            attachment = models.DynamicFormAttachment.objects.create(
-                                entry=sample_entry,
-                                field=field,
-                                file=f
-                            )
-                            file_list.append({
-                                "id": attachment.id,
-                                "url": attachment.file.url,
-                                "path": attachment.file.path
-                            })
+                            # ---- Naye files add ----
+                            file_list = []
+                            for f in files:
+                                attachment = models.DynamicFormAttachment.objects.create(
+                                    entry=sample_entry,
+                                    field=field,
+                                    file=f
+                                )
+                                file_list.append({
+                                    "id": attachment.id,
+                                    "url": attachment.file.url,
+                                    "path": attachment.file.path
+                                })
+                            clean_sample[field.field_name] = file_list
+                        else:
+                            # agar naye nahi bheje to purane rakh lo
+                            existing_files = models.DynamicFormAttachment.objects.filter(entry=sample_entry, field=field)
+                            clean_sample[field.field_name] = [
+                                {"id": f.id, "url": f.file.url, "path": f.file.path} for f in existing_files
+                            ]
 
-                        clean_sample[field.field_name] = file_list
                     else:
                         value = sample_serializer.validated_data.get(field.field_name, sample_entry.data.get(field.field_name))
                         if isinstance(value, datetime):
@@ -1127,3 +1208,43 @@ class AnalysisResultSubmitView(APIView):
         })
 
     
+class SystemConfigurationListCreateView(generics.ListCreateAPIView):
+    queryset = models.SystemConfiguration.objects.all()
+    serializer_class = SystemConfigurationSerializer
+    # permission_classes = [IsAdminUser]
+
+class SystemConfigurationDetailView(generics.RetrieveUpdateDestroyAPIView):
+    queryset = models.SystemConfiguration.objects.all()
+    serializer_class = SystemConfigurationSerializer
+    # permission_classes = [IsAdminUser]
+
+
+class BulkConfigUpdateView(APIView):
+    def patch(self, request):
+        
+        configs_data = request.data.get("configs", [])
+
+        if not configs_data:
+            return Response({"error": "No configs provided"}, status=status.HTTP_400_BAD_REQUEST)
+
+        updated_items = []
+        errors = []
+
+        for config_data in configs_data:
+            serializer = BulkConfigUpdateSerializer(data=config_data)
+            if serializer.is_valid():
+                try:
+                    config = models.SystemConfiguration.objects.get(id=serializer.validated_data['id'])
+                    config.value = serializer.validated_data['value']
+                    config.save()
+                    updated_items.append(SystemConfigurationSerializer(config).data)
+                except models.Config.DoesNotExist:
+                    errors.append({"id": serializer.validated_data['id'], "error": "Config not found"})
+            else:
+                errors.append({"data": config_data, "errors": serializer.errors})
+
+        return Response({
+            "updated": updated_items,
+            "errors": errors
+        }, status=status.HTTP_200_OK)
+

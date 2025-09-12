@@ -9,7 +9,7 @@ from django.utils import timezone
 from django.contrib.auth.models import AbstractUser
 from django.db import models
 from django.utils.translation import gettext_lazy as _
-from . import choices  # make sure this is correctly imported based on your project structure
+from . import choices
 
 
 
@@ -25,20 +25,17 @@ class BaseModel(models.Model):
 
 
 class User(AbstractUser, BaseModel):
-    # Overridden fields
-    username = models.CharField(max_length=150, unique=True, null=False, blank=False)  # mandatory
-    email = models.EmailField(_("Email"), unique=True, null=False, blank=False)        # mandatory
-    password = models.CharField(max_length=128, null=False, blank=False)               # mandatory
-    name = models.CharField(_("Full Name"), max_length=255, null=False, blank=False)   # mandatory
+    username = models.CharField(max_length=150, unique=True, null=False, blank=False)
+    email = models.EmailField(_("Email"), unique=True, null=False, blank=False)
+    password = models.CharField(max_length=128, null=False, blank=False)
+    name = models.CharField(_("Full Name"), max_length=255, null=False, blank=False)
 
-    # Additional fields
     idle_time = models.DurationField(null=True, blank=True)
     dob = models.DateField(_("Date of Birth"), null=True, blank=True)
     phone_number = models.CharField(max_length=20, null=True, blank=True)
     address = models.TextField(null=True, blank=True)
     profile_picture = models.ImageField(upload_to="profile_pictures/", null=True, blank=True)
 
-    # System fields
     role = models.CharField(
         max_length=20,
         choices=choices.UserRole.choices,
@@ -50,6 +47,9 @@ class User(AbstractUser, BaseModel):
     last_login = models.DateTimeField(blank=True, null=True)
     is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)
+
+    
+    failed_login_attempts = models.PositiveIntegerField(default=0)
 
     USERNAME_FIELD = "email"
     REQUIRED_FIELDS = ["name", "username"]
@@ -113,7 +113,13 @@ class Analysis(BaseModel):
 
 
 class AnalysisAttachment(BaseModel):
-    analysis = models.ForeignKey(Analysis, related_name='attachments', on_delete=models.CASCADE)
+    analysis = models.ForeignKey(
+        Analysis,
+        related_name='attachments',
+        on_delete=models.CASCADE,
+        null=True,    # allow NULL for now
+        blank=True
+    )
     file = models.FileField(upload_to='analysis_attachments/')
 
     def __str__(self):
@@ -508,6 +514,17 @@ class ComponentResult(models.Model):
     remarks = models.TextField(null=True, blank=True)
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
+
+
+
+class SystemConfiguration(models.Model):
+    key = models.CharField(max_length=100, unique=True)
+    value = models.CharField(max_length=255, null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"{self.key} = {self.value}"
+
     
 
     
