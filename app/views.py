@@ -235,8 +235,21 @@ class AnalysisAttachmentViewSet(viewsets.ModelViewSet):
     serializer_class = AnalysisAttachmentSerializer
     permission_classes = [IsAuthenticated]
 
-    def perform_create(self, serializer):
-        serializer.save()
+    def create(self, request, *args, **kwargs):
+        files = request.FILES.getlist("files")   # multiple files expected
+        analysis_id = request.data.get("analysis")
+
+        if not files:
+            return Response({"error": "No files uploaded"}, status=status.HTTP_400_BAD_REQUEST)
+
+        attachments = []
+        for file in files:
+            serializer = self.get_serializer(data={"analysis": analysis_id, "file": file})
+            serializer.is_valid(raise_exception=True)
+            serializer.save()
+            attachments.append(serializer.data)
+
+        return Response(attachments, status=status.HTTP_201_CREATED)
 
 
 
@@ -1104,6 +1117,7 @@ class EntryAnalysesSchemaView(APIView):
                     "decimal_places": comp.decimal_places,
                     "required": not comp.optional,
                     "choices": choices,
+                    "specifications": comp.spec_limits
                 })
 
             analyses_data.append({
@@ -1141,12 +1155,35 @@ class AnalysisResultSubmitView(APIView):
             if comp.calculated:
                 continue  # skip user input for calculated fields
 
+            # ✅ Validate list-type components using spec_limits
+            if comp.type.lower() == "list":
+                allowed_choices = comp.spec_limits or []
+                if res.get("value") not in allowed_choices:
+                    return Response(
+                        {"error": f"Invalid choice '{res.get('value')}' for component {comp.name}. "
+                                f"Allowed values are: {allowed_choices}"},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+                numeric_val = None
+
+                if res.get("value") not in allowed_choices:
+                    return Response(
+                        {"error": f"Invalid choice '{res.get('value')}' for component {comp.name}. "
+                                f"Allowed values are: {allowed_choices}"},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+                numeric_val = None
+            else:
+                numeric_val = res.get("numeric_value")
+
+
+            # ✅ Save or update result
             result, _ = models.ComponentResult.objects.update_or_create(
                 entry=entry,
                 component=comp,
                 defaults={
                     "value": res.get("value"),
-                    "numeric_value": res.get("numeric_value"),
+                    "numeric_value": numeric_val,
                     "remarks": res.get("remarks"),
                     "created_by": request.user
                 }
@@ -1166,11 +1203,11 @@ class AnalysisResultSubmitView(APIView):
                 ).first()
 
                 if not mapped_result or mapped_result.numeric_value is None:
-                    param_values[param.parameter] = 0  # default agar user ne value na di ho
+                    param_values[param.parameter] = 0
                 else:
                     param_values[param.parameter] = mapped_result.numeric_value
 
-            # sanity check: missing variables
+            # sanity check
             missing_vars = [v for v in comp.custom_function.variables if v not in param_values]
             if missing_vars:
                 return Response(
@@ -1206,6 +1243,7 @@ class AnalysisResultSubmitView(APIView):
             "analysis_id": analysis.id,
             "results": serializer.data
         })
+    
 
     
 class SystemConfigurationListCreateView(generics.ListCreateAPIView):

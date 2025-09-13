@@ -272,7 +272,7 @@ class ParameterMappingSerializer(serializers.Serializer):
 class ComponentSerializer(serializers.ModelSerializer):
     analysis_id = serializers.IntegerField(write_only=True)
 
-    # ✅ for writing (dropdown selection)
+   
     unit_id = serializers.PrimaryKeyRelatedField(
         queryset=models.Unit.objects.all(),
         source="unit",
@@ -297,10 +297,12 @@ class ComponentSerializer(serializers.ModelSerializer):
         required=False
     )
     function = CustomFunctionSerializer(source="custom_function", read_only=True)
+
     spec_limits = serializers.ListField(
         child=serializers.CharField(),
         required=False
     )
+
     rounding_display = serializers.CharField(source='get_rounding_display', read_only=True)
     parameters = ParameterMappingSerializer(many=True, required=False)
 
@@ -312,8 +314,34 @@ class ComponentSerializer(serializers.ModelSerializer):
             'spec_limits', 'description',
             'optional', 'calculated',
             'function_id', 'function',
-            'minimum', 'maximum', 'rounding', 'rounding_display','decimal_places', 'list_id', 'listname', 'parameters'
+            'minimum', 'maximum', 'rounding', 'rounding_display',
+            'decimal_places', 'list_id', 'listname', 'parameters'
         ]
+
+    def validate(self, attrs):
+        comp_type = attrs.get("type") or getattr(self.instance, "type", None)
+
+        if comp_type == choices.ComponentTypes.LIST:
+            list_obj = attrs.get("listname") or getattr(self.instance, "listname", None)
+            if not list_obj:
+                raise serializers.ValidationError(
+                    {"list_id": "List is required when type is 'List'."}
+                )
+
+            allowed_values = set(list_obj.values.values_list("value", flat=True))
+            spec_limits = attrs.get("spec_limits")
+
+            # Auto-populate spec_limits if not provided
+            if not spec_limits:
+                attrs["spec_limits"] = list(allowed_values)
+            else:
+                invalid = [val for val in spec_limits if val not in allowed_values]
+                if invalid:
+                    raise serializers.ValidationError({
+                        "spec_limits": f"Invalid values for list '{list_obj.name}': {', '.join(invalid)}"
+                    })
+
+        return attrs
 
     def create(self, validated_data):
         analysis_id = validated_data.pop("analysis_id")
@@ -326,19 +354,16 @@ class ComponentSerializer(serializers.ModelSerializer):
 
         component = models.Component.objects.create(analysis=analysis, **validated_data)
 
-        # ✅ agar calculated hai aur function assigned hai
         if component.calculated and component.custom_function:
             expected_vars = set(component.custom_function.variables)
             provided_vars = {p["parameter"] for p in parameters_data}
 
-            # check missing variables
             missing = expected_vars - provided_vars
             if missing:
                 raise serializers.ValidationError(
                     {"parameters": f"Missing mappings for variables: {', '.join(missing)}"}
                 )
 
-            # check extra variables
             extra = provided_vars - expected_vars
             if extra:
                 raise serializers.ValidationError(
@@ -367,9 +392,10 @@ class ComponentSerializer(serializers.ModelSerializer):
 
         return component
 
-
     def to_representation(self, instance):
         data = super().to_representation(instance)
+
+        
         if instance.calculated and instance.custom_function:
             data["parameters"] = [
                 {
@@ -381,8 +407,8 @@ class ComponentSerializer(serializers.ModelSerializer):
                 }
                 for p in instance.function_parameters.all()
             ]
-        return data
 
+        return data
 
 
 class AnalysisAttachmentSerializer(serializers.ModelSerializer):
@@ -1459,6 +1485,7 @@ class AnalysisSchemaSerializer(serializers.ModelSerializer):
 class ComponentResultSerializer(serializers.ModelSerializer):
     component_name = serializers.CharField(source="component.name", read_only=True)
     component_type = serializers.CharField(source="component.type", read_only=True)
+    spec_limits = serializers.SerializerMethodField()
 
     class Meta:
         model = models.ComponentResult
@@ -1471,7 +1498,15 @@ class ComponentResultSerializer(serializers.ModelSerializer):
             "numeric_value",
             "remarks",
             "created_by",
+            "spec_limits",
         ]
+
+    def get_spec_limits(self, obj):
+        comp = obj.component
+        if comp.type == choices.ComponentTypes.LIST:
+            # ✅ show only the saved spec_limits for that component
+            return comp.spec_limits or []
+        return None
 
 
 
