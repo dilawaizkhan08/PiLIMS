@@ -512,7 +512,11 @@ class ComponentResult(models.Model):
     value = models.TextField(null=True, blank=True)
     numeric_value = models.FloatField(null=True, blank=True)
     remarks = models.TextField(null=True, blank=True)
-    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True)
+
+    authorization_flag = models.BooleanField(default=False)
+    authorization_remark = models.TextField(null=True, blank=True)
+
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
 

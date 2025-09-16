@@ -508,9 +508,8 @@ class DynamicSampleFormEntryViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated,HasModulePermission]
     parser_classes = [MultiPartParser, FormParser, JSONParser]
 
-    # extra endpoint to update status (like your Action dropdown)
      
-    @action(detail=False, methods=["post"])  # ✅ no pk, works on multiple
+    @action(detail=False, methods=["post"])
     def update_status(self, request):
         new_status = request.data.get("status")
         ids = request.data.get("ids", [])
@@ -1086,7 +1085,6 @@ class DynamicTableDataView(APIView):
 
 
 
-
 class EntryAnalysesSchemaView(APIView):
     def get(self, request, entry_id):
         entry = get_object_or_404(models.DynamicFormEntry, pk=entry_id)
@@ -1132,7 +1130,6 @@ class EntryAnalysesSchemaView(APIView):
         })
 
 
-
 class AnalysisResultSubmitView(APIView):
     def post(self, request, entry_id, analysis_id):
         entry = get_object_or_404(models.DynamicFormEntry, pk=entry_id)
@@ -1141,7 +1138,7 @@ class AnalysisResultSubmitView(APIView):
         if not entry.analyses.filter(id=analysis.id).exists():
             return Response(
                 {"error": "This analysis is not linked with the entry"},
-                status=status.HTTP_400_BAD_REQUEST
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
         results_data = request.data.get("results", [])
@@ -1155,29 +1152,22 @@ class AnalysisResultSubmitView(APIView):
             if comp.calculated:
                 continue  # skip user input for calculated fields
 
-            # ✅ Validate list-type components using spec_limits
+            # ✅ Validate list-type components
             if comp.type.lower() == "list":
                 allowed_choices = comp.spec_limits or []
                 if res.get("value") not in allowed_choices:
                     return Response(
-                        {"error": f"Invalid choice '{res.get('value')}' for component {comp.name}. "
-                                f"Allowed values are: {allowed_choices}"},
-                        status=status.HTTP_400_BAD_REQUEST
-                    )
-                numeric_val = None
-
-                if res.get("value") not in allowed_choices:
-                    return Response(
-                        {"error": f"Invalid choice '{res.get('value')}' for component {comp.name}. "
-                                f"Allowed values are: {allowed_choices}"},
-                        status=status.HTTP_400_BAD_REQUEST
+                        {
+                            "error": f"Invalid choice '{res.get('value')}' for component {comp.name}. "
+                                     f"Allowed values are: {allowed_choices}"
+                        },
+                        status=status.HTTP_400_BAD_REQUEST,
                     )
                 numeric_val = None
             else:
                 numeric_val = res.get("numeric_value")
 
-
-            # ✅ Save or update result
+            # ✅ Save or update result with new fields
             result, _ = models.ComponentResult.objects.update_or_create(
                 entry=entry,
                 component=comp,
@@ -1185,34 +1175,34 @@ class AnalysisResultSubmitView(APIView):
                     "value": res.get("value"),
                     "numeric_value": numeric_val,
                     "remarks": res.get("remarks"),
-                    "created_by": request.user
-                }
+                    "authorization_flag": res.get("authorization_flag", False),
+                    "authorization_remark": res.get("authorization_remark"),
+                    "created_by": request.user,
+                },
             )
             saved_results.append(result)
 
-        # 2️⃣ Automatically compute calculated components
-        calculated_components = analysis.components.filter(calculated=True, custom_function__isnull=False)
+        # 2️⃣ Auto-calculate results
+        calculated_components = analysis.components.filter(
+            calculated=True, custom_function__isnull=False
+        )
 
         for comp in calculated_components:
             param_values = {}
-
-            # collect variable → mapped_component.value
             for param in comp.function_parameters.all():
                 mapped_result = models.ComponentResult.objects.filter(
                     entry=entry, component=param.mapped_component
                 ).first()
-
                 if not mapped_result or mapped_result.numeric_value is None:
                     param_values[param.parameter] = 0
                 else:
                     param_values[param.parameter] = mapped_result.numeric_value
 
-            # sanity check
             missing_vars = [v for v in comp.custom_function.variables if v not in param_values]
             if missing_vars:
                 return Response(
                     {"error": f"Missing input for variables: {', '.join(missing_vars)}"},
-                    status=status.HTTP_400_BAD_REQUEST
+                    status=status.HTTP_400_BAD_REQUEST,
                 )
 
             try:
@@ -1220,10 +1210,9 @@ class AnalysisResultSubmitView(APIView):
             except Exception as e:
                 return Response(
                     {"error": f"Failed to calculate value for {comp.name}: {str(e)}"},
-                    status=status.HTTP_400_BAD_REQUEST
+                    status=status.HTTP_400_BAD_REQUEST,
                 )
 
-            # Save/update result
             result, _ = models.ComponentResult.objects.update_or_create(
                 entry=entry,
                 component=comp,
@@ -1231,30 +1220,36 @@ class AnalysisResultSubmitView(APIView):
                     "value": str(numeric_value),
                     "numeric_value": numeric_value,
                     "remarks": "Auto-calculated",
-                    "created_by": request.user
-                }
+                    "authorization_flag": False,  # default for auto-calculated
+                    "authorization_remark": None,
+                    "created_by": request.user,
+                },
             )
             saved_results.append(result)
 
         serializer = ComponentResultSerializer(saved_results, many=True)
-        return Response({
-            "message": "Results saved successfully",
-            "entry_id": entry.id,
-            "analysis_id": analysis.id,
-            "results": serializer.data
-        })
+        return Response(
+            {
+                "message": "Results saved successfully",
+                "entry_id": entry.id,
+                "analysis_id": analysis.id,
+                "results": serializer.data,
+            }
+        )
     
-
     
 class SystemConfigurationListCreateView(generics.ListCreateAPIView):
     queryset = models.SystemConfiguration.objects.all()
     serializer_class = SystemConfigurationSerializer
     # permission_classes = [IsAdminUser]
 
+
+
 class SystemConfigurationDetailView(generics.RetrieveUpdateDestroyAPIView):
     queryset = models.SystemConfiguration.objects.all()
     serializer_class = SystemConfigurationSerializer
     # permission_classes = [IsAdminUser]
+
 
 
 class BulkConfigUpdateView(APIView):
@@ -1285,4 +1280,6 @@ class BulkConfigUpdateView(APIView):
             "updated": updated_items,
             "errors": errors
         }, status=status.HTTP_200_OK)
+
+
 

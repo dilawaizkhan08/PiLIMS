@@ -436,17 +436,25 @@ class AnalysisSerializer(serializers.ModelSerializer):
 
     components = ComponentSerializer(many=True, read_only=True)
 
-    # ✅ Correct way to handle M2M write-only field
+    # ✅ Write-only for IDs
     user_groups_ids = serializers.PrimaryKeyRelatedField(
         many=True,
         queryset=models.UserGroup.objects.all(),
         write_only=True,
-        source="user_groups",  # important!
+        source="user_groups",
         required=False
     )
 
-    # Nested serializers for GET
+    # ✅ Nested read-only for GET
     user_groups = UserGroupSerializer(many=True, read_only=True)
+
+    # ✅ Explicit handling of FK field
+    test_method_id = serializers.PrimaryKeyRelatedField(
+        queryset=models.TestMethod.objects.all(),
+        source="test_method",
+        write_only=True
+    )
+    test_method = TestMethodSerializer(read_only=True)  # <-- if you want nested data on GET
 
     class Meta:
         model = models.Analysis
@@ -454,6 +462,7 @@ class AnalysisSerializer(serializers.ModelSerializer):
             "id",
             "name",
             "version",
+            "alias_name",
             "user_groups",
             "user_groups_ids",
             "type",
@@ -468,7 +477,7 @@ class AnalysisSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         attachment_urls = validated_data.pop("attachment_urls", [])
-        user_groups = validated_data.pop("user_groups", [])  # mapped via source
+        user_groups = validated_data.pop("user_groups", [])
 
         analysis = models.Analysis.objects.create(**validated_data)
         analysis.user_groups.set(user_groups)
@@ -478,12 +487,13 @@ class AnalysisSerializer(serializers.ModelSerializer):
             try:
                 attachment = models.AnalysisAttachment.objects.get(file=file_path)
             except models.AnalysisAttachment.DoesNotExist:
-                raise serializers.ValidationError({"attachment_urls": f"Attachment not found for URL: {url}"})
+                raise serializers.ValidationError(
+                    {"attachment_urls": f"Attachment not found for URL: {url}"}
+                )
             attachment.analysis = analysis
             attachment.save()
 
         return analysis
-
 
 
 
@@ -1439,14 +1449,14 @@ class PermissionSerializer(serializers.ModelSerializer):
 
 class RoleSerializer(serializers.ModelSerializer):
     permissions = PermissionSerializer(many=True)
-    users = serializers.PrimaryKeyRelatedField(
-        many=True,
-        queryset=models.User.objects.all()
-    )
+    users = serializers.SerializerMethodField()
 
     class Meta:
         model = models.Role
         fields = ["id", "name", "users", "permissions"]
+
+    def get_users(self, obj):
+        return [{"id": user.id, "username": user.username} for user in obj.users.all()]
 
     def create(self, validated_data):
         users = validated_data.pop("users", [])
@@ -1499,6 +1509,8 @@ class ComponentResultSerializer(serializers.ModelSerializer):
             "remarks",
             "created_by",
             "spec_limits",
+            "authorization_flag",
+            "authorization_remark"
         ]
 
     def get_spec_limits(self, obj):
