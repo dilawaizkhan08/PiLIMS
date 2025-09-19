@@ -1161,30 +1161,38 @@ class RequestFormSerializer(serializers.ModelSerializer):
     )
 
     customer_name = serializers.PrimaryKeyRelatedField(queryset=models.Customer.objects.all())
-    sample_form = serializers.PrimaryKeyRelatedField(queryset=models.SampleForm.objects.all())
+
+    sample_form = SampleFormSerializer(many=True, read_only=True)
+
+    # ✅ Write-only IDs
+    sample_form_ids = serializers.PrimaryKeyRelatedField(
+        many=True, queryset=models.SampleForm.objects.all(), required=False
+    )
 
     class Meta:
         model = models.RequestForm
         fields = [
             "id", "request_name", "version", "request_type",
-            "sample_form", "customer_name",
-            "user_groups",      # ✅ GET
-            "user_groups_ids",  # ✅ POST/PUT/PATCH
+            "sample_form", "sample_form_ids", "customer_name",
+            "user_groups", "user_groups_ids",
             "description", "fields"
         ]
 
     def to_representation(self, instance):
-        """Add user_groups_ids to GET response"""
+        """Add *_ids to GET response"""
         data = super().to_representation(instance)
         data['user_groups_ids'] = list(instance.user_groups.values_list('id', flat=True))
+        data['sample_form_ids'] = list(instance.sample_form.values_list('id', flat=True))
         return data
 
     def create(self, validated_data):
         fields_data = validated_data.pop("fields", [])
         user_groups = validated_data.pop("user_groups_ids", [])
+        sample_forms = validated_data.pop("sample_form_ids", [])
 
         request_form = models.RequestForm.objects.create(**validated_data)
         request_form.user_groups.set(user_groups)
+        request_form.sample_form.set(sample_forms)
 
         for field_data in fields_data:
             models.RequestField.objects.create(request_form=request_form, **field_data)
@@ -1194,6 +1202,7 @@ class RequestFormSerializer(serializers.ModelSerializer):
     def update(self, instance, validated_data):
         fields_data = validated_data.pop("fields", None)
         user_groups = validated_data.pop("user_groups_ids", None)
+        sample_forms = validated_data.pop("sample_form_ids", None)
 
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
@@ -1201,6 +1210,9 @@ class RequestFormSerializer(serializers.ModelSerializer):
 
         if user_groups is not None:
             instance.user_groups.set(user_groups)
+
+        if sample_forms is not None:
+            instance.sample_form.set(sample_forms)
 
         if fields_data is not None:
             existing_fields = {field.id: field for field in instance.fields.all()}

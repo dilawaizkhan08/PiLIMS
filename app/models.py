@@ -389,7 +389,7 @@ class RequestForm(BaseModel):
     request_name = models.CharField(max_length=255)
     version = models.IntegerField(default=1)
     request_type = models.CharField(max_length=50, choices=REQUEST_TYPE_CHOICES)
-    sample_form = models.ForeignKey(SampleForm, on_delete=models.CASCADE, related_name="request_forms")
+    sample_form = models.ManyToManyField(SampleForm, related_name="request_forms")
     customer_name = models.ForeignKey(Customer, on_delete=models.CASCADE, related_name="requests")  # assumes Customer model exists
     user_groups = models.ManyToManyField(UserGroup, related_name="request_forms")
     description = models.TextField(blank=True, null=True)
