@@ -1081,9 +1081,28 @@ class DynamicFormEntrySerializer(serializers.ModelSerializer):
         return data
     
 
+from django.core.files.uploadedfile import UploadedFile
 
 
+class FileOrURLField(serializers.Field):
+    def to_internal_value(self, data):
+        # Case 1: Actual file upload (InMemoryUploadedFile, TemporaryUploadedFile)
+        if isinstance(data, UploadedFile):
+            return data
 
+        # Case 2: URL string
+        if isinstance(data, str):
+            return data
+
+        raise serializers.ValidationError("This field must be a file or a URL string.")
+
+    def to_representation(self, value):
+        # If value is file (FileField or InMemoryUploadedFile)
+        try:
+            return value.url
+        except AttributeError:
+            # If already a string (URL)
+            return value
 
 
 def build_dynamic_serializer(fields):
@@ -1100,7 +1119,6 @@ def build_dynamic_serializer(fields):
             linked_model = apps.get_model(app_label, model_name)
             choices = [(obj.id, str(obj)) for obj in linked_model.objects.all()]
 
-            # Allow null and not required if no choices
             field_dict[field.field_name] = serializers.ChoiceField(
                 choices=choices,
                 required=bool(choices),
@@ -1109,10 +1127,10 @@ def build_dynamic_serializer(fields):
 
         elif field.field_property == "text":
             field_dict[field.field_name] = serializers.CharField(required=True)
-        
+
         elif field.field_property == "date_time":
             field_dict[field.field_name] = serializers.DateTimeField(required=True)
-        
+
         elif field.field_property == "list" and field.list_ref:
             list_obj = field.list_ref
             choices = [(v.id, str(v)) for v in list_obj.values.all()]
@@ -1123,19 +1141,21 @@ def build_dynamic_serializer(fields):
             )
 
         elif field.field_property == "attachment":
+            # ✅ accept both file and URL
             field_dict[field.field_name] = serializers.ListField(
-                child=serializers.FileField(),
+                child=FileOrURLField(),
                 required=field.required,
                 allow_empty=not field.required
             )
 
         else:
-            # Fallback for unknown field_property, make it optional CharField
-            field_dict[field.field_name] = serializers.CharField(required=False, allow_blank=True)
+            # Fallback
+            field_dict[field.field_name] = serializers.CharField(
+                required=False,
+                allow_blank=True
+            )
 
     return type('DynamicSerializer', (serializers.Serializer,), field_dict)
-
-
 
 
 class RequestFieldSerializer(serializers.ModelSerializer):
@@ -1274,8 +1294,9 @@ def build_dynamic_request_serializer(fields):
             )
 
         elif field.field_property == "attachment":
+            # ✅ Hybrid: accept either file uploads OR URLs
             field_dict[field.field_name] = serializers.ListField(
-                child=serializers.FileField(),
+                child=serializers.CharField(),  # string for URLs
                 required=field.required,
                 allow_empty=not field.required
             )
@@ -1287,8 +1308,26 @@ def build_dynamic_request_serializer(fields):
 
     return type('DynamicRequestSerializer', (serializers.Serializer,), field_dict)
 
-
 # ------------------ Serializers ------------------
+class DynamicFormAttachmentSerializer(serializers.ModelSerializer):
+    file_url = serializers.SerializerMethodField()
+    file_path = serializers.SerializerMethodField()
+
+    class Meta:
+        model = models.DynamicFormAttachment
+        fields = ["id", "field", "file", "file_url", "file_path"]
+
+    def get_file_url(self, obj):
+        request = self.context.get("request")
+        if request:
+            return request.build_absolute_uri(obj.file.url)
+        return obj.file.url
+
+    def get_file_path(self, obj):
+        return obj.file.path
+
+
+
 
 class DynamicRequestAttachmentSerializer(serializers.ModelSerializer):
     file_url = serializers.SerializerMethodField()
@@ -1342,6 +1381,9 @@ class DynamicRequestEntrySerializer(serializers.ModelSerializer):
         return DynamicFormEntrySerializer(
             entries, many=True, context=self.context
         ).data
+
+
+
 
 
 class CustomerSerializer(serializers.ModelSerializer):

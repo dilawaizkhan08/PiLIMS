@@ -529,6 +529,67 @@ class DynamicSampleFormEntryViewSet(viewsets.ModelViewSet):
         })
 
 
+class DynamicRequestAttachmentViewSet(viewsets.ModelViewSet):
+    queryset = models.DynamicRequestAttachment.objects.all()
+    serializer_class = DynamicRequestAttachmentSerializer
+    permission_classes = [IsAuthenticated]
+
+    def create(self, request, *args, **kwargs):
+        """
+        Upload multiple files and get URLs for JSON submission.
+        """
+        files = request.FILES.getlist("files")  # multiple files
+        entry_id = request.data.get("entry_id")  # optional
+        attachments = []
+
+        entry = None
+        if entry_id:
+            entry = get_object_or_404(models.DynamicRequestEntry, id=entry_id)
+
+        for f in files:
+            attachment = models.DynamicRequestAttachment.objects.create(
+                entry=entry,
+                field=None,  # we don’t set field yet
+                file=f
+            )
+            attachments.append({
+                "id": attachment.id,
+                "url": request.build_absolute_uri(attachment.file.url)
+            })
+
+        return Response(attachments, status=status.HTTP_201_CREATED)
+
+
+
+class DynamicFormAttachmentViewSet(viewsets.ModelViewSet):
+    queryset = models.DynamicFormAttachment.objects.all()
+    serializer_class = DynamicFormAttachmentSerializer
+    permission_classes = [IsAuthenticated]
+
+    def create(self, request, *args, **kwargs):
+        """
+        Upload multiple files and get URLs for JSON submission.
+        """
+        files = request.FILES.getlist("files")  # multiple files
+        entry_id = request.data.get("entry_id")  # optional
+        attachments = []
+
+        entry = None
+        if entry_id:
+            entry = get_object_or_404(models.DynamicFormEntry, id=entry_id)
+
+        for f in files:
+            attachment = models.DynamicFormAttachment.objects.create(
+                entry=entry,
+                field=None,  # we don’t set field yet
+                file=f
+            )
+            attachments.append({
+                "id": attachment.id,
+                "url": request.build_absolute_uri(attachment.file.url)
+            })
+
+        return Response(attachments, status=status.HTTP_201_CREATED)
 
 
 class RequestFormViewSet(viewsets.ModelViewSet):
@@ -651,135 +712,122 @@ def convert_datetimes_to_strings(data):
 
 class RequestFormSubmitView(APIView):
     permission_classes = [IsAuthenticated, HasModulePermission]
-    parser_classes = (MultiPartParser, FormParser)
+    parser_classes = (JSONParser,)  # only JSON needed now
 
     def post(self, request, form_id):
-        # ------------------ GET REQUEST FORM ------------------
         request_form = get_object_or_404(models.RequestForm, pk=form_id)
 
-        # ------------------ PARSE JSON FIELDS ------------------
-        request_form_raw = request.data.get("request_form")
-        sample_forms_raw = request.data.get("sample_forms")
-        analyses_raw = request.data.get("analyses")
+        request_form_data = request.data.get("request_form", {})
+        sample_forms_data = request.data.get("sample_forms", [])
+        analyses_data = request.data.get("analyses", [])
 
-        try:
-            request_form_data = json.loads(request_form_raw) if request_form_raw else {}
-        except Exception:
-            return Response({"error": "Invalid request_form JSON"}, status=status.HTTP_400_BAD_REQUEST)
-
-        try:
-            sample_forms_data = json.loads(sample_forms_raw) if sample_forms_raw else []
-        except Exception:
-            return Response({"error": "Invalid sample_forms JSON"}, status=status.HTTP_400_BAD_REQUEST)
-
-        try:
-            analyses_data = json.loads(analyses_raw) if analyses_raw else []
-        except Exception:
-            analyses_data = []
-
-        # ------------------ VALIDATE REQUEST FORM ------------------
+        # validate request form
         req_serializer_class = build_dynamic_request_serializer(request_form.fields.all())
         req_serializer = req_serializer_class(data=request_form_data)
         req_serializer.is_valid(raise_exception=True)
 
-        req_clean_data = {}
-
-        # ------------------ SAVE DYNAMIC REQUEST ENTRY ------------------
+        # create DynamicRequestEntry
         entry = models.DynamicRequestEntry.objects.create(
             request_form=request_form,
-            data={},  # temporary, will update later
+            data={},
             logged_by=request.user
         )
 
-        # ------------------ HANDLE REQUEST FORM FIELDS ------------------
+        # ------------------ REQUEST FORM FIELDS ------------------
+        req_clean_data = {}
         for field in request_form.fields.all():
             if field.field_property == "attachment":
-                # Use full key for multipart files
-                file_key = f"request_form[{field.field_name}]"
-                files = request.FILES.getlist(file_key)
+                urls = request_form_data.get(field.field_name, [])
+                if not isinstance(urls, list):
+                    urls = [urls]
 
                 file_list = []
-                for f in files:
-                    attachment = models.DynamicRequestAttachment.objects.create(
-                        entry=entry,
-                        field=field,
-                        file=f
-                    )
-                    file_list.append({
-                        "id": attachment.id,
-                        "url": attachment.file.url,
-                        "path": attachment.file.path
-                    })
+                for url in urls:
+                    file_path = url.split('/media/')[-1]
+                    attachment = models.DynamicRequestAttachment.objects.filter(
+                        file__endswith=file_path
+                    ).first()
+                    if attachment:
+                        attachment.field = field
+                        attachment.entry = entry
+                        attachment.save()
+
+                        file_list.append({
+                            "id": attachment.id,
+                            "url": request.build_absolute_uri(attachment.file.url),
+                            "path": attachment.file.path
+                        })
+
                 req_clean_data[field.field_name] = file_list
 
             else:
                 value = req_serializer.validated_data.get(field.field_name)
-                if isinstance(value, datetime):
-                    req_clean_data[field.field_name] = value.isoformat()
-                else:
-                    req_clean_data[field.field_name] = value
+                req_clean_data[field.field_name] = (
+                    value.isoformat() if isinstance(value, datetime) else value
+                )
 
-        # ------------------ HANDLE MULTIPLE SAMPLE FORMS ------------------
+        # ------------------ SAMPLE FORMS ------------------
+        # ------------------ HANDLE SAMPLE FORMS ------------------
         sample_clean_list = []
-        if request_form.sample_form and sample_forms_data:
-            sample_form = request_form.sample_form
+        if request_form.sample_form.exists() and sample_forms_data:
+            # ✅ pick first sample form (if only one linked)
+            sample_form = request_form.sample_form.first()
+
             sample_serializer_class = build_dynamic_serializer(sample_form.fields.all())
 
-            for i, sample in enumerate(sample_forms_data):
+            for sample in sample_forms_data:
                 sample_serializer = sample_serializer_class(data=sample)
                 sample_serializer.is_valid(raise_exception=True)
 
-                # create DynamicFormEntry for each sample
                 sample_entry = models.DynamicFormEntry.objects.create(
                     form=sample_form,
-                    data={},  # will update later
+                    data={},
                     logged_by=request.user
                 )
 
                 clean_sample = {}
                 for field in sample_form.fields.all():
                     if field.field_property == "attachment":
-                        file_key = f"sample_forms[{i}][{field.field_name}]"
-                        files = request.FILES.getlist(file_key)
+                        urls = sample.get(field.field_name, [])
+                        if not isinstance(urls, list):
+                            urls = [urls]
 
                         file_list = []
-                        for f in files:
+                        for url in urls:
+                            file_path = url.split('/media/')[-1]
+                            # ✅ now use DynamicFormAttachment (not DynamicRequestAttachment)
                             attachment = models.DynamicFormAttachment.objects.create(
                                 entry=sample_entry,
                                 field=field,
-                                file=f
+                                file=f"uploads/sample/{file_path.split('/')[-1]}"
                             )
                             file_list.append({
                                 "id": attachment.id,
-                                "url": attachment.file.url,
+                                "url": request.build_absolute_uri(attachment.file.url),
                                 "path": attachment.file.path
                             })
                         clean_sample[field.field_name] = file_list
+
                     else:
                         value = sample_serializer.validated_data.get(field.field_name)
-                        if isinstance(value, datetime):
-                            clean_sample[field.field_name] = value.isoformat()
-                        else:
-                            clean_sample[field.field_name] = value
+                        clean_sample[field.field_name] = (
+                            value.isoformat() if isinstance(value, datetime) else value
+                        )
 
-                # update sample entry data
                 sample_entry.data = clean_sample
                 sample_entry.save()
-
                 sample_clean_list.append(clean_sample)
 
-        # ------------------ UPDATE DYNAMIC REQUEST ENTRY DATA ------------------
+        # ------------------ SAVE ENTRY ------------------
         entry.data = {
             "request_form": req_clean_data,
             "sample_forms": sample_clean_list
         }
         entry.save()
 
-        # ------------------ HANDLE ANALYSES ------------------
         if analyses_data:
             entry.analyses.set(models.Analysis.objects.filter(id__in=analyses_data))
 
-        # ------------------ RETURN SERIALIZED RESPONSE ------------------
         serializer = DynamicRequestEntrySerializer(entry, context={"request": request})
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
@@ -793,189 +841,130 @@ class DynamicRequestFormEntryViewSet(viewsets.ModelViewSet):
     def partial_update(self, request, pk=None):
         entry = self.get_object()
 
+        # Parse request_form and sample_forms
         request_form_data_raw = request.data.get("request_form")
         sample_forms_data_raw = request.data.get("sample_forms")
 
         try:
-            request_form_data = json.loads(request_form_data_raw) if request_form_data_raw else {}
+            request_form_data = (
+                json.loads(request_form_data_raw)
+                if isinstance(request_form_data_raw, str)
+                else (request_form_data_raw or {})
+            )
         except Exception:
             return Response({"error": "Invalid request_form JSON"}, status=400)
 
         try:
-            sample_forms_data = json.loads(sample_forms_data_raw) if sample_forms_data_raw else []
+            sample_forms_data = (
+                json.loads(sample_forms_data_raw)
+                if isinstance(sample_forms_data_raw, str)
+                else (sample_forms_data_raw or [])
+            )
         except Exception:
             return Response({"error": "Invalid sample_forms JSON"}, status=400)
 
-        # ---------------- Update request_form data ----------------
-        # req_clean_data = entry.data.get("request_form", {})
-
-        # for field in entry.request_form.fields.all():
-        #     value = (
-        #         request.FILES.getlist(field.field_name)
-        #         if field.field_property == "attachment"
-        #         else request_form_data.get(field.field_name, req_clean_data.get(field.field_name))
-        #     )
-
-        #     if field.field_property == "attachment" and value:
-        #         existing_files = list(models.DynamicRequestAttachment.objects.filter(entry=entry, field=field))
-        #         file_list = [{"id": f.id, "url": f.file.url, "path": f.file.path} for f in existing_files]
-
-        #         for file_obj in value:
-        #             attachment = models.DynamicRequestAttachment.objects.create(
-        #                 entry=entry,
-        #                 field=field,
-        #                 file=file_obj
-        #             )
-        #             file_list.append({
-        #                 "id": attachment.id,
-        #                 "url": attachment.file.url,
-        #                 "path": attachment.file.path
-        #             })
-        #         req_clean_data[field.field_name] = file_list
-
-        #     elif isinstance(value, datetime):
-        #         req_clean_data[field.field_name] = value.isoformat()
-        #     else:
-        #         req_clean_data[field.field_name] = value
-
-
-
-        # ---------------- Update request_form data ----------------
+        # ---------------- Update request_form ----------------
         req_clean_data = entry.data.get("request_form", {})
 
         for field in entry.request_form.fields.all():
-            value = (
-                request.FILES.getlist(field.field_name)
-                if field.field_property == "attachment"
-                else request_form_data.get(field.field_name, req_clean_data.get(field.field_name))
-            )
-
             if field.field_property == "attachment":
-                if value:  # agar naye files aaye
-                    # ---- Purani files delete kar do ----
+                # Accept both uploaded files & URLs
+                new_files = request.FILES.getlist(field.field_name)
+                new_urls = request_form_data.get(field.field_name, [])
+                if not isinstance(new_urls, list):
+                    new_urls = [new_urls] if new_urls else []
+
+                if new_files or new_urls:
+                    # Replace old
                     existing_files = models.DynamicRequestAttachment.objects.filter(entry=entry, field=field)
                     for ef in existing_files:
-                        ef.file.delete(save=False)  # storage se bhi delete
+                        ef.file.delete(save=False)
                         ef.delete()
 
-                    # ---- Naye files add karo ----
                     file_list = []
-                    for file_obj in value:
+                    for f in new_files:
                         attachment = models.DynamicRequestAttachment.objects.create(
-                            entry=entry,
-                            field=field,
-                            file=file_obj
+                            entry=entry, field=field, file=f
                         )
                         file_list.append({
                             "id": attachment.id,
                             "url": attachment.file.url,
                             "path": attachment.file.path
                         })
+                    for url in new_urls:
+                        file_list.append({"id": None, "url": url, "path": url})
+
                     req_clean_data[field.field_name] = file_list
                 else:
-                    # Agar naye files nahi bheje to purane hi rakh lo
-                    existing_files = list(models.DynamicRequestAttachment.objects.filter(entry=entry, field=field))
+                    # Keep existing
+                    existing_files = models.DynamicRequestAttachment.objects.filter(entry=entry, field=field)
                     req_clean_data[field.field_name] = [
                         {"id": f.id, "url": f.file.url, "path": f.file.path} for f in existing_files
                     ]
-
-            elif isinstance(value, datetime):
-                req_clean_data[field.field_name] = value.isoformat()
             else:
-                req_clean_data[field.field_name] = value
+                value = request_form_data.get(field.field_name, req_clean_data.get(field.field_name))
+                req_clean_data[field.field_name] = value.isoformat() if isinstance(value, datetime) else value
 
         # ---------------- Update sample forms ----------------
         sample_entry_list = []
+        sample_forms = entry.request_form.sample_form.all()  # ✅ FIX: ManyToMany, get all
 
-        sample_form = entry.request_form.sample_form
-        if sample_form and sample_forms_data:
-            sample_serializer_class = build_dynamic_serializer(sample_form.fields.all())
-            existing_entries = list(models.DynamicFormEntry.objects.filter(form=sample_form, logged_by=request.user))
-
-            for i, sample in enumerate(sample_forms_data):
-                sample_serializer = sample_serializer_class(data=sample)
+        if sample_forms and sample_forms_data:
+            for i, (sample_form, sample_data) in enumerate(zip(sample_forms, sample_forms_data)):
+                # Dynamic serializer for this form
+                sample_serializer_class = build_dynamic_request_serializer(sample_form.fields.all())
+                sample_serializer = sample_serializer_class(data=sample_data)
                 sample_serializer.is_valid(raise_exception=True)
 
-                # Identify existing sample entry
-                sample_id = sample.get("id")
-                if sample_id:
-                    sample_entry = models.DynamicFormEntry.objects.filter(id=sample_id).first()
-                else:
-                    sample_entry = next(
-                        (e for e in existing_entries if all(
-                            e.data.get(k) == v for k, v in sample.items() if k not in ["Test Report Attachment", "analyses_data"]
-                        )),
-                        None
-                    )
-
+                sample_id = sample_data.get("id")
+                sample_entry = (
+                    models.DynamicFormEntry.objects.filter(id=sample_id).first()
+                    if sample_id else None
+                )
                 if not sample_entry:
                     sample_entry = models.DynamicFormEntry.objects.create(
-                        form=sample_form,
-                        data={},
-                        logged_by=request.user
+                        form=sample_form, data={}, logged_by=request.user
                     )
 
                 clean_sample = {}
                 for field in sample_form.fields.all():
                     if field.field_property == "attachment":
                         file_key = f"sample_forms[{i}][{field.field_name}]"
-                        files = request.FILES.getlist(file_key)
+                        new_files = request.FILES.getlist(file_key)
+                        new_urls = sample_data.get(field.field_name, [])
+                        if not isinstance(new_urls, list):
+                            new_urls = [new_urls] if new_urls else []
 
-                        if files:  # agar naye files bheje gaye
-                            # ---- Purani files delete ----
+                        if new_files or new_urls:
                             existing_files = models.DynamicFormAttachment.objects.filter(entry=sample_entry, field=field)
                             for ef in existing_files:
                                 ef.file.delete(save=False)
                                 ef.delete()
 
-                            # ---- Naye files add ----
                             file_list = []
-                            for f in files:
+                            for f in new_files:
                                 attachment = models.DynamicFormAttachment.objects.create(
-                                    entry=sample_entry,
-                                    field=field,
-                                    file=f
+                                    entry=sample_entry, field=field, file=f
                                 )
                                 file_list.append({
                                     "id": attachment.id,
                                     "url": attachment.file.url,
                                     "path": attachment.file.path
                                 })
+                            for url in new_urls:
+                                file_list.append({"id": None, "url": url, "path": url})
+
                             clean_sample[field.field_name] = file_list
                         else:
-                            # agar naye nahi bheje to purane rakh lo
                             existing_files = models.DynamicFormAttachment.objects.filter(entry=sample_entry, field=field)
                             clean_sample[field.field_name] = [
                                 {"id": f.id, "url": f.file.url, "path": f.file.path} for f in existing_files
                             ]
-
                     else:
-                        value = sample_serializer.validated_data.get(field.field_name, sample_entry.data.get(field.field_name))
-                        if isinstance(value, datetime):
-                            clean_sample[field.field_name] = value.isoformat()
-                        else:
-                            clean_sample[field.field_name] = value
-
-                # ---------------- Handle Analyses ----------------
-                analyses_for_sample = sample.get("analyses_data", [])
-                if analyses_for_sample:
-                    # delete old and set new
-                    models.DynamicFormEntryAnalysis.objects.filter(entry=sample_entry).delete()
-                    for analysis_item in analyses_for_sample:
-                        analysis_id = analysis_item["analysis_id"]
-                        component_ids = analysis_item.get("component_ids", [])
-                        analysis = models.Analysis.objects.get(id=analysis_id)
-
-                        ea = models.DynamicFormEntryAnalysis.objects.create(entry=sample_entry, analysis=analysis)
-
-                        if component_ids:
-                            components = models.Component.objects.filter(id__in=component_ids, analysis=analysis)
-                        else:
-                            components = analysis.components.all()
-                        ea.components.set(components)
-                else:
-                    # Agar user ne analyses nahi bheje aur purane exist karte hain -> waise hi rehne do
-                    pass
+                        value = sample_serializer.validated_data.get(
+                            field.field_name, sample_entry.data.get(field.field_name)
+                        )
+                        clean_sample[field.field_name] = value.isoformat() if isinstance(value, datetime) else value
 
                 sample_entry.data = clean_sample
                 sample_entry.save()
@@ -989,7 +978,6 @@ class DynamicRequestFormEntryViewSet(viewsets.ModelViewSet):
         entry.save()
 
         return Response(DynamicRequestEntrySerializer(entry, context={"request": request}).data)
-
 
 
 

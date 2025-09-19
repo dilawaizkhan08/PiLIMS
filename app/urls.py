@@ -32,6 +32,9 @@ router.register(r'products', views.ProductViewSet, basename='products')
 
 router.register(r'roles', views.RoleViewSet,  basename="roles")
 router.register(r'modules', views.ModuleViewSet, basename="modules")
+router.register(r'request-attachments', views.DynamicRequestAttachmentViewSet, basename='request-attachments')
+router.register(r'sample-attachments', views.DynamicFormAttachmentViewSet, basename='sample-attachments')
+
 
 
 
@@ -61,4 +64,5 @@ urlpatterns = [
     path("configs/", views.SystemConfigurationListCreateView.as_view(), name="config-list"),
     path("configs/<int:pk>/", views.SystemConfigurationDetailView.as_view(), name="config-detail"),
     path("configs/bulk-update/", views.BulkConfigUpdateView.as_view(), name="bulk-config-update"),
+
 ]

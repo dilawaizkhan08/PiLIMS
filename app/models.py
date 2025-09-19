@@ -351,9 +351,9 @@ class DynamicFormAttachment(models.Model):
     entry = models.ForeignKey(
         "DynamicFormEntry",
         on_delete=models.CASCADE,
-        related_name="attachments"
+        related_name="attachments", null=True,  blank=True
     )
-    field = models.ForeignKey("SampleField", on_delete=models.CASCADE)
+    field = models.ForeignKey("SampleField", on_delete=models.CASCADE, blank=True, null=True)
     file = models.FileField(upload_to=attachment_upload_path)
     uploaded_at = models.DateTimeField(auto_now_add=True)
 
@@ -448,9 +448,9 @@ class DynamicRequestEntry(BaseModel):
 
 
 class DynamicRequestAttachment(models.Model):
-    entry = models.ForeignKey("DynamicRequestEntry", on_delete=models.CASCADE, related_name="attachments")
-    field = models.ForeignKey("RequestField", on_delete=models.CASCADE)
-    file = models.FileField(upload_to="uploads/request/")  # 👈 path set here
+    entry = models.ForeignKey("DynamicRequestEntry", on_delete=models.CASCADE, related_name="attachments", null=True,  blank=True)
+    field = models.ForeignKey("RequestField", on_delete=models.CASCADE, blank=True, null=True)
+    file = models.FileField(upload_to="uploads/request/")
 
     def __str__(self):
         return f"{self.field.field_name} - {self.file.name}"
