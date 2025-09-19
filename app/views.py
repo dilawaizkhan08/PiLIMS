@@ -276,15 +276,11 @@ class CustomFunctionViewSet(viewsets.ModelViewSet):
 
     # ========= 2) OVERRIDE CREATE ==========
     def create(self, request, *args, **kwargs):
-        # Check if last validated matches the incoming request
-        last_valid = request.session.get("last_valid_function")
-        if not last_valid or last_valid != request.data:
-            return Response(
-                {"error": "Please validate the function before saving."},
-                status=400
-            )
-        # proceed to save
+        # Just re-run validation on create
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)  # validation logic from serializer
         return super().create(request, *args, **kwargs)
+
 
 
 
