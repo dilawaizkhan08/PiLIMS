@@ -498,6 +498,8 @@ class SampleFormSubmitView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
+
+
 class DynamicSampleFormEntryViewSet(viewsets.ModelViewSet):
     queryset = models.DynamicFormEntry.objects.all().order_by("-created_at")
     serializer_class = DynamicFormEntrySerializer
@@ -756,11 +758,25 @@ class RequestFormSubmitView(APIView):
 
             else:
                 value = req_serializer.validated_data.get(field.field_name)
-                req_clean_data[field.field_name] = (
-                    value.isoformat() if isinstance(value, datetime) else value
-                )
 
-        # ------------------ SAMPLE FORMS ------------------
+                if field.field_property == "list":
+                    try:
+                        if isinstance(value, list):
+                            ids_only = [int(v) for v in value]
+                            req_clean_data[field.field_name] = ids_only
+                        else:
+                            req_clean_data[field.field_name] = int(value) if value is not None else None
+                    except (ValueError, TypeError):
+                        return Response(
+                            {field.field_name: "Expected ID(s) as integer, got invalid value."},
+                            status=status.HTTP_400_BAD_REQUEST
+                        )
+                else:
+                    req_clean_data[field.field_name] = (
+                        value.isoformat() if isinstance(value, datetime) else value
+                    )
+
+
         # ------------------ HANDLE SAMPLE FORMS ------------------
         sample_clean_list = []
         if request_form.sample_form.exists() and sample_forms_data:
@@ -835,7 +851,7 @@ class DynamicRequestFormEntryViewSet(viewsets.ModelViewSet):
     def partial_update(self, request, pk=None):
         entry = self.get_object()
 
-        # Parse request_form and sample_forms
+        # ---------------- Parse raw data ----------------
         request_form_data_raw = request.data.get("request_form")
         sample_forms_data_raw = request.data.get("sample_forms")
 
@@ -857,7 +873,11 @@ class DynamicRequestFormEntryViewSet(viewsets.ModelViewSet):
         except Exception:
             return Response({"error": "Invalid sample_forms JSON"}, status=400)
 
-        # ---------------- Update request_form ----------------
+        # ---------------- Validate request_form ----------------
+        req_serializer_class = build_dynamic_request_serializer(entry.request_form.fields.all())
+        req_serializer = req_serializer_class(data=request_form_data, partial=True)
+        req_serializer.is_valid(raise_exception=True)
+
         req_clean_data = entry.data.get("request_form", {})
 
         for field in entry.request_form.fields.all():
@@ -896,18 +916,20 @@ class DynamicRequestFormEntryViewSet(viewsets.ModelViewSet):
                         {"id": f.id, "url": f.file.url, "path": f.file.path} for f in existing_files
                     ]
             else:
-                value = request_form_data.get(field.field_name, req_clean_data.get(field.field_name))
-                req_clean_data[field.field_name] = value.isoformat() if isinstance(value, datetime) else value
+                value = req_serializer.validated_data.get(field.field_name, req_clean_data.get(field.field_name))
+                req_clean_data[field.field_name] = (
+                    value.isoformat() if isinstance(value, datetime) else value
+                )
 
         # ---------------- Update sample forms ----------------
         sample_entry_list = []
-        sample_forms = entry.request_form.sample_form.all()  # ✅ FIX: ManyToMany, get all
+        sample_forms = entry.request_form.sample_form.all()
 
         if sample_forms and sample_forms_data:
             for i, (sample_form, sample_data) in enumerate(zip(sample_forms, sample_forms_data)):
-                # Dynamic serializer for this form
+                # validate with dynamic serializer
                 sample_serializer_class = build_dynamic_request_serializer(sample_form.fields.all())
-                sample_serializer = sample_serializer_class(data=sample_data)
+                sample_serializer = sample_serializer_class(data=sample_data, partial=True)
                 sample_serializer.is_valid(raise_exception=True)
 
                 sample_id = sample_data.get("id")
@@ -958,7 +980,9 @@ class DynamicRequestFormEntryViewSet(viewsets.ModelViewSet):
                         value = sample_serializer.validated_data.get(
                             field.field_name, sample_entry.data.get(field.field_name)
                         )
-                        clean_sample[field.field_name] = value.isoformat() if isinstance(value, datetime) else value
+                        clean_sample[field.field_name] = (
+                            value.isoformat() if isinstance(value, datetime) else value
+                        )
 
                 sample_entry.data = clean_sample
                 sample_entry.save()
@@ -972,7 +996,6 @@ class DynamicRequestFormEntryViewSet(viewsets.ModelViewSet):
         entry.save()
 
         return Response(DynamicRequestEntrySerializer(entry, context={"request": request}).data)
-
 
 
 class ProductViewSet(viewsets.ModelViewSet):

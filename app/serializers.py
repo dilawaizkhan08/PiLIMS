@@ -1286,11 +1286,22 @@ def build_dynamic_request_serializer(fields):
 
         elif field.field_property == "list" and field.list_ref:
             list_obj = field.list_ref
-            choices = [(str(v), str(v)) for v in list_obj.values.all()]
-            field_dict[field.field_name] = serializers.ChoiceField(
-                choices=choices,
+            valid_ids = list_obj.values.values_list("id", flat=True)
+
+            # Custom field to validate IDs
+            class ListIDField(serializers.IntegerField):
+                def to_internal_value(self, data):
+                    data = super().to_internal_value(data)
+                    if data not in valid_ids:
+                        raise serializers.ValidationError(
+                            f"Invalid ID {data}. This ID does not exist in list '{list_obj.name}'."
+                        )
+                    return data
+
+            field_dict[field.field_name] = serializers.ListField(
+                child=ListIDField(),
                 required=field.required,
-                allow_null=not field.required
+                allow_empty=not field.required
             )
 
         elif field.field_property == "attachment":
