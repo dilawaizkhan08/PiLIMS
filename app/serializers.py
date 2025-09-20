@@ -1503,13 +1503,16 @@ class PermissionSerializer(serializers.ModelSerializer):
 
 class RoleSerializer(serializers.ModelSerializer):
     permissions = PermissionSerializer(many=True)
-    users = serializers.SerializerMethodField()
+    users = serializers.PrimaryKeyRelatedField(
+        queryset=models.User.objects.all(), many=True, write_only=True
+    )
+    users_detail = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = models.Role
-        fields = ["id", "name", "users", "permissions"]
+        fields = ["id", "name", "users", "users_detail", "permissions"]
 
-    def get_users(self, obj):
+    def get_users_detail(self, obj):
         return [{"id": user.id, "username": user.username} for user in obj.users.all()]
 
     def create(self, validated_data):
@@ -1530,13 +1533,12 @@ class RoleSerializer(serializers.ModelSerializer):
         instance.save()
         instance.users.set(users)
 
-        # replace permissions
         instance.permissions.all().delete()
         for perm in permissions_data:
             models.Permission.objects.create(role=instance, **perm)
 
         return instance
-    
+
 
 class AnalysisSchemaSerializer(serializers.ModelSerializer):
     components = ComponentSerializer(many=True)

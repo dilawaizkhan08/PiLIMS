@@ -627,11 +627,10 @@ class RequestFormSchemaView(APIView):
         for req_field in req_fields_qs:
             field_obj = req_serializer_instance.get_fields().get(req_field.field_name)
 
-            # 👇 Handle attachment type explicitly
             if req_field.field_property == "attachment":
                 meta = {
                     "name": req_field.field_name,
-                    "type": "Attachment",   # ✅ instead of ListField
+                    "type": "Attachment",
                     "required": req_field.required,
                 }
             else:
@@ -649,10 +648,9 @@ class RequestFormSchemaView(APIView):
 
             req_field_meta.append(meta)
 
-        # ------------------ ATTACHED SAMPLE FORM ------------------
-        sample_form_meta = None
-        if request_form.sample_form:
-            sample_form = request_form.sample_form
+        # ------------------ ATTACHED SAMPLE FORMS ------------------
+        sample_forms_meta = []
+        for sample_form in request_form.sample_form.all():  # ✅ loop ManyToMany
             sample_fields_qs = sample_form.fields.all()
 
             sample_serializer_class = build_dynamic_serializer(sample_fields_qs)
@@ -665,7 +663,7 @@ class RequestFormSchemaView(APIView):
                 if sample_field.field_property == "attachment":
                     s_meta = {
                         "name": sample_field.field_name,
-                        "type": "Attachment",  # ✅ fix for sample form too
+                        "type": "Attachment",
                         "required": sample_field.required,
                     }
                 else:
@@ -683,16 +681,16 @@ class RequestFormSchemaView(APIView):
 
                 sample_field_meta.append(s_meta)
 
-            sample_form_meta = {
+            sample_forms_meta.append({
                 "form_name": sample_form.sample_name,
                 "fields": sample_field_meta
-            }
+            })
 
         # ------------------ RESPONSE ------------------
         return Response({
             "form_name": request_form.request_name,
             "fields": req_field_meta,
-            "sample_form": sample_form_meta
+            "sample_forms": sample_forms_meta  # ✅ return list instead of single
         })
 
 
