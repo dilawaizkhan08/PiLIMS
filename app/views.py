@@ -259,6 +259,8 @@ class AnalysisViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated, HasModulePermission]
 
 
+
+
 class CustomFunctionViewSet(viewsets.ModelViewSet):
     queryset = models.CustomFunction.objects.all()
     serializer_class = CustomFunctionSerializer

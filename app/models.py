@@ -127,7 +127,7 @@ class AnalysisAttachment(BaseModel):
 
 
 class Component(BaseModel):
-    analysis = models.ForeignKey(Analysis, related_name='components', on_delete=models.CASCADE)
+    analysis = models.ForeignKey(Analysis, related_name='components', on_delete=models.CASCADE,null=True,blank=True)
     name = models.CharField(max_length=255)
     type = models.CharField(max_length=50,choices=choices.ComponentTypes.choices)
     unit = models.ForeignKey(Unit, on_delete=models.SET_NULL, null=True, blank=True, related_name="components")
@@ -150,6 +150,7 @@ class Component(BaseModel):
 
     def __str__(self):
         return f"{self.name} ({self.analysis.name})"
+
 
 
 class ComponentFunctionParameter(BaseModel):

@@ -270,16 +270,12 @@ class ParameterMappingSerializer(serializers.Serializer):
 
 
 class ComponentSerializer(serializers.ModelSerializer):
-    analysis_id = serializers.IntegerField(write_only=True)
 
-   
     unit_id = serializers.PrimaryKeyRelatedField(
         queryset=models.Unit.objects.all(),
         source="unit",
         required=False
     )
-
-    # ✅ for reading (nested details)
     unit = serializers.StringRelatedField(read_only=True)
 
     list_id = serializers.PrimaryKeyRelatedField(
@@ -309,7 +305,7 @@ class ComponentSerializer(serializers.ModelSerializer):
     class Meta:
         model = models.Component
         fields = [
-            'id', 'analysis_id', 'name', 'type',
+            'id', 'analysis', 'name', 'type',
             'unit_id', 'unit',
             'spec_limits', 'description',
             'optional', 'calculated',
@@ -331,7 +327,6 @@ class ComponentSerializer(serializers.ModelSerializer):
             allowed_values = set(list_obj.values.values_list("value", flat=True))
             spec_limits = attrs.get("spec_limits")
 
-            # Auto-populate spec_limits if not provided
             if not spec_limits:
                 attrs["spec_limits"] = list(allowed_values)
             else:
@@ -344,15 +339,9 @@ class ComponentSerializer(serializers.ModelSerializer):
         return attrs
 
     def create(self, validated_data):
-        analysis_id = validated_data.pop("analysis_id")
         parameters_data = validated_data.pop("parameters", [])
-
-        try:
-            analysis = models.Analysis.objects.get(id=analysis_id)
-        except models.Analysis.DoesNotExist:
-            raise serializers.ValidationError("Analysis with given ID does not exist.")
-
-        component = models.Component.objects.create(analysis=analysis, **validated_data)
+        # ⚠️ ab analysis context se nahi aayega, directly null allow hoga
+        component = models.Component.objects.create(**validated_data)
 
         if component.calculated and component.custom_function:
             expected_vars = set(component.custom_function.variables)
@@ -370,18 +359,15 @@ class ComponentSerializer(serializers.ModelSerializer):
                     {"parameters": f"Unexpected variables: {', '.join(extra)}"}
                 )
 
-            # save mappings
             for param in parameters_data:
                 var_name = param["parameter"]
                 comp_id = param["component"]
 
                 try:
-                    mapped_component = models.Component.objects.get(
-                        id=comp_id, analysis=analysis
-                    )
+                    mapped_component = models.Component.objects.get(id=comp_id)
                 except models.Component.DoesNotExist:
                     raise serializers.ValidationError(
-                        {"parameters": f"Component {comp_id} not found in this analysis"}
+                        {"parameters": f"Component {comp_id} not found"}
                     )
 
                 models.ComponentFunctionParameter.objects.create(
@@ -394,8 +380,6 @@ class ComponentSerializer(serializers.ModelSerializer):
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
-
-        
         if instance.calculated and instance.custom_function:
             data["parameters"] = [
                 {
@@ -407,7 +391,6 @@ class ComponentSerializer(serializers.ModelSerializer):
                 }
                 for p in instance.function_parameters.all()
             ]
-
         return data
 
 
@@ -434,7 +417,14 @@ class AnalysisSerializer(serializers.ModelSerializer):
         required=False
     )
 
-    components = ComponentSerializer(many=True, read_only=True)
+    # ✅ IDs bhejne ke liye (write-only)
+    component_ids = serializers.ListField(
+        child=serializers.IntegerField(),
+        write_only=True,
+        required=False
+    )
+    # ✅ Nested read-only for GET
+    components = ComponentSerializer(many=True, read_only=True, source="component_set")
 
     # ✅ Write-only for IDs
     user_groups_ids = serializers.PrimaryKeyRelatedField(
@@ -473,15 +463,19 @@ class AnalysisSerializer(serializers.ModelSerializer):
             "attachments",
             "attachment_urls",
             "components",
+            "component_ids",   # add this explicitly
         ]
 
     def create(self, validated_data):
         attachment_urls = validated_data.pop("attachment_urls", [])
         user_groups = validated_data.pop("user_groups", [])
+        component_ids = validated_data.pop("component_ids", [])
 
+        # Analysis create
         analysis = models.Analysis.objects.create(**validated_data)
         analysis.user_groups.set(user_groups)
 
+        # Handle attachments
         for url in attachment_urls:
             file_path = url.split('/media/')[-1]
             try:
@@ -492,6 +486,13 @@ class AnalysisSerializer(serializers.ModelSerializer):
                 )
             attachment.analysis = analysis
             attachment.save()
+
+        # Handle components (attach via IDs)
+        if component_ids:
+            components = models.Component.objects.filter(id__in=component_ids)
+            for comp in components:
+                comp.analysis = analysis
+                comp.save()
 
         return analysis
 
