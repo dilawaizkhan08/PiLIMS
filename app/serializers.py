@@ -423,8 +423,9 @@ class AnalysisSerializer(serializers.ModelSerializer):
         write_only=True,
         required=False
     )
+
     # ✅ Nested read-only for GET
-    components = ComponentSerializer(many=True, read_only=True, source="component_set")
+    components = ComponentSerializer(many=True, read_only=True)   # 👈 fix
 
     # ✅ Write-only for IDs
     user_groups_ids = serializers.PrimaryKeyRelatedField(
@@ -444,7 +445,7 @@ class AnalysisSerializer(serializers.ModelSerializer):
         source="test_method",
         write_only=True
     )
-    test_method = TestMethodSerializer(read_only=True)  # <-- if you want nested data on GET
+    test_method = TestMethodSerializer(read_only=True)
 
     class Meta:
         model = models.Analysis
@@ -462,8 +463,8 @@ class AnalysisSerializer(serializers.ModelSerializer):
             "description",
             "attachments",
             "attachment_urls",
-            "components",
-            "component_ids",   # add this explicitly
+            "components",       # 👈 response me show hoga
+            "component_ids",    # 👈 write-only
         ]
 
     def create(self, validated_data):
@@ -495,7 +496,6 @@ class AnalysisSerializer(serializers.ModelSerializer):
                 comp.save()
 
         return analysis
-
 
 
 class InstrumentHistorySerializer(serializers.ModelSerializer):
