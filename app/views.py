@@ -1245,6 +1245,34 @@ class AnalysisResultSubmitView(APIView):
             }
         )
     
+
+    def get(self, request, entry_id, analysis_id):
+        entry = get_object_or_404(models.DynamicFormEntry, pk=entry_id)
+        analysis = get_object_or_404(models.Analysis, pk=analysis_id)
+
+        # ✅ Ensure this analysis belongs to the entry
+        if not entry.analyses.filter(id=analysis.id).exists():
+            return Response(
+                {"error": "This analysis is not linked with the entry"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # ✅ Fetch all results for this entry + analysis components
+        results = models.ComponentResult.objects.filter(
+            entry=entry, component__analysis=analysis
+        )
+
+        serializer = ComponentResultSerializer(results, many=True)
+
+        return Response(
+            {
+                "message": "Results fetched successfully",
+                "entry_id": entry.id,
+                "analysis_id": analysis.id,
+                "results": serializer.data,
+            },
+            status=status.HTTP_200_OK,
+        )
     
 class SystemConfigurationListCreateView(generics.ListCreateAPIView):
     queryset = models.SystemConfiguration.objects.all()
