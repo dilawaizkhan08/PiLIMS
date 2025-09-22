@@ -1122,7 +1122,8 @@ class EntryAnalysesSchemaView(APIView):
                     "decimal_places": comp.decimal_places,
                     "required": not comp.optional,
                     "choices": choices,
-                    "specifications": comp.spec_limits
+                    "specifications": comp.spec_limits,
+                    "calculated": comp.calculated,
                 })
 
             analyses_data.append({

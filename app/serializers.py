@@ -463,8 +463,8 @@ class AnalysisSerializer(serializers.ModelSerializer):
             "description",
             "attachments",
             "attachment_urls",
-            "components",       # 👈 response me show hoga
-            "component_ids",    # 👈 write-only
+            "components",
+            "component_ids",   
         ]
 
     def create(self, validated_data):
