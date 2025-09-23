@@ -244,23 +244,32 @@ class CustomFunctionSerializer(serializers.ModelSerializer):
 
 
 class TestMethodSerializer(serializers.ModelSerializer):
-    # Instead of only IDs, nest full serializer
     user_groups = UserGroupSerializer(many=True, read_only=True)
-    # Allow writing by IDs
     user_groups_ids = serializers.PrimaryKeyRelatedField(
-        many=True, queryset=models.UserGroup.objects.all(), required=False
+        many=True, queryset=models.UserGroup.objects.all(), write_only=True, required=False
     )
 
     class Meta:
         model = models.TestMethod
         fields = ['id', 'name', 'description', 'user_groups', 'user_groups_ids']
 
+    def create(self, validated_data):
+        user_groups = validated_data.pop('user_groups_ids', [])
+        test_method = super().create(validated_data)
+        test_method.user_groups.set(user_groups)  # set M2M relationship
+        return test_method
+
+    def update(self, instance, validated_data):
+        user_groups = validated_data.pop('user_groups_ids', None)
+        instance = super().update(instance, validated_data)
+        if user_groups is not None:
+            instance.user_groups.set(user_groups)
+        return instance
+
     def to_representation(self, instance):
-        """Add user_groups_ids to GET response"""
         data = super().to_representation(instance)
         data['user_groups_ids'] = list(instance.user_groups.values_list('id', flat=True))
         return data
-
 
 
 class ParameterMappingSerializer(serializers.Serializer):
