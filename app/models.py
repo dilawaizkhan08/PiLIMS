@@ -338,6 +338,7 @@ class DynamicFormEntry(BaseModel):
     logged_by = models.ForeignKey(
         User, null=True, blank=True, on_delete=models.SET_NULL, related_name="logged_samples"
     )
+    comment = models.TextField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     analyses = models.ManyToManyField("Analysis", through="DynamicFormEntryAnalysis", related_name="entries", blank=True)
 

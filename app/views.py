@@ -44,6 +44,7 @@ from datetime import datetime, date
 import inflection
 from rest_framework import viewsets, mixins
 from django.db.models import F
+from django.apps import apps
 
 
 def get_config(key, default=None):
@@ -349,7 +350,7 @@ class ComponentViewSet(viewsets.ModelViewSet):
 
 
 
-from django.apps import apps
+
 
 class SampleFormViewSet(viewsets.ModelViewSet):
     queryset = models.SampleForm.objects.all()
@@ -498,8 +499,6 @@ class SampleFormSubmitView(APIView):
             }, status=status.HTTP_201_CREATED)
 
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-
 
 
 class DynamicSampleFormEntryViewSet(viewsets.ModelViewSet):
@@ -1000,6 +999,7 @@ class DynamicRequestFormEntryViewSet(viewsets.ModelViewSet):
         return Response(DynamicRequestEntrySerializer(entry, context={"request": request}).data)
 
 
+
 class ProductViewSet(viewsets.ModelViewSet):
     queryset = models.Product.objects.all()
     serializer_class = ProductSerializer
@@ -1149,6 +1149,12 @@ class AnalysisResultSubmitView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        # 🔹 Save comment if provided
+        comment = request.data.get("comment")
+        if comment:
+            entry.comment = comment
+            entry.save()
+
         results_data = request.data.get("results", [])
         saved_results = []
 
@@ -1175,16 +1181,13 @@ class AnalysisResultSubmitView(APIView):
             else:
                 numeric_val = res.get("numeric_value")
 
-            # ✅ Save or update result with new fields
+            # ✅ Save or update result
             result, _ = models.ComponentResult.objects.update_or_create(
                 entry=entry,
                 component=comp,
                 defaults={
                     "value": res.get("value"),
                     "numeric_value": numeric_val,
-                    "remarks": res.get("remarks"),
-                    "authorization_flag": res.get("authorization_flag", False),
-                    "authorization_remark": res.get("authorization_remark"),
                     "created_by": request.user,
                 },
             )
@@ -1228,7 +1231,7 @@ class AnalysisResultSubmitView(APIView):
                     "value": str(numeric_value),
                     "numeric_value": numeric_value,
                     "remarks": "Auto-calculated",
-                    "authorization_flag": False,  # default for auto-calculated
+                    "authorization_flag": False,
                     "authorization_remark": None,
                     "created_by": request.user,
                 },
@@ -1241,10 +1244,11 @@ class AnalysisResultSubmitView(APIView):
                 "message": "Results saved successfully",
                 "entry_id": entry.id,
                 "analysis_id": analysis.id,
+                "comment": entry.comment,   # ✅ return comment in response
                 "results": serializer.data,
             }
         )
-    
+
 
     def get(self, request, entry_id, analysis_id):
         entry = get_object_or_404(models.DynamicFormEntry, pk=entry_id)
@@ -1274,6 +1278,75 @@ class AnalysisResultSubmitView(APIView):
             status=status.HTTP_200_OK,
         )
     
+
+    def patch(self, request, entry_id, analysis_id):
+        entry = get_object_or_404(models.DynamicFormEntry, pk=entry_id)
+        analysis = get_object_or_404(models.Analysis, pk=analysis_id)
+
+        if not entry.analyses.filter(id=analysis.id).exists():
+            return Response(
+                {"error": "This analysis is not linked with the entry"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Expect component_id in request
+        comp_id = request.data.get("component_id")
+        if not comp_id:
+            return Response(
+                {"error": "component_id is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        comp = get_object_or_404(models.Component, pk=comp_id, analysis=analysis)
+        result = models.ComponentResult.objects.filter(entry=entry, component=comp).first()
+
+        if not result:
+            return Response(
+                {"error": f"No result found for component {comp.name}"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        remarks = request.data.get("remarks")
+        auth_flag = request.data.get("authorization_flag")
+        auth_remark = request.data.get("authorization_remark")
+
+        # 1️⃣ User can always update remarks
+        if remarks is not None:
+            result.remarks = remarks
+
+        # 2️⃣ User cannot enable authorization_flag until remarks are set
+        if auth_flag is not None:
+            if not result.remarks:
+                return Response(
+                    {"error": "Add remarks before enabling authorization."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            result.authorization_flag = bool(auth_flag)
+
+        # 3️⃣ User cannot add authorization_remark unless authorization_flag is True
+        if auth_remark is not None:
+            if not result.authorization_flag:
+                return Response(
+                    {"error": "Enable authorization flag before adding authorization remark."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            result.authorization_remark = auth_remark
+
+        result.save()
+
+        serializer = ComponentResultSerializer(result)
+        return Response(
+            {
+                "message": f"Result updated successfully for component {comp.name}",
+                "entry_id": entry.id,
+                "analysis_id": analysis.id,
+                "result": serializer.data,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+
 class SystemConfigurationListCreateView(generics.ListCreateAPIView):
     queryset = models.SystemConfiguration.objects.all()
     serializer_class = SystemConfigurationSerializer

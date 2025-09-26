@@ -426,17 +426,13 @@ class AnalysisSerializer(serializers.ModelSerializer):
         required=False
     )
 
-    # ✅ IDs bhejne ke liye (write-only)
     component_ids = serializers.ListField(
         child=serializers.IntegerField(),
         write_only=True,
         required=False
     )
+    components = ComponentSerializer(many=True, read_only=True)
 
-    # ✅ Nested read-only for GET
-    components = ComponentSerializer(many=True, read_only=True)   # 👈 fix
-
-    # ✅ Write-only for IDs
     user_groups_ids = serializers.PrimaryKeyRelatedField(
         many=True,
         queryset=models.UserGroup.objects.all(),
@@ -444,11 +440,8 @@ class AnalysisSerializer(serializers.ModelSerializer):
         source="user_groups",
         required=False
     )
-
-    # ✅ Nested read-only for GET
     user_groups = UserGroupSerializer(many=True, read_only=True)
 
-    # ✅ Explicit handling of FK field
     test_method_id = serializers.PrimaryKeyRelatedField(
         queryset=models.TestMethod.objects.all(),
         source="test_method",
@@ -481,11 +474,10 @@ class AnalysisSerializer(serializers.ModelSerializer):
         user_groups = validated_data.pop("user_groups", [])
         component_ids = validated_data.pop("component_ids", [])
 
-        # Analysis create
         analysis = models.Analysis.objects.create(**validated_data)
         analysis.user_groups.set(user_groups)
 
-        # Handle attachments
+        # Attach attachments
         for url in attachment_urls:
             file_path = url.split('/media/')[-1]
             try:
@@ -497,7 +489,7 @@ class AnalysisSerializer(serializers.ModelSerializer):
             attachment.analysis = analysis
             attachment.save()
 
-        # Handle components (attach via IDs)
+        # Attach components
         if component_ids:
             components = models.Component.objects.filter(id__in=component_ids)
             for comp in components:
@@ -505,6 +497,47 @@ class AnalysisSerializer(serializers.ModelSerializer):
                 comp.save()
 
         return analysis
+
+    def update(self, instance, validated_data):
+        attachment_urls = validated_data.pop("attachment_urls", [])
+        user_groups = validated_data.pop("user_groups", [])
+        component_ids = validated_data.pop("component_ids", [])
+
+        # Update fields
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+
+        # Update user groups
+        if user_groups:
+            instance.user_groups.set(user_groups)
+
+        # Update attachments
+        if attachment_urls:
+            # Optional: clear old attachments if desired
+            # instance.attachments.all().delete()
+            for url in attachment_urls:
+                file_path = url.split('/media/')[-1]
+                try:
+                    attachment = models.AnalysisAttachment.objects.get(file=file_path)
+                except models.AnalysisAttachment.DoesNotExist:
+                    raise serializers.ValidationError(
+                        {"attachment_urls": f"Attachment not found for URL: {url}"}
+                    )
+                attachment.analysis = instance
+                attachment.save()
+
+        # Update components
+        if component_ids:
+            # Clear old components
+            instance.components.clear()  # if using ManyToMany
+            components = models.Component.objects.filter(id__in=component_ids)
+            for comp in components:
+                comp.analysis = instance
+                comp.save()
+
+        return instance
+
 
 
 class InstrumentHistorySerializer(serializers.ModelSerializer):
