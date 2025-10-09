@@ -49,6 +49,9 @@ class LoginSerializer(serializers.Serializer):
         return data
 
 from django.contrib.auth.password_validation import validate_password as dj_validate_password
+import re
+from django.utils import timezone
+import phonenumbers
 class UserSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, required=True, validators=[validate_password])
     last_login = serializers.DateTimeField(read_only=True)
@@ -97,15 +100,45 @@ class UserSerializer(serializers.ModelSerializer):
         return value
 
     def validate_password(self, value):
-        min_length = int(get_config("max_name_length", 10))
+        min_length = int(get_config("min_password_length", 10))  # fixed typo: was max_name_length
         if len(value) < min_length:
-            raise serializers.ValidationError(f"Password must be at least {min_length} characters long.")
+            raise serializers.ValidationError(
+                f"Password must be at least {min_length} characters long."
+            )
+
+        # ✅ Custom complexity rules
+        if not re.search(r"[A-Z]", value):
+            raise serializers.ValidationError("Password must contain at least one uppercase letter.")
+        if not re.search(r"[a-z]", value):
+            raise serializers.ValidationError("Password must contain at least one lowercase letter.")
+        if not re.search(r"[0-9]", value):
+            raise serializers.ValidationError("Password must contain at least one number.")
+        if not re.search(r"[!@#$%^&*(),.?\":{}|<>_\-+=]", value):
+            raise serializers.ValidationError("Password must contain at least one special character.")
+
+        # ✅ Run Django's built-in validators too
         try:
             dj_validate_password(value)
         except ValidationError as e:
             raise serializers.ValidationError(e.messages)
+
+        return value
+    
+    def validate_dob(self, value):
+        if value and value > timezone.now().date():
+            raise serializers.ValidationError("Date of Birth cannot be in the future.")
         return value
 
+
+    def validate_phone_number(self, value):
+        if value:
+            try:
+                parsed = phonenumbers.parse(value, None)
+                if not phonenumbers.is_valid_number(parsed):
+                    raise serializers.ValidationError("Enter a valid international phone number (e.g. +14155552671).")
+            except phonenumbers.NumberParseException:
+                raise serializers.ValidationError("Invalid phone number format. Use +CountryCodeXXXXXXXXX format.")
+        return value
 
 
 

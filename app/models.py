@@ -10,6 +10,10 @@ from django.contrib.auth.models import AbstractUser
 from django.db import models
 from django.utils.translation import gettext_lazy as _
 from . import choices
+import phonenumbers
+from django.core.exceptions import ValidationError
+
+
 
 
 
@@ -30,7 +34,7 @@ class User(AbstractUser, BaseModel):
     password = models.CharField(max_length=128, null=False, blank=False)
     name = models.CharField(_("Full Name"), max_length=255, null=False, blank=False)
 
-    idle_time = models.DurationField(null=True, blank=True)
+    idle_time = models.PositiveIntegerField(default=15, help_text="Auto logout time in minutes after inactivity")
     dob = models.DateField(_("Date of Birth"), null=True, blank=True)
     phone_number = models.CharField(max_length=20, null=True, blank=True)
     address = models.TextField(null=True, blank=True)
@@ -47,15 +51,23 @@ class User(AbstractUser, BaseModel):
     last_login = models.DateTimeField(blank=True, null=True)
     is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)
-
     
     failed_login_attempts = models.PositiveIntegerField(default=0)
 
-    USERNAME_FIELD = "email"
-    REQUIRED_FIELDS = ["name", "username"]
+    def clean(self):
+        super().clean()
+        # ✅ DOB validation
+        if self.dob and self.dob > timezone.now().date():
+            raise ValidationError({"dob": "Date of Birth cannot be in the future."})
 
-    def __str__(self):
-        return self.email
+        # ✅ Phone number validation
+        if self.phone_number:
+            try:
+                parsed = phonenumbers.parse(self.phone_number, None)  # None = allow any country code
+                if not phonenumbers.is_valid_number(parsed):
+                    raise ValidationError({"phone_number": "Enter a valid international phone number (e.g. +14155552671)."})
+            except phonenumbers.NumberParseException:
+                raise ValidationError({"phone_number": "Invalid phone number format. Use international format like +14155552671."})
 
     
 
