@@ -3,7 +3,8 @@ from rest_framework.exceptions import AuthenticationFailed
 from rest_framework.authtoken.models import Token
 from django.utils import timezone
 from datetime import timedelta
-from app.models import SystemConfiguration
+from app.models import SystemConfiguration,User
+from django.contrib.auth.backends import ModelBackend
 
 class IdleTimeoutTokenAuthentication(TokenAuthentication):
     """
@@ -41,3 +42,18 @@ class IdleTimeoutTokenAuthentication(TokenAuthentication):
         token.user.save(update_fields=["last_login"])
 
         return (token.user, token)
+
+
+class EmailBackend(ModelBackend):
+    """
+    Custom authentication backend that allows login using email instead of username.
+    """
+    def authenticate(self, request, email=None, password=None, **kwargs):
+        try:
+            user = User.objects.get(email=email)
+        except User.DoesNotExist:
+            return None
+
+        if user.check_password(password) and self.user_can_authenticate(user):
+            return user
+        return None

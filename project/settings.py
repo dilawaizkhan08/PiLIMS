@@ -122,6 +122,12 @@ SPECTACULAR_SETTINGS = {
     "SERVE_INCLUDE_SCHEMA": False,
 }
 
+
+AUTHENTICATION_BACKENDS = [
+    'app.authentication.EmailBackend', 
+    'django.contrib.auth.backends.ModelBackend'
+]
+
 CRISPY_TEMPLATE_PACK = "uni_form"
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
@@ -155,6 +161,9 @@ TEMPLATES = [
         },
     },
 ]
+
+
+
 
 WSGI_APPLICATION = "project.wsgi.application"
 EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
