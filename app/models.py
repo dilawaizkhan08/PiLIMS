@@ -320,12 +320,13 @@ class DynamicFormEntry(BaseModel):
     STATUS_CHOICES = [
         ("initiated", "Initiated"),
         ("received", "Received"),
+        ("in_progress", "In Progress"), 
         ("completed", "Completed"),
+        ("assign_analyst", "Assign Analyst"), 
         ("authorized", "Authorized"),
         ("rejected", "Rejected"),
         ("cancelled", "Cancelled"),
-        ("restored", "Restored"),
-    ]
+        ("restored", "Restored"),]
 
     form = models.ForeignKey(SampleForm, on_delete=models.CASCADE)
     data = models.JSONField()
@@ -427,7 +428,6 @@ class DynamicRequestEntry(BaseModel):
     STATUS_CHOICES = [
         ("initiated", "Initiated"),
         ("received", "Received"),
-        ("completed", "Completed"),
         ("authorized", "Authorized"),
         ("rejected", "Rejected"),
         ("cancelled", "Cancelled"),

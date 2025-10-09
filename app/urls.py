@@ -64,5 +64,6 @@ urlpatterns = [
     path("configs/", views.SystemConfigurationListCreateView.as_view(), name="config-list"),
     path("configs/<int:pk>/", views.SystemConfigurationDetailView.as_view(), name="config-detail"),
     path("configs/bulk-update/", views.BulkConfigUpdateView.as_view(), name="bulk-config-update"),
+    path("dynamic-report/", views.MultiDynamicReportView.as_view(), name="dynamic-report"),
 
 ]

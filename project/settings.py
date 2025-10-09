@@ -92,6 +92,7 @@ INSTALLED_APPS += [
     'storages',
     "crispy_forms",
     "corsheaders",
+    "slick_reporting",
 ]
 
 REST_FRAMEWORK = {

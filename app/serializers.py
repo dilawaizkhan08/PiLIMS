@@ -82,7 +82,8 @@ class UserSerializer(serializers.ModelSerializer):
     
     
     def validate_username(self, value):
-        if models.User.objects.filter(username=value).exists():
+        user_id = self.instance.id if self.instance else None
+        if models.User.objects.filter(username=value).exclude(id=user_id).exists():
             raise serializers.ValidationError("This username is already taken.")
         return value
 
@@ -96,7 +97,7 @@ class UserSerializer(serializers.ModelSerializer):
         return value
 
     def validate_password(self, value):
-        min_length = int(get_config("max_name_length", 70))
+        min_length = int(get_config("max_name_length", 10))
         if len(value) < min_length:
             raise serializers.ValidationError(f"Password must be at least {min_length} characters long.")
         try:
@@ -998,13 +999,18 @@ class EntryAnalysisSerializer(serializers.Serializer):
     )
 
 
+
 from django.core.files.storage import default_storage
 from django.core.files.base import ContentFile
+from rest_framework import serializers
+from . import models
+import json
+
 
 class DynamicFormEntrySerializer(serializers.ModelSerializer):
     analyses_data = serializers.JSONField(write_only=True, required=False)
 
-    # 👇 Yeh dono extra fields hain, DB me nahi
+    # 👇 These are extra fields, not in DB
     form_name = serializers.SerializerMethodField()
     form_id = serializers.SerializerMethodField()
 
@@ -1012,26 +1018,63 @@ class DynamicFormEntrySerializer(serializers.ModelSerializer):
         model = models.DynamicFormEntry
         fields = [
             "id", "form_name", "form_id", "data",
-            "status", "analyses_data", "created_at"
+            "status", "analyses_data", "analyst_id", "created_at"
         ]
 
+    # -------------------------
+    #   Helper Fields
+    # -------------------------
     def get_form_name(self, obj):
         return obj.form.sample_name if obj.form else None
 
     def get_form_id(self, obj):
         return obj.form.id if obj.form else None
 
+    # -------------------------
+    #   Create
+    # -------------------------
     def create(self, validated_data):
         analyses_data = validated_data.pop("analyses_data", [])
         entry = super().create(validated_data)
-        self._save_entry_analyses(entry, analyses_data)
+        if analyses_data:
+            self._save_entry_analyses(entry, analyses_data)
         return entry
-    
 
+    # -------------------------
+    #   Update
+    # -------------------------
     def update(self, instance, validated_data):
         request_data = self.context.get("request").data
 
-        # ✅ extract dynamic "data" fields
+        # ✅ 1️⃣ Handle Analyst Assignment First
+        status = validated_data.get("status")
+        analyst_id = validated_data.get("analyst_id")
+
+        if status == "assign_analyst":
+            if not analyst_id:
+                raise serializers.ValidationError("Please provide an 'analyst_id' when assigning analyst.")
+
+            try:
+                analyst = models.User.objects.get(id=analyst_id)
+            except models.User.DoesNotExist:
+                raise serializers.ValidationError("Invalid 'analyst_id' provided.")
+
+            # Prevent reassigning if already assigned
+            if instance.analyst and instance.analyst.id != analyst.id:
+                raise serializers.ValidationError("Analyst already assigned. Unassign before reassigning.")
+
+            instance.analyst = analyst
+            instance.status = "assign_analyst"
+            instance.save(update_fields=["analyst", "status"])
+            return instance
+
+        # ✅ 2️⃣ Only allow data updates if status is "received"
+        if instance.status != "received":
+            raise serializers.ValidationError(
+                f"Updates allowed only when sample status is 'received' (current: {instance.status})"
+            )
+
+        # ✅ Extract dynamic "data" fields
         if hasattr(request_data, "lists"):
             data_dict = {}
             for key, value in request_data.lists():
@@ -1041,8 +1084,8 @@ class DynamicFormEntrySerializer(serializers.ModelSerializer):
         else:
             data_dict = validated_data.get("data", {})
 
-        new_data = instance.data.copy()
-
+        # ✅ Merge and save data
+        new_data = instance.data.copy() if instance.data else {}
         for key, value in data_dict.items():
             if hasattr(value, "read"):  # file upload
                 file_name = default_storage.save(
@@ -1055,27 +1098,32 @@ class DynamicFormEntrySerializer(serializers.ModelSerializer):
                 new_data[key] = value
 
         instance.data = new_data
-        instance.status = validated_data.get("status", instance.status)
+
+        # ✅ Allow explicit status update (e.g., received → in_progress etc.)
+        if "status" in validated_data:
+            instance.status = validated_data["status"]
+
         instance.save()
 
-        # ✅ handle analyses_data update
+        # ✅ Handle analyses_data if provided
         analyses_data = request_data.get("analyses_data") or validated_data.get("analyses_data", [])
-        if analyses_data:
-            import json
-            if isinstance(analyses_data, str):
-                try:
-                    analyses_data = json.loads(analyses_data)
-                except Exception:
-                    analyses_data = []
+        if isinstance(analyses_data, str):
+            try:
+                analyses_data = json.loads(analyses_data)
+            except Exception:
+                analyses_data = []
 
-            # clear old analyses first
+        if analyses_data and isinstance(analyses_data, (list, dict)) and len(analyses_data) > 0:
             models.DynamicFormEntryAnalysis.objects.filter(entry=instance).delete()
             self._save_entry_analyses(instance, analyses_data)
 
         return instance
 
-
+    # -------------------------
+    #   Save Analyses
+    # -------------------------
     def _save_entry_analyses(self, entry, analyses_data):
+        # ⚡ Remove "received" check — handled in update()
         for analysis_item in analyses_data:
             analysis_id = analysis_item["analysis_id"]
             component_ids = analysis_item.get("component_ids", [])
@@ -1091,38 +1139,36 @@ class DynamicFormEntrySerializer(serializers.ModelSerializer):
                 components = analysis.components.all()
             ea.components.set(components)
 
-            
-
-
+    # -------------------------
+    #   Representation
+    # -------------------------
     def to_representation(self, instance):
         data = super().to_representation(instance)
 
-        # ✅ ensure file path/URL is shown properly in response
+        # ✅ Format file paths properly
         formatted_data = {}
         for key, value in instance.data.items():
             if isinstance(value, str) and value.startswith("uploads/sample/"):
                 request = self.context.get("request")
-                if request:
-                    formatted_data[key] = request.build_absolute_uri(value)
-                else:
-                    formatted_data[key] = value
+                formatted_data[key] = request.build_absolute_uri(value) if request else value
             else:
                 formatted_data[key] = value
-
         data["data"] = formatted_data
 
-        # ✅ fetch analyses + components correctly
-        entry_analyses = models.DynamicFormEntryAnalysis.objects.filter(entry=instance).prefetch_related("components")
+        # ✅ Include analyses + components
+        entry_analyses = models.DynamicFormEntryAnalysis.objects.filter(
+            entry=instance
+        ).prefetch_related("components")
+
         data["analyses_data"] = [
             {
                 "analysis_id": ea.analysis.id,
-                "component_ids": list(ea.components.values_list("id", flat=True))  # ✅ will now return actual IDs
+                "component_ids": list(ea.components.values_list("id", flat=True))
             }
             for ea in entry_analyses
         ]
 
         return data
-    
 
 from django.core.files.uploadedfile import UploadedFile
 
@@ -1641,6 +1687,23 @@ class SystemConfigurationSerializer(serializers.ModelSerializer):
 class BulkConfigUpdateSerializer(serializers.Serializer):
     id = serializers.IntegerField()
     value = serializers.CharField(max_length=255)
+
+
+
+
+class ReportDefinitionSerializer(serializers.Serializer):
+    app_label = serializers.CharField()
+    model = serializers.CharField()
+    date_field = serializers.CharField()
+    group_by = serializers.ListField(child=serializers.CharField(), required=False)
+    columns = serializers.ListField()
+    date_from = serializers.DateField(required=False)
+    date_to = serializers.DateField(required=False)
+
+class MultiReportSerializer(serializers.Serializer):
+    reports = ReportDefinitionSerializer(many=True)
+
+
 
 
 

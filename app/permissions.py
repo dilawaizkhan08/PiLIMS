@@ -33,7 +33,7 @@ class HasModulePermission(BasePermission):
         if not user.is_authenticated:
             return False
 
-        # 1. Identify model
+        # 1️⃣ Identify model
         model = None
         if hasattr(view, "queryset") and view.queryset is not None:
             model = view.queryset.model
@@ -50,7 +50,7 @@ class HasModulePermission(BasePermission):
 
         module_name = model._meta.db_table
 
-        # 2. Map DRF actions → CRUD
+        # 2️⃣ Map DRF actions → CRUD
         action_map = {
             "create": "create",
             "list": "view",
@@ -61,8 +61,13 @@ class HasModulePermission(BasePermission):
             "update_status": "update",
         }
 
-        # For APIView (no .action attribute)
         action = getattr(view, "action", None)
+
+        # ✅ Handle custom GET endpoints like /stats/
+        if action and action.startswith("get_"):
+            action = "view"
+
+        # For APIView (no .action)
         if action is None:
             if request.method == "GET":
                 action = "view"
@@ -73,11 +78,12 @@ class HasModulePermission(BasePermission):
             elif request.method == "DELETE":
                 action = "delete"
 
-        action = action_map.get(action)
+        action = action_map.get(action, action)  # keep fallback if we remapped above
+
         if not action:
             return False
 
-        # 3. Check user roles and permissions
+        # 3️⃣ Check user roles and permissions
         for role in user.roles.all():
             if role.permissions.filter(module=module_name, action=action).exists():
                 return True

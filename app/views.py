@@ -512,20 +512,70 @@ class DynamicSampleFormEntryViewSet(viewsets.ModelViewSet):
     def update_status(self, request):
         new_status = request.data.get("status")
         ids = request.data.get("ids", [])
+        analyst_id = request.data.get("analyst_id")
 
         if not new_status or not ids:
             return Response({"error": "Both 'status' and 'ids' are required"}, status=400)
 
-        if new_status not in dict(models.DynamicFormEntry.STATUS_CHOICES):
+        entries = models.DynamicFormEntry.objects.filter(id__in=ids)
+
+        # ✅ Handle special "assign_analyst" action
+        if new_status == "assign_analyst":
+            if not analyst_id:
+                return Response({"error": "analyst_id is required when assigning an analyst"}, status=400)
+
+            try:
+                analyst = models.User.objects.get(id=analyst_id)
+            except models.User.DoesNotExist:
+                return Response({"error": f"Analyst with id {analyst_id} not found"}, status=404)
+
+            updated_count = entries.update(analyst=analyst, status="in_progress")
+            return Response({
+                "message": f"Assigned analyst {analyst.id} and set status to 'in_progress' for {updated_count} entries",
+                "updated_ids": ids
+            })
+
+        # ✅ Handle normal status updates
+        valid_statuses = dict(models.DynamicFormEntry.STATUS_CHOICES)
+        if new_status not in valid_statuses:
             return Response({"error": "Invalid status"}, status=400)
 
-        # ✅ Bulk update
-        updated_count = models.DynamicFormEntry.objects.filter(id__in=ids).update(status=new_status)
+        allowed_manual = ["received", "completed", "authorized", "rejected", "cancelled", "restored"]
+
+        for entry in entries:
+            if new_status not in allowed_manual:
+                return Response({"error": f"Cannot manually change status to '{new_status}'."}, status=400)
+            if entry.status == "initiated" and new_status != "received":
+                return Response(
+                    {"error": f"Entry {entry.id} must be 'received' before other actions."}, status=400
+                )
+
+        updated_count = entries.update(status=new_status)
 
         return Response({
             "message": f"Status updated to '{new_status}' for {updated_count} entries",
             "updated_ids": ids
         })
+    
+
+    @action(detail=False, methods=["get"], url_path="stats")
+    def get_stats(self, request):
+        """Return total and status-wise counts for sample entries"""
+        queryset = self.get_queryset()
+
+        total_samples = queryset.count()
+        received = queryset.filter(status="received").count()
+        in_progress = queryset.filter(status="in_progress").count()
+        completed = queryset.filter(status="completed").count()
+
+        data = {
+            "total_samples": total_samples,
+            "received": received,
+            "in_progress": in_progress,
+            "completed": completed,
+        }
+
+        return Response(data, status=status.HTTP_200_OK)
 
 
 class DynamicRequestAttachmentViewSet(viewsets.ModelViewSet):
@@ -998,6 +1048,74 @@ class DynamicRequestFormEntryViewSet(viewsets.ModelViewSet):
 
         return Response(DynamicRequestEntrySerializer(entry, context={"request": request}).data)
 
+    @action(detail=False, methods=["post"])
+    def update_status(self, request):
+        new_status = request.data.get("status")
+        ids = request.data.get("ids", [])
+
+        # ✅ Validate request
+        if not new_status or not ids:
+            return Response(
+                {"error": "Both 'status' and 'ids' are required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # ✅ Validate status value
+        valid_statuses = dict(models.DynamicRequestEntry.STATUS_CHOICES)
+        if new_status not in valid_statuses:
+            return Response(
+                {"error": f"Invalid status '{new_status}'"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # ✅ Allowed manual transitions only
+        allowed_manual = ["received", "authorized", "rejected", "cancelled", "restored"]
+        if new_status not in allowed_manual:
+            return Response(
+                {"error": f"Cannot manually change status to '{new_status}'."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # ✅ Fetch matching entries
+        entries = models.DynamicRequestEntry.objects.filter(id__in=ids)
+
+        # ✅ Validate transition rules
+        for entry in entries:
+            if entry.status == "initiated" and new_status != "received":
+                return Response(
+                    {"error": f"Request {entry.id} must be 'received' before other actions."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        # ✅ Perform bulk update
+        updated_count = entries.update(status=new_status)
+
+        return Response(
+            {
+                "message": f"Status updated to '{new_status}' for {updated_count} request(s)",
+                "updated_ids": ids,
+            },
+            status=status.HTTP_200_OK,
+        )
+    
+    @action(detail=False, methods=["get"], url_path="stats")
+    def get_stats(self, request):
+        """Return total and status-wise counts"""
+        queryset = self.get_queryset()
+
+        total_requests = queryset.count()
+        initiated = queryset.filter(status="initiated").count()
+        received = queryset.filter(status="received").count()
+        authorized = queryset.filter(status="authorized").count()
+
+        data = {
+            "total_requests": total_requests,
+            "initiated": initiated,
+            "received": received,
+            "authorized": authorized,
+        }
+
+        return Response(data, status=status.HTTP_200_OK)
 
 
 class ProductViewSet(viewsets.ModelViewSet):
@@ -1138,11 +1256,20 @@ class EntryAnalysesSchemaView(APIView):
         })
 
 
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status
+from django.shortcuts import get_object_or_404
+from app import models
+from app.serializers import ComponentResultSerializer
+
+
 class AnalysisResultSubmitView(APIView):
     def post(self, request, entry_id, analysis_id):
         entry = get_object_or_404(models.DynamicFormEntry, pk=entry_id)
         analysis = get_object_or_404(models.Analysis, pk=analysis_id)
 
+        # ✅ Ensure analysis belongs to this entry
         if not entry.analyses.filter(id=analysis.id).exists():
             return Response(
                 {"error": "This analysis is not linked with the entry"},
@@ -1153,7 +1280,7 @@ class AnalysisResultSubmitView(APIView):
         comment = request.data.get("comment")
         if comment:
             entry.comment = comment
-            entry.save()
+            entry.save(update_fields=["comment"])
 
         results_data = request.data.get("results", [])
         saved_results = []
@@ -1238,34 +1365,46 @@ class AnalysisResultSubmitView(APIView):
             )
             saved_results.append(result)
 
+        # ✅ Status update logic
+        has_any_analysis = entry.analyses.exists()
+        has_any_result = models.ComponentResult.objects.filter(entry=entry).exists()
+
+        if has_any_analysis and has_any_result:
+            if entry.status not in ["completed", "cancelled"]:
+                entry.status = "in_progress"
+                entry.save(update_fields=["status"])
+        else:
+            if entry.status != "received":
+                entry.status = "received"
+                entry.save(update_fields=["status"])
+
         serializer = ComponentResultSerializer(saved_results, many=True)
         return Response(
             {
                 "message": "Results saved successfully",
                 "entry_id": entry.id,
                 "analysis_id": analysis.id,
-                "comment": entry.comment,   # ✅ return comment in response
+                "comment": entry.comment,
+                "status": entry.status,  # ✅ return updated status too
                 "results": serializer.data,
-            }
+            },
+            status=status.HTTP_200_OK,
         )
 
-
+    # ------------------------------------------------------------
     def get(self, request, entry_id, analysis_id):
         entry = get_object_or_404(models.DynamicFormEntry, pk=entry_id)
         analysis = get_object_or_404(models.Analysis, pk=analysis_id)
 
-        # ✅ Ensure this analysis belongs to the entry
         if not entry.analyses.filter(id=analysis.id).exists():
             return Response(
                 {"error": "This analysis is not linked with the entry"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # ✅ Fetch all results for this entry + analysis components
         results = models.ComponentResult.objects.filter(
             entry=entry, component__analysis=analysis
         )
-
         serializer = ComponentResultSerializer(results, many=True)
 
         return Response(
@@ -1277,8 +1416,8 @@ class AnalysisResultSubmitView(APIView):
             },
             status=status.HTTP_200_OK,
         )
-    
 
+    # ------------------------------------------------------------
     def patch(self, request, entry_id, analysis_id):
         entry = get_object_or_404(models.DynamicFormEntry, pk=entry_id)
         analysis = get_object_or_404(models.Analysis, pk=analysis_id)
@@ -1289,7 +1428,6 @@ class AnalysisResultSubmitView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Expect component_id in request
         comp_id = request.data.get("component_id")
         if not comp_id:
             return Response(
@@ -1310,11 +1448,11 @@ class AnalysisResultSubmitView(APIView):
         auth_flag = request.data.get("authorization_flag")
         auth_remark = request.data.get("authorization_remark")
 
-        # 1️⃣ User can always update remarks
+        # ✅ 1️⃣ User can always update remarks
         if remarks is not None:
             result.remarks = remarks
 
-        # 2️⃣ User cannot enable authorization_flag until remarks are set
+        # ✅ 2️⃣ User cannot enable authorization_flag until remarks are set
         if auth_flag is not None:
             if not result.remarks:
                 return Response(
@@ -1323,7 +1461,7 @@ class AnalysisResultSubmitView(APIView):
                 )
             result.authorization_flag = bool(auth_flag)
 
-        # 3️⃣ User cannot add authorization_remark unless authorization_flag is True
+        # ✅ 3️⃣ User cannot add authorization_remark unless authorization_flag is True
         if auth_remark is not None:
             if not result.authorization_flag:
                 return Response(
@@ -1389,6 +1527,175 @@ class BulkConfigUpdateView(APIView):
             "updated": updated_items,
             "errors": errors
         }, status=status.HTTP_200_OK)
+    
 
 
+
+from django.apps import apps
+from django.db.models import Count, Sum, Avg, F
+from slick_reporting.generator import ReportGenerator
+from rest_framework.views import APIView
+from rest_framework.response import Response
+
+
+AGGREGATION_MAP = {
+    "Count": Count,
+    "Sum": Sum,
+    "Avg": Avg,
+    # SQLite safe: no StringAgg or ArrayAgg
+}
+
+
+class MultiDynamicReportView(APIView):
+    def post(self, request):
+        reports_config = request.data.get("reports", [])
+        report_results = {}
+
+        for report_def in reports_config:
+            app_label = report_def.get("app_label")
+            model_name = report_def.get("model")
+            group_by = report_def.get("group_by", [])
+            columns = report_def.get("columns", [])
+
+            try:
+                # 🔹 Model load
+                model = apps.get_model(app_label, model_name)
+
+                normalized_columns = []
+                annotations = {}
+
+                for col in columns:
+                    if isinstance(col, str):
+                        # Direct field
+                        normalized_columns.append(col)
+                    elif isinstance(col, dict):
+                        field = col.get("field")
+                        func = col.get("func")
+                        alias = col.get("alias", field)
+
+                        if func in AGGREGATION_MAP:
+                            annotations[alias] = AGGREGATION_MAP[func](field)
+                            normalized_columns.append(alias)
+                        else:
+                            # Unsupported aggregate → fallback
+                            annotations[alias] = Count(field)
+                            normalized_columns.append(alias)
+                    else:
+                        raise ValueError(f"Invalid column definition: {col}")
+
+                # group_by fields ko bhi ensure karo
+                for g in group_by:
+                    if g not in normalized_columns:
+                        normalized_columns.append(g)
+
+                # 🔹 Query build (SQLite safe)
+                qs = (
+                    model.objects.values(*group_by)
+                    .annotate(**annotations)
+                    .order_by(*group_by)
+                )
+
+                # 🔹 Report format
+                data = list(qs.values(*normalized_columns))
+                report_results[model_name] = data
+
+            except Exception as e:
+                report_results[model_name] = {"error": str(e)}
+
+        return Response({"reports": report_results})
+
+
+
+
+
+
+
+
+
+# from django.apps import apps
+# from django.db.models import Count, Sum, Avg
+# from slick_reporting.fields import ComputationField
+# from slick_reporting.generator import ReportGenerator
+# from rest_framework.views import APIView
+# from rest_framework.response import Response
+# from rest_framework.permissions import IsAuthenticated
+# from rest_framework import serializers
+
+
+# AGGREGATION_MAP = {
+#     "Count": Count,
+#     "Sum": Sum,
+#     "Avg": Avg,
+# }
+
+# class MultiDynamicReportView(APIView):
+#     permission_classes = [IsAuthenticated]
+
+#     def post(self, request):
+#         serializer = MultiReportSerializer(data=request.data)
+#         serializer.is_valid(raise_exception=True)
+#         reports_data = serializer.validated_data["reports"]
+
+#         all_results = {}
+
+#         for report_def in reports_data:
+#             try:
+#                 model = apps.get_model(app_label=report_def["app_label"], model_name=report_def["model"])
+#             except LookupError:
+#                 all_results[f'{report_def["model"]}'] = {"error": "Model not found"}
+#                 continue
+
+#             # Gather fields
+#             columns = []
+#             for col in report_def["columns"]:
+#                 if isinstance(col, str):
+#                     columns.append(col)
+#                 elif isinstance(col, dict):
+#                     agg_func = AGGREGATION_MAP.get(col.get("func"))
+#                     if not agg_func:
+#                         all_results[report_def["model"]] = {"error": f"Unsupported aggregation function: {col.get('func')}"}
+#                         continue
+
+#                     columns.append(
+#                         ComputationField.create(
+#                             method=agg_func,
+#                             field=col["field"],
+#                             name=col.get("alias", f"{col['field']}_{col['func']}"),
+#                             verbose_name=col.get(
+#                                 "verbose_name",
+#                                 col.get("alias", f"{col['field']}_{col['func']}")
+#                             ),
+#                         )
+#                     )
+
+#             group_by = report_def.get("group_by", [])
+#             if isinstance(group_by, str):
+#                 group_by = [group_by]
+#             group_by_str = ",".join(group_by)
+
+#             # Ensure group_by fields are in columns
+#             existing_column_names = [
+#                 col if isinstance(col, str) else col.name for col in columns
+#             ]
+#             for g in group_by:
+#                 if g not in existing_column_names:
+#                     columns.append(g)
+
+
+
+#             try:
+#                 report = ReportGenerator(
+#                     report_model=model,
+#                     date_field=report_def["date_field"],
+#                     group_by=group_by_str,
+#                     columns=columns,
+#                     start_date=report_def.get("date_from"),
+#                     end_date=report_def.get("date_to"),
+#                 )
+#                 results = list(report.get_report_data())
+#                 all_results[report_def["model"]] = results
+#             except Exception as e:
+#                 all_results[report_def["model"]] = {"error": str(e)}
+
+#         return Response({"reports": all_results})
 
