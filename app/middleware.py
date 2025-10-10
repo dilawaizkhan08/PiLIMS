@@ -1,16 +1,22 @@
-# app/middleware.py
-from django.utils.deprecation import MiddlewareMixin
-from django.conf import settings
-from rest_framework.authentication import TokenAuthentication
-from rest_framework.exceptions import AuthenticationFailed
+from .signals import set_current_user
 
-# class DisableCSRFMiddleware(MiddlewareMixin):
-#     def process_request(self, request):
-#         try:
-#             token_auth = TokenAuthentication()
-#             user_auth_tuple = token_auth.authenticate(request)
-#             if user_auth_tuple is not None:
-#                 request.user, _ = user_auth_tuple
-#                 setattr(request, '_dont_enforce_csrf_checks', True)
-#         except AuthenticationFailed:
-#             pass
+class CurrentUserMiddleware:
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        # request.user is available here after AuthenticationMiddleware
+        user = getattr(request, "user", None)
+        if user and user.is_authenticated:
+            set_current_user(user)
+            print(f"[Middleware] Authenticated: True, User: {user}")
+        else:
+            set_current_user(None)
+            print(f"[Middleware] Authenticated: False, User: None")
+
+        response = self.get_response(request)
+
+        # Clear after response to avoid user leakage between requests
+        set_current_user(None)
+
+        return response

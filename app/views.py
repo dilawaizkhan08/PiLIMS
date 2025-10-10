@@ -1196,61 +1196,58 @@ class CustomJSONEncoder(json.JSONEncoder):
 
 class DynamicTableDataView(APIView):
     """
-    POST request me 'table_name' bhejna hoga (example: 'app_unit')
-    Response: us table ki saari values with IDs
+    POST request me:
+    {
+        "table_name": "app_unit",
+        "filters": {
+            "field_name": "value",
+            ...
+        }
+    }
+    Response: requested table data with applied filters.
     """
-    permission_classes = [IsAuthenticated,HasModulePermission]
+    permission_classes = [IsAuthenticated, HasModulePermission]
+
     def post(self, request, *args, **kwargs):
         table_name = request.data.get("table_name")
+        filters = request.data.get("filters", {})
 
         if not table_name:
-            return Response(
-                {"error": "table_name is required"},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            return Response({"error": "table_name is required"}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            # ✅ Split app_label and model_name
+            # Split app_label and model_name
             if "_" in table_name:
                 app_label, model_snake = table_name.split("_", 1)
-                model_name = inflection.camelize(model_snake)  # unit -> Unit
+                model_name = inflection.camelize(model_snake)
             else:
-                return Response(
-                    {"error": f"Invalid table_name format: {table_name}"},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
+                return Response({"error": f"Invalid table_name format: {table_name}"}, status=status.HTTP_400_BAD_REQUEST)
 
-            # ✅ Model dynamically fetch karna
+            # Fetch model dynamically
             model = apps.get_model(app_label, model_name)
             if not model:
-                return Response(
-                    {"error": f"Model '{model_name}' not found in app '{app_label}'"},
-                    status=status.HTTP_404_NOT_FOUND
-                )
+                return Response({"error": f"Model '{model_name}' not found in app '{app_label}'"}, status=status.HTTP_404_NOT_FOUND)
 
         except LookupError:
-            return Response(
-                {"error": f"Model '{table_name}' not found"},
-                status=status.HTTP_404_NOT_FOUND
-            )
+            return Response({"error": f"Model '{table_name}' not found"}, status=status.HTTP_404_NOT_FOUND)
 
-        # ✅ Query all objects
-        objects = model.objects.all()
+        # Validate filters
+        valid_fields = {field.name for field in model._meta.get_fields()}
+        invalid_filters = [f for f in filters.keys() if f not in valid_fields]
+        if invalid_filters:
+            return Response({"error": f"Invalid filter fields: {invalid_filters}"}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Query with filters
+        objects = model.objects.filter(**filters)
+
         data = json.loads(serialize("json", objects, cls=CustomJSONEncoder))
+        formatted_data = [{"id": obj["pk"], **obj["fields"]} for obj in data]
 
-        formatted_data = [
-            {
-                "id": obj["pk"],
-                **obj["fields"]
-            }
-            for obj in data
-        ]
-
-        return Response(
-            {"table": table_name, "count": len(formatted_data), "data": formatted_data},
-            status=status.HTTP_200_OK
-        )
-
+        return Response({
+            "table": table_name,
+            "count": len(formatted_data),
+            "data": formatted_data
+        }, status=status.HTTP_200_OK)
 
 
 class EntryAnalysesSchemaView(APIView):
