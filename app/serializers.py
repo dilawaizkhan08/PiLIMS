@@ -1518,11 +1518,20 @@ class DynamicRequestEntrySerializer(serializers.ModelSerializer):
 
 
 
-
 class CustomerSerializer(serializers.ModelSerializer):
     class Meta:
         model = models.Customer
         fields = '__all__'
+
+    def validate_mobile(self, value):
+        try:
+            parsed = phonenumbers.parse(value, None)
+            if not phonenumbers.is_valid_number(parsed):
+                raise serializers.ValidationError("Invalid phone number format.")
+        except phonenumbers.NumberParseException:
+            raise serializers.ValidationError("Invalid phone number. Use format like +14155552671.")
+        return phonenumbers.format_number(parsed, phonenumbers.PhoneNumberFormat.E164)
+
 
 
 
