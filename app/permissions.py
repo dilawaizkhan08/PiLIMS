@@ -59,6 +59,7 @@ class HasModulePermission(BasePermission):
             "partial_update": "update",
             "destroy": "delete",
             "update_status": "update",
+            "stats": "view",
         }
 
         action = getattr(view, "action", None)

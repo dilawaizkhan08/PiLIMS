@@ -156,6 +156,31 @@ class UserViewSet(viewsets.ModelViewSet):
         }, status=status.HTTP_200_OK)
     
 
+    @action(detail=False, methods=["get"], url_path="stats")
+    def stats(self, request):
+        queryset = self.get_queryset()
+
+        total_users = queryset.count()
+        active_users = queryset.filter(is_active=True).count()
+        inactive_users = queryset.filter(is_active=False).count()
+
+        # Users created in the current month
+        now = timezone.now()
+        users_this_month = queryset.filter(created_at__month=now.month, created_at__year=now.year).count()
+
+        # Optional: breakdown by role
+        role_stats = queryset.values("role").annotate(count=Count("id")).order_by("-count")
+
+        data = {
+            "total_users": total_users,
+            "active_users": active_users,
+            "inactive_users": inactive_users,
+            "users_created_this_month": users_this_month,
+            "users_by_role": list(role_stats),
+        }
+
+        return Response(data, status=status.HTTP_200_OK)
+
 
 class UserProfileUpdateView(generics.RetrieveUpdateAPIView):
     serializer_class = UserProfileSerializer
@@ -318,6 +343,24 @@ class CustomerViewSet(viewsets.ModelViewSet):
     queryset = models.Customer.objects.all().order_by('-created_at')
     serializer_class = CustomerSerializer
     permission_classes = [IsAuthenticated,HasModulePermission] 
+
+    @action(detail=False, methods=["get"], url_path="stats")
+    def stats(self, request):
+        queryset = self.get_queryset()
+
+        total_customers = queryset.count()
+        total_companies = queryset.values("company_name").distinct().count()
+        with_city = queryset.exclude(city__isnull=True).exclude(city__exact="").count()
+        with_description = queryset.exclude(description__isnull=True).exclude(description__exact="").count()
+
+        data = {
+            "total_customers": total_customers,
+            "total_companies": total_companies,
+            "customers_with_city": with_city,
+            "customers_with_description": with_description,
+        }
+
+        return Response(data, status=status.HTTP_200_OK)
 
 
 class ListViewSet(viewsets.ModelViewSet):
