@@ -160,27 +160,46 @@ class UserViewSet(viewsets.ModelViewSet):
     def stats(self, request):
         queryset = self.get_queryset()
 
-        total_users = queryset.count()
+        total_users = queryset.count() or 1  # division by zero avoid karne ke liye
+
         active_users = queryset.filter(is_active=True).count()
         inactive_users = queryset.filter(is_active=False).count()
 
-        # Users created in the current month
         now = timezone.now()
-        users_this_month = queryset.filter(created_at__month=now.month, created_at__year=now.year).count()
+        users_this_month = queryset.filter(
+            created_at__month=now.month, created_at__year=now.year
+        ).count()
 
-        # Optional: breakdown by role
         role_stats = queryset.values("role").annotate(count=Count("id")).order_by("-count")
+
+        def percentage(count):
+            return round((count / total_users) * 100, 2)
 
         data = {
             "total_users": total_users,
-            "active_users": active_users,
-            "inactive_users": inactive_users,
-            "users_created_this_month": users_this_month,
-            "users_by_role": list(role_stats),
+            "active_users": {
+                "count": active_users,
+                "percentage": percentage(active_users),
+            },
+            "inactive_users": {
+                "count": inactive_users,
+                "percentage": percentage(inactive_users),
+            },
+            "users_created_this_month": {
+                "count": users_this_month,
+                "percentage": percentage(users_this_month),
+            },
+            "users_by_role": [
+                {
+                    "role": r["role"],
+                    "count": r["count"],
+                    "percentage": percentage(r["count"]),
+                }
+                for r in role_stats
+            ],
         }
 
         return Response(data, status=status.HTTP_200_OK)
-
 
 class UserProfileUpdateView(generics.RetrieveUpdateAPIView):
     serializer_class = UserProfileSerializer
@@ -344,24 +363,40 @@ class CustomerViewSet(viewsets.ModelViewSet):
     serializer_class = CustomerSerializer
     permission_classes = [IsAuthenticated,HasModulePermission] 
 
+    
     @action(detail=False, methods=["get"], url_path="stats")
     def stats(self, request):
         queryset = self.get_queryset()
 
-        total_customers = queryset.count()
+        total_customers = queryset.count() or 1  # zero division avoid
+
         total_companies = queryset.values("company_name").distinct().count()
         with_city = queryset.exclude(city__isnull=True).exclude(city__exact="").count()
         with_description = queryset.exclude(description__isnull=True).exclude(description__exact="").count()
 
+        def percentage(count):
+            return round((count / total_customers) * 100, 2)
+
         data = {
-            "total_customers": total_customers,
-            "total_companies": total_companies,
-            "customers_with_city": with_city,
-            "customers_with_description": with_description,
+            "total_customers": {
+                "count": total_customers,
+                "percentage": 100.0,  # total is always 100%
+            },
+            "total_companies": {
+                "count": total_companies,
+                "percentage": percentage(total_companies),
+            },
+            "customers_with_city": {
+                "count": with_city,
+                "percentage": percentage(with_city),
+            },
+            "customers_with_description": {
+                "count": with_description,
+                "percentage": percentage(with_description),
+            },
         }
 
         return Response(data, status=status.HTTP_200_OK)
-
 
 class ListViewSet(viewsets.ModelViewSet):
     queryset = models.List.objects.all()
@@ -606,16 +641,32 @@ class DynamicSampleFormEntryViewSet(viewsets.ModelViewSet):
         """Return total and status-wise counts for sample entries"""
         queryset = self.get_queryset()
 
-        total_samples = queryset.count()
+        total_samples = queryset.count() or 1  # avoid division by zero
+
         received = queryset.filter(status="received").count()
         in_progress = queryset.filter(status="in_progress").count()
         completed = queryset.filter(status="completed").count()
 
+        def percentage(count):
+            return round((count / total_samples) * 100, 2)
+
         data = {
-            "total_samples": total_samples,
-            "received": received,
-            "in_progress": in_progress,
-            "completed": completed,
+            "total_samples": {
+                "count": total_samples,
+                "percentage": 100.0,
+            },
+            "received": {
+                "count": received,
+                "percentage": percentage(received),
+            },
+            "in_progress": {
+                "count": in_progress,
+                "percentage": percentage(in_progress),
+            },
+            "completed": {
+                "count": completed,
+                "percentage": percentage(completed),
+            },
         }
 
         return Response(data, status=status.HTTP_200_OK)
@@ -1141,25 +1192,41 @@ class DynamicRequestFormEntryViewSet(viewsets.ModelViewSet):
             status=status.HTTP_200_OK,
         )
     
+        
     @action(detail=False, methods=["get"], url_path="stats")
     def get_stats(self, request):
         """Return total and status-wise counts"""
         queryset = self.get_queryset()
 
-        total_requests = queryset.count()
+        total_requests = queryset.count() or 1  # avoid division by zero
+
         initiated = queryset.filter(status="initiated").count()
         received = queryset.filter(status="received").count()
         authorized = queryset.filter(status="authorized").count()
 
+        def percentage(count):
+            return round((count / total_requests) * 100, 2)
+
         data = {
-            "total_requests": total_requests,
-            "initiated": initiated,
-            "received": received,
-            "authorized": authorized,
+            "total_requests": {
+                "count": total_requests,
+                "percentage": 100.0,
+            },
+            "initiated": {
+                "count": initiated,
+                "percentage": percentage(initiated),
+            },
+            "received": {
+                "count": received,
+                "percentage": percentage(received),
+            },
+            "authorized": {
+                "count": authorized,
+                "percentage": percentage(authorized),
+            },
         }
 
         return Response(data, status=status.HTTP_200_OK)
-
 
 class ProductViewSet(viewsets.ModelViewSet):
     queryset = models.Product.objects.all()
