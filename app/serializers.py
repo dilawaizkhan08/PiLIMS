@@ -1746,8 +1746,18 @@ class MultiReportSerializer(serializers.Serializer):
     reports = ReportDefinitionSerializer(many=True)
 
 
+class ActivitySerializer(serializers.ModelSerializer):
+    user_name = serializers.CharField(source="user.name", read_only=True)
 
-
-
-
+    class Meta:
+        model = models.Activity
+        fields = [
+            "id",
+            "user_name",
+            "model_name",
+            "object_id",
+            "action",
+            "description",
+            "created_at",
+        ]
 

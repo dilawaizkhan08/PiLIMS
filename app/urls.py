@@ -34,6 +34,7 @@ router.register(r'roles', views.RoleViewSet,  basename="roles")
 router.register(r'modules', views.ModuleViewSet, basename="modules")
 router.register(r'request-attachments', views.DynamicRequestAttachmentViewSet, basename='request-attachments')
 router.register(r'sample-attachments', views.DynamicFormAttachmentViewSet, basename='sample-attachments')
+router.register(r'activities', views.ActivityViewSet, basename='activity')
 
 
 

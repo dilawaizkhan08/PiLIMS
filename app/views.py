@@ -45,6 +45,7 @@ import inflection
 from rest_framework import viewsets, mixins
 from django.db.models import F
 from django.apps import apps
+from app.mixins import TrackUserMixin
 
 
 def get_config(key, default=None):
@@ -120,7 +121,7 @@ class LoginView(views.APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
-class UserViewSet(viewsets.ModelViewSet):
+class UserViewSet(TrackUserMixin, viewsets.ModelViewSet):
     serializer_class = UserSerializer
     permission_classes = [IsAuthenticated]
     filter_backends = [SearchFilter, DjangoFilterBackend]
@@ -275,7 +276,7 @@ class ResetPasswordView(APIView):
             return Response({"error": "User not found."}, status=400)
         
 
-class AnalysisAttachmentViewSet(viewsets.ModelViewSet):
+class AnalysisAttachmentViewSet(TrackUserMixin,viewsets.ModelViewSet):
     queryset = models.AnalysisAttachment.objects.all()
     serializer_class = AnalysisAttachmentSerializer
     permission_classes = [IsAuthenticated]
@@ -298,7 +299,7 @@ class AnalysisAttachmentViewSet(viewsets.ModelViewSet):
 
 
 
-class AnalysisViewSet(viewsets.ModelViewSet):
+class AnalysisViewSet(TrackUserMixin,viewsets.ModelViewSet):
     queryset = models.Analysis.objects.all()
     serializer_class = AnalysisSerializer
     permission_classes = [IsAuthenticated, HasModulePermission]
@@ -306,7 +307,7 @@ class AnalysisViewSet(viewsets.ModelViewSet):
 
 
 
-class CustomFunctionViewSet(viewsets.ModelViewSet):
+class CustomFunctionViewSet(TrackUserMixin,viewsets.ModelViewSet):
     queryset = models.CustomFunction.objects.all()
     serializer_class = CustomFunctionSerializer
     permission_classes = [IsAuthenticated]
@@ -331,34 +332,34 @@ class CustomFunctionViewSet(viewsets.ModelViewSet):
 
 
 
-class InstrumentViewSet(viewsets.ModelViewSet):
+class InstrumentViewSet(TrackUserMixin,viewsets.ModelViewSet):
     queryset = models.Instrument.objects.all()
     serializer_class = InstrumentSerializer
     permission_classes = [IsAuthenticated,HasModulePermission]
 
-class InstrumentHistoryViewSet(viewsets.ModelViewSet):
+class InstrumentHistoryViewSet(TrackUserMixin,viewsets.ModelViewSet):
     queryset = models.InstrumentHistory.objects.all()
     serializer_class = InstrumentHistorySerializer
     permission_classes = [IsAuthenticated,HasModulePermission]
 
 
-class InventoryViewSet(viewsets.ModelViewSet):
+class InventoryViewSet(TrackUserMixin,viewsets.ModelViewSet):
     queryset = models.Inventory.objects.all()
     serializer_class = InventorySerializer
     permission_classes = [IsAuthenticated,HasModulePermission]
 
 
-class StockViewSet(viewsets.ModelViewSet):
+class StockViewSet(TrackUserMixin,viewsets.ModelViewSet):
     queryset = models.Stock.objects.all()
     serializer_class = StockSerializer
     permission_classes = [IsAuthenticated,HasModulePermission]
 
-class UnitViewSet(viewsets.ModelViewSet):
+class UnitViewSet(TrackUserMixin,viewsets.ModelViewSet):
     queryset = models.Unit.objects.all()
     serializer_class = UnitSerializer
     permission_classes = [IsAuthenticated,HasModulePermission]
 
-class CustomerViewSet(viewsets.ModelViewSet):
+class CustomerViewSet(TrackUserMixin,viewsets.ModelViewSet):
     queryset = models.Customer.objects.all().order_by('-created_at')
     serializer_class = CustomerSerializer
     permission_classes = [IsAuthenticated,HasModulePermission] 
@@ -398,30 +399,32 @@ class CustomerViewSet(viewsets.ModelViewSet):
 
         return Response(data, status=status.HTTP_200_OK)
 
-class ListViewSet(viewsets.ModelViewSet):
+class ListViewSet(TrackUserMixin,viewsets.ModelViewSet):
     queryset = models.List.objects.all()
     serializer_class = ListSerializer
     permission_classes = [IsAuthenticated,HasModulePermission]
 
 
-class ValueViewSet(viewsets.ModelViewSet):
+class ValueViewSet(TrackUserMixin,viewsets.ModelViewSet):
     queryset = models.Value.objects.all()
     serializer_class = ValueSerializer
     permission_classes = [IsAuthenticated,HasModulePermission]
 
 
-class UserGroupViewSet(viewsets.ModelViewSet):
+class UserGroupViewSet(TrackUserMixin,viewsets.ModelViewSet):
     queryset = models.UserGroup.objects.all()
     serializer_class = UserGroupSerializer
     permission_classes = [IsAuthenticated,HasModulePermission]
 
 
-class TestMethodViewSet(viewsets.ModelViewSet):
+class TestMethodViewSet(TrackUserMixin, viewsets.ModelViewSet):
     queryset = models.TestMethod.objects.all()
     serializer_class = TestMethodSerializer
     permission_classes = [IsAuthenticated,HasModulePermission]
 
-class ComponentViewSet(viewsets.ModelViewSet):
+    
+
+class ComponentViewSet(TrackUserMixin,viewsets.ModelViewSet):
     queryset = models.Component.objects.all()
     serializer_class = ComponentSerializer
     permission_classes = [IsAuthenticated,HasModulePermission]
@@ -430,7 +433,7 @@ class ComponentViewSet(viewsets.ModelViewSet):
 
 
 
-class SampleFormViewSet(viewsets.ModelViewSet):
+class SampleFormViewSet(TrackUserMixin,viewsets.ModelViewSet):
     queryset = models.SampleForm.objects.all()
     serializer_class = SampleFormSerializer
     permission_classes = [IsAuthenticated,HasModulePermission]
@@ -579,7 +582,7 @@ class SampleFormSubmitView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
-class DynamicSampleFormEntryViewSet(viewsets.ModelViewSet):
+class DynamicSampleFormEntryViewSet(TrackUserMixin,viewsets.ModelViewSet):
     queryset = models.DynamicFormEntry.objects.all().order_by("-created_at")
     serializer_class = DynamicFormEntrySerializer
     permission_classes = [IsAuthenticated,HasModulePermission]
@@ -672,7 +675,7 @@ class DynamicSampleFormEntryViewSet(viewsets.ModelViewSet):
         return Response(data, status=status.HTTP_200_OK)
 
 
-class DynamicRequestAttachmentViewSet(viewsets.ModelViewSet):
+class DynamicRequestAttachmentViewSet(TrackUserMixin,viewsets.ModelViewSet):
     queryset = models.DynamicRequestAttachment.objects.all()
     serializer_class = DynamicRequestAttachmentSerializer
     permission_classes = [IsAuthenticated]
@@ -704,7 +707,7 @@ class DynamicRequestAttachmentViewSet(viewsets.ModelViewSet):
 
 
 
-class DynamicFormAttachmentViewSet(viewsets.ModelViewSet):
+class DynamicFormAttachmentViewSet(TrackUserMixin,viewsets.ModelViewSet):
     queryset = models.DynamicFormAttachment.objects.all()
     serializer_class = DynamicFormAttachmentSerializer
     permission_classes = [IsAuthenticated]
@@ -735,7 +738,7 @@ class DynamicFormAttachmentViewSet(viewsets.ModelViewSet):
         return Response(attachments, status=status.HTTP_201_CREATED)
 
 
-class RequestFormViewSet(viewsets.ModelViewSet):
+class RequestFormViewSet(TrackUserMixin,viewsets.ModelViewSet):
     queryset = models.RequestForm.objects.all()
     serializer_class = RequestFormSerializer
     permission_classes = [IsAuthenticated,HasModulePermission]
@@ -851,7 +854,7 @@ def convert_datetimes_to_strings(data):
     return new_data
 
 
-class RequestFormSubmitView(APIView):
+class RequestFormSubmitView(TrackUserMixin,APIView):
     permission_classes = [IsAuthenticated, HasModulePermission]
     parser_classes = (JSONParser,)  # only JSON needed now
 
@@ -988,7 +991,7 @@ class RequestFormSubmitView(APIView):
 
 
 
-class DynamicRequestFormEntryViewSet(viewsets.ModelViewSet):
+class DynamicRequestFormEntryViewSet(TrackUserMixin,viewsets.ModelViewSet):
     queryset = models.DynamicRequestEntry.objects.all().order_by("-created_at")
     serializer_class = DynamicRequestEntrySerializer
     permission_classes = [IsAuthenticated, HasModulePermission]
@@ -1228,14 +1231,14 @@ class DynamicRequestFormEntryViewSet(viewsets.ModelViewSet):
 
         return Response(data, status=status.HTTP_200_OK)
 
-class ProductViewSet(viewsets.ModelViewSet):
+class ProductViewSet(TrackUserMixin,viewsets.ModelViewSet):
     queryset = models.Product.objects.all()
     serializer_class = ProductSerializer
     permission_classes = [IsAuthenticated,HasModulePermission]
     
 
 
-class RoleViewSet(viewsets.ModelViewSet):
+class RoleViewSet(TrackUserMixin,viewsets.ModelViewSet):
     queryset = models.Role.objects.all()
     serializer_class = RoleSerializer
 
@@ -1371,7 +1374,7 @@ from app import models
 from app.serializers import ComponentResultSerializer
 
 
-class AnalysisResultSubmitView(APIView):
+class AnalysisResultSubmitView(TrackUserMixin,APIView):
     def post(self, request, entry_id, analysis_id):
         entry = get_object_or_404(models.DynamicFormEntry, pk=entry_id)
         analysis = get_object_or_404(models.Analysis, pk=analysis_id)
@@ -1606,7 +1609,7 @@ class SystemConfigurationDetailView(generics.RetrieveUpdateDestroyAPIView):
 
 
 
-class BulkConfigUpdateView(APIView):
+class BulkConfigUpdateView(TrackUserMixin,APIView):
     def patch(self, request):
         
         configs_data = request.data.get("configs", [])
@@ -1714,9 +1717,43 @@ class MultiDynamicReportView(APIView):
 
 
 
+from django.http import HttpResponse
+import csv
+from io import StringIO
 
+class ActivityViewSet(viewsets.ModelViewSet):
+    queryset = models.Activity.objects.all().order_by("-created_at")
+    serializer_class = ActivitySerializer
+    permission_classes = [IsAuthenticated]
 
+    @action(detail=False, methods=["get"], url_path="export-csv")
+    def export_to_csv(self, request):
+        """Export all activity logs to a downloadable CSV file"""
+        activities = self.get_queryset()
 
+        # ✅ Create in-memory CSV file
+        buffer = StringIO()
+        writer = csv.writer(buffer)
+
+        # ✅ Write header
+        writer.writerow(["User Name", "Model Name", "Object ID", "Action", "Description", "Created At"])
+
+        # ✅ Write rows
+        for activity in activities:
+            writer.writerow([
+                activity.user.name if activity.user else "Anonymous",
+                activity.model_name,
+                activity.object_id or "",
+                activity.action,
+                activity.description or "",
+                activity.created_at.strftime("%Y-%m-%d %H:%M:%S") if activity.created_at else "",
+            ])
+
+        # ✅ Prepare downloadable response
+        response = HttpResponse(buffer.getvalue(), content_type="text/csv")
+        response["Content-Disposition"] = 'attachment; filename="activity_logs.csv"'
+
+        return response
 
 
 # from django.apps import apps
