@@ -16,7 +16,7 @@ urlpatterns = [
     
     path("admin/", admin.site.urls),
     path("api/", include("app.urls")),
-    path("events/", include("django_eventstream.urls")),
+    # path("events/", include("django_eventstream.urls")),
 
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
 
