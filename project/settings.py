@@ -93,25 +93,25 @@ INSTALLED_APPS += [
     "crispy_forms",
     "corsheaders",
     "slick_reporting",
-    "django_eventstream",
-    "django_grip"
+    # "django_eventstream",
+    # "django_grip"
 ]
 
-EVENTSTREAM_CHANNELS = {
-    "global": {
-        "broadcast": [
-            "django.db.models.signals.post_save",
-            "django.db.models.signals.post_delete",
-        ],
-    },
-}
+# EVENTSTREAM_CHANNELS = {
+#     "global": {
+#         "broadcast": [
+#             "django.db.models.signals.post_save",
+#             "django.db.models.signals.post_delete",
+#         ],
+#     },
+# }
 
 
-EVENTSTREAM_REDIS = {
-    'host': 'localhost',
-    'port': 6379,
-    'db': 0,
-}
+# EVENTSTREAM_REDIS = {
+#     'host': 'localhost',
+#     'port': 6379,
+#     'db': 0,
+# }
 
 
 

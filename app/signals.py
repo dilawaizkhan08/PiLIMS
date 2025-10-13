@@ -58,7 +58,7 @@ def log_delete(sender, instance, **kwargs):
 # app/signals.py
 from django.db.models.signals import post_save
 from django.dispatch import receiver
-from django_eventstream import send_event
+# from django_eventstream import send_event
 from app.models import User, SampleForm, DynamicFormEntry, DynamicRequestEntry, Customer, Analysis, Inventory
 
 MONITORED_MODELS = [
