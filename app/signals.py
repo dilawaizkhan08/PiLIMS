@@ -52,3 +52,42 @@ def log_delete(sender, instance, **kwargs):
         action="delete",
         description=f"Deleted {sender.__name__} with ID {getattr(instance, 'id', None)}",
     )
+
+
+
+# app/signals.py
+from django.db.models.signals import post_save
+from django.dispatch import receiver
+from django_eventstream import send_event
+from app.models import User, SampleForm, DynamicFormEntry, DynamicRequestEntry, Customer, Analysis, Inventory
+
+MONITORED_MODELS = [
+    "User",
+    "SampleForm",
+    "DynamicFormEntry",
+    "DynamicRequestEntry",
+    "Customer",
+    "Analysis",
+    "Inventory",
+]
+
+
+@receiver(post_save)
+def broadcast_changes(sender, instance, created, **kwargs):
+    model_name = sender.__name__
+
+    if model_name not in MONITORED_MODELS:
+        return
+
+    data = {
+        "model": model_name,
+        "id": instance.id,
+        "action": "created" if created else "updated",
+    }
+
+    try:
+        # Make sure channel name matches what client subscribes to
+        send_event("global", "message", data)
+        print(f"✓ Event sent for {model_name}")
+    except Exception as e:
+        print(f"✗ EventStream error for {model_name}: {e}")

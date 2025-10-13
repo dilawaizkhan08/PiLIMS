@@ -69,7 +69,6 @@ class User(AbstractUser, BaseModel):
             except phonenumbers.NumberParseException:
                 raise ValidationError({"phone_number": "Invalid phone number format. Use international format like +14155552671."})
 
-    
 
 class UserGroup(BaseModel):
     name = models.CharField(max_length=255, unique=True)
@@ -96,6 +95,7 @@ class Unit(BaseModel):
 
     def __str__(self):
         return self.name
+
 
 class List(BaseModel):
     name = models.CharField(max_length=255)

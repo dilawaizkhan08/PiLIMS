@@ -1266,59 +1266,93 @@ class CustomJSONEncoder(json.JSONEncoder):
 
 class DynamicTableDataView(APIView):
     """
-    POST request me:
+    POST request:
     {
-        "table_name": "app_unit",
-        "filters": {
-            "field_name": "value",
-            ...
+        "table_name": "app_analysis",
+        "fields": ["name", "user_groups", "test_method"],  # optional
+        "computed_fields": {                               # optional
+            "total_value": {
+                "type": "sum",
+                "fields": ["price", "version"]
+            },
+            "name_with_version": {
+                "type": "concat",
+                "fields": ["name", "version"]
+            }
         }
     }
-    Response: requested table data with applied filters.
+    Response: requested table data with applied filters and computed fields.
     """
     permission_classes = [IsAuthenticated, HasModulePermission]
 
     def post(self, request, *args, **kwargs):
         table_name = request.data.get("table_name")
-        filters = request.data.get("filters", {})
+        requested_fields = request.data.get("fields", None)  # optional
+        computed_fields = request.data.get("computed_fields", {})  # optional
 
         if not table_name:
             return Response({"error": "table_name is required"}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            # Split app_label and model_name
             if "_" in table_name:
                 app_label, model_snake = table_name.split("_", 1)
                 model_name = inflection.camelize(model_snake)
             else:
                 return Response({"error": f"Invalid table_name format: {table_name}"}, status=status.HTTP_400_BAD_REQUEST)
 
-            # Fetch model dynamically
             model = apps.get_model(app_label, model_name)
             if not model:
                 return Response({"error": f"Model '{model_name}' not found in app '{app_label}'"}, status=status.HTTP_404_NOT_FOUND)
-
         except LookupError:
             return Response({"error": f"Model '{table_name}' not found"}, status=status.HTTP_404_NOT_FOUND)
 
-        # Validate filters
-        valid_fields = {field.name for field in model._meta.get_fields()}
-        invalid_filters = [f for f in filters.keys() if f not in valid_fields]
-        if invalid_filters:
-            return Response({"error": f"Invalid filter fields: {invalid_filters}"}, status=status.HTTP_400_BAD_REQUEST)
+        # Fetch all objects
+        objects = model.objects.all()
+        data = []
 
-        # Query with filters
-        objects = model.objects.filter(**filters)
+        for obj in objects:
+            row = {}
 
-        data = json.loads(serialize("json", objects, cls=CustomJSONEncoder))
-        formatted_data = [{"id": obj["pk"], **obj["fields"]} for obj in data]
+            # Decide which fields to include
+            all_field_names = [f.name for f in model._meta.get_fields() if not f.auto_created or f.concrete]
+            fields_to_use = requested_fields or all_field_names
+
+            for field_name in fields_to_use:
+                try:
+                    field = model._meta.get_field(field_name)
+                    value = getattr(obj, field_name)
+
+                    # Handle ManyToMany
+                    if field.many_to_many:
+                        value = [r.name if hasattr(r, "name") else str(r) for r in value.all()]
+                    # Handle ForeignKey / OneToOne
+                    elif field.one_to_one or field.many_to_one:
+                        value = value.name if value and hasattr(value, "name") else (str(value) if value else None)
+
+                    row[field_name] = value
+                except Exception:
+                    row[field_name] = None
+
+            # Handle computed fields
+            for new_field, operation in computed_fields.items():
+                try:
+                    if operation["type"] == "sum":
+                        row[new_field] = sum([getattr(obj, f, 0) or 0 for f in operation["fields"]])
+                    elif operation["type"] == "concat":
+                        row[new_field] = " ".join([str(getattr(obj, f, "")) for f in operation["fields"]])
+                    # Add more operation types here if needed
+                except Exception:
+                    row[new_field] = None
+
+            row["id"] = obj.pk
+            data.append(row)
 
         return Response({
             "table": table_name,
-            "count": len(formatted_data),
-            "data": formatted_data
+            "count": len(data),
+            "data": data
         }, status=status.HTTP_200_OK)
-
+    
 
 class EntryAnalysesSchemaView(APIView):
     def get(self, request, entry_id):
@@ -1754,6 +1788,64 @@ class ActivityViewSet(viewsets.ModelViewSet):
         response["Content-Disposition"] = 'attachment; filename="activity_logs.csv"'
 
         return response
+
+
+
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status
+from django.http import HttpResponse
+from rest_framework.permissions import AllowAny
+from weasyprint import HTML, CSS
+import tempfile
+import os
+
+
+class HTMLToPDFView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        html_content = request.data.get("html")
+        css_content = request.data.get("css")
+
+        if not html_content:
+            return Response(
+                {"error": "HTML content is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            # Create temp file safely on Windows
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_pdf:
+                temp_path = temp_pdf.name
+
+            # Generate the PDF
+            if css_content:
+                HTML(string=html_content).write_pdf(
+                    target=temp_path,
+                    stylesheets=[CSS(string=css_content)]
+                )
+            else:
+                HTML(string=html_content).write_pdf(target=temp_path)
+
+            # Read generated PDF data
+            with open(temp_path, "rb") as f:
+                pdf_data = f.read()
+
+            # Delete temp file
+            os.remove(temp_path)
+
+            # Return response with download trigger
+            response = HttpResponse(pdf_data, content_type="application/pdf")
+            response["Content-Disposition"] = 'attachment; filename="generated.pdf"'
+            response["Content-Length"] = len(pdf_data)
+            return response
+
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+
 
 
 # from django.apps import apps

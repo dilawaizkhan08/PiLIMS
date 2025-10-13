@@ -67,4 +67,6 @@ urlpatterns = [
     path("configs/bulk-update/", views.BulkConfigUpdateView.as_view(), name="bulk-config-update"),
     path("dynamic-report/", views.MultiDynamicReportView.as_view(), name="dynamic-report"),
 
+    path('generate-pdf/', views.HTMLToPDFView.as_view(), name='generate-pdf'),
+
 ]

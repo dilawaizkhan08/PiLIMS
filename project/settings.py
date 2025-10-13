@@ -93,7 +93,27 @@ INSTALLED_APPS += [
     "crispy_forms",
     "corsheaders",
     "slick_reporting",
+    "django_eventstream",
+    "django_grip"
 ]
+
+EVENTSTREAM_CHANNELS = {
+    "global": {
+        "broadcast": [
+            "django.db.models.signals.post_save",
+            "django.db.models.signals.post_delete",
+        ],
+    },
+}
+
+
+EVENTSTREAM_REDIS = {
+    'host': 'localhost',
+    'port': 6379,
+    'db': 0,
+}
+
+
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
@@ -157,6 +177,8 @@ MIDDLEWARE = [
     
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
+    # "django_eventstream.middleware.EventStreamMiddleware",
+
     
 ]
 
@@ -183,6 +205,7 @@ TEMPLATES = [
 
 
 WSGI_APPLICATION = "project.wsgi.application"
+ASGI_APPLICATION = "project.asgi.application"
 EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
 # Database
 # https://docs.djangoproject.com/en/4.0/ref/settings/#databases
