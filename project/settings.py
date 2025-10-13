@@ -205,7 +205,7 @@ TEMPLATES = [
 
 
 WSGI_APPLICATION = "project.wsgi.application"
-ASGI_APPLICATION = "project.asgi.application"
+# ASGI_APPLICATION = "project.asgi.application"
 EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
 # Database
 # https://docs.djangoproject.com/en/4.0/ref/settings/#databases
