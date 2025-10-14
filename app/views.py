@@ -1264,35 +1264,42 @@ class CustomJSONEncoder(json.JSONEncoder):
         return super().default(obj)
 
 
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status
+from django.apps import apps
+from django.db import models
+import inflection
+
 class DynamicTableDataView(APIView):
     """
-    POST request:
+    POST request example:
     {
-        "table_name": "app_analysis",
-        "fields": ["name", "user_groups", "test_method"],  # optional
-        "computed_fields": {                               # optional
-            "total_value": {
-                "type": "sum",
-                "fields": ["price", "version"]
-            },
-            "name_with_version": {
+        "table_name": "app_user",
+        "fields": ["id", "email", "role"],  # optional
+        "computed_fields": {                # optional
+            "full_name": {
                 "type": "concat",
-                "fields": ["name", "version"]
+                "fields": ["first_name", "last_name"]
+            },
+            "total_score": {
+                "type": "sum",
+                "fields": ["score1", "score2"]
             }
         }
     }
-    Response: requested table data with applied filters and computed fields.
     """
-    permission_classes = [IsAuthenticated, HasModulePermission]
+    permission_classes = []  # add permissions later if needed
 
     def post(self, request, *args, **kwargs):
         table_name = request.data.get("table_name")
-        requested_fields = request.data.get("fields", None)  # optional
-        computed_fields = request.data.get("computed_fields", {})  # optional
+        requested_fields = request.data.get("fields", None)
+        computed_fields = request.data.get("computed_fields", {})
 
         if not table_name:
             return Response({"error": "table_name is required"}, status=status.HTTP_400_BAD_REQUEST)
 
+        # ---------------- Get model ---------------- #
         try:
             if "_" in table_name:
                 app_label, model_snake = table_name.split("_", 1)
@@ -1301,49 +1308,67 @@ class DynamicTableDataView(APIView):
                 return Response({"error": f"Invalid table_name format: {table_name}"}, status=status.HTTP_400_BAD_REQUEST)
 
             model = apps.get_model(app_label, model_name)
-            if not model:
-                return Response({"error": f"Model '{model_name}' not found in app '{app_label}'"}, status=status.HTTP_404_NOT_FOUND)
         except LookupError:
             return Response({"error": f"Model '{table_name}' not found"}, status=status.HTTP_404_NOT_FOUND)
 
-        # Fetch all objects
         objects = model.objects.all()
         data = []
 
+        # ---------------- Build Data ---------------- #
         for obj in objects:
             row = {}
-
-            # Decide which fields to include
             all_field_names = [f.name for f in model._meta.get_fields() if not f.auto_created or f.concrete]
             fields_to_use = requested_fields or all_field_names
 
             for field_name in fields_to_use:
                 try:
                     field = model._meta.get_field(field_name)
-                    value = getattr(obj, field_name)
+                    value = getattr(obj, field_name, None)
 
-                    # Handle ManyToMany
+                    # ManyToMany
                     if field.many_to_many:
-                        value = [r.name if hasattr(r, "name") else str(r) for r in value.all()]
-                    # Handle ForeignKey / OneToOne
+                        value = [str(r) for r in value.all()]
+
+                    # ForeignKey / OneToOne
                     elif field.one_to_one or field.many_to_one:
-                        value = value.name if value and hasattr(value, "name") else (str(value) if value else None)
+                        if value:
+                            if hasattr(value, "name"):
+                                value = value.name
+                            elif hasattr(value, "username"):
+                                value = value.username
+                            elif hasattr(value, "email"):
+                                value = value.email
+                            else:
+                                value = str(value)
+                        else:
+                            value = None
+
+                    # File / Image fields
+                    elif isinstance(field, (models.FileField, models.ImageField)):
+                        value = value.url if value and hasattr(value, "url") else None
+
+                    # Normal field
+                    else:
+                        value = value if value not in [None, ""] else None
 
                     row[field_name] = value
-                except Exception:
-                    row[field_name] = None
 
-            # Handle computed fields
+                except Exception:
+                    # if it's not a real model field (e.g. @property)
+                    val = getattr(obj, field_name, None)
+                    row[field_name] = str(val) if val is not None else None
+
+            # ---------------- Computed Fields ---------------- #
             for new_field, operation in computed_fields.items():
                 try:
                     if operation["type"] == "sum":
-                        row[new_field] = sum([getattr(obj, f, 0) or 0 for f in operation["fields"]])
+                        row[new_field] = sum([(getattr(obj, f, 0) or 0) for f in operation["fields"]])
                     elif operation["type"] == "concat":
-                        row[new_field] = " ".join([str(getattr(obj, f, "")) for f in operation["fields"]])
-                    # Add more operation types here if needed
+                        row[new_field] = " ".join([str(getattr(obj, f, "") or "") for f in operation["fields"]]).strip()
                 except Exception:
                     row[new_field] = None
 
+            # always include ID
             row["id"] = obj.pk
             data.append(row)
 
@@ -1352,7 +1377,7 @@ class DynamicTableDataView(APIView):
             "count": len(data),
             "data": data
         }, status=status.HTTP_200_OK)
-    
+
 
 class EntryAnalysesSchemaView(APIView):
     def get(self, request, entry_id):
