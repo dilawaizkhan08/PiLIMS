@@ -1831,7 +1831,6 @@ class HTMLToPDFView(APIView):
 
     def post(self, request):
         html_content = request.data.get("html")
-        css_content = request.data.get("css")
 
         if not html_content:
             return Response(
@@ -1840,27 +1839,57 @@ class HTMLToPDFView(APIView):
             )
 
         try:
-            # Create temp file safely on Windows
+            # ✅ Backend CSS: No border, minimal margins
+            backend_css = """
+                @page {
+                    size: A4;
+                    margin: 5px; /* very small margin */
+                }
+
+                body {
+                    margin: 0;
+                    padding: 5px;
+                    box-sizing: border-box;
+                    height: 100%;
+                }
+
+                table {
+                    width: 100%;
+                    border-collapse: collapse;
+                }
+
+                th, td {
+                    border: 1px solid #000;
+                    padding: 6px;
+                    text-align: center;
+                    font-size: 12px;
+                }
+
+                th {
+                    background-color: #f2f2f2;
+                }
+            """
+
+            # Create temp file
             with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_pdf:
                 temp_path = temp_pdf.name
 
-            # Generate the PDF
-            if css_content:
-                HTML(string=html_content).write_pdf(
-                    target=temp_path,
-                    stylesheets=[CSS(string=css_content)]
-                )
-            else:
-                HTML(string=html_content).write_pdf(target=temp_path)
+            # Generate PDF with clean layout
+            HTML(
+                string=html_content,
+                base_url=request.build_absolute_uri("/")
+            ).write_pdf(
+                target=temp_path,
+                stylesheets=[CSS(string=backend_css)]
+            )
 
-            # Read generated PDF data
+            # Read PDF data
             with open(temp_path, "rb") as f:
                 pdf_data = f.read()
 
-            # Delete temp file
             os.remove(temp_path)
 
-            # Return response with download trigger
+            # Return PDF file
             response = HttpResponse(pdf_data, content_type="application/pdf")
             response["Content-Disposition"] = 'attachment; filename="generated.pdf"'
             response["Content-Length"] = len(pdf_data)
@@ -1868,9 +1897,6 @@ class HTMLToPDFView(APIView):
 
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-
-
 
 
 # from django.apps import apps
