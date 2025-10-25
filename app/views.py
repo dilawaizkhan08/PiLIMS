@@ -1701,17 +1701,14 @@ class BulkConfigUpdateView(TrackUserMixin,APIView):
 
 
 from django.apps import apps
-from django.db.models import Count, Sum, Avg, F
-from slick_reporting.generator import ReportGenerator
+from django.db.models import Count, Sum, Avg, Q
 from rest_framework.views import APIView
 from rest_framework.response import Response
-
 
 AGGREGATION_MAP = {
     "Count": Count,
     "Sum": Sum,
     "Avg": Avg,
-    # SQLite safe: no StringAgg or ArrayAgg
 }
 
 
@@ -1725,17 +1722,18 @@ class MultiDynamicReportView(APIView):
             model_name = report_def.get("model")
             group_by = report_def.get("group_by", [])
             columns = report_def.get("columns", [])
+            filters = report_def.get("filters", {})
 
             try:
-                # 🔹 Model load
+                # 🔹 Load model
                 model = apps.get_model(app_label, model_name)
 
                 normalized_columns = []
                 annotations = {}
 
+                # 🔹 Process columns
                 for col in columns:
                     if isinstance(col, str):
-                        # Direct field
                         normalized_columns.append(col)
                     elif isinstance(col, dict):
                         field = col.get("field")
@@ -1744,27 +1742,30 @@ class MultiDynamicReportView(APIView):
 
                         if func in AGGREGATION_MAP:
                             annotations[alias] = AGGREGATION_MAP[func](field)
-                            normalized_columns.append(alias)
                         else:
-                            # Unsupported aggregate → fallback
                             annotations[alias] = Count(field)
-                            normalized_columns.append(alias)
+                        normalized_columns.append(alias)
                     else:
                         raise ValueError(f"Invalid column definition: {col}")
 
-                # group_by fields ko bhi ensure karo
+                # 🔹 Ensure group_by fields appear in result
                 for g in group_by:
                     if g not in normalized_columns:
                         normalized_columns.append(g)
 
-                # 🔹 Query build (SQLite safe)
+                # 🔹 Apply filters dynamically
+                q_filters = Q()
+                for key, value in filters.items():
+                    q_filters &= Q(**{key: value})
+
+                # 🔹 Build queryset
                 qs = (
-                    model.objects.values(*group_by)
+                    model.objects.filter(q_filters)
+                    .values(*group_by)
                     .annotate(**annotations)
                     .order_by(*group_by)
                 )
 
-                # 🔹 Report format
                 data = list(qs.values(*normalized_columns))
                 report_results[model_name] = data
 
@@ -1773,6 +1774,60 @@ class MultiDynamicReportView(APIView):
 
         return Response({"reports": report_results})
 
+
+class MultiDynamicReportSchemaView(APIView):
+    """
+    Returns model field structure instead of actual data.
+    Same input format as MultiDynamicReportView.
+    """
+
+    def post(self, request):
+        reports_config = request.data.get("reports", [])
+        report_schemas = {}
+
+        for report_def in reports_config:
+            app_label = report_def.get("app_label")
+            model_name = report_def.get("model")
+            group_by = report_def.get("group_by", [])
+            columns = report_def.get("columns", [])
+
+            try:
+                # 🔹 Load model
+                model = apps.get_model(app_label, model_name)
+
+                # 🔹 Collect all model field names (including related fields)
+                model_fields = [f.name for f in model._meta.get_fields()]
+
+                normalized_columns = []
+                annotations = {}
+
+                # 🔹 Process columns same way (but don’t run queries)
+                for col in columns:
+                    if isinstance(col, str):
+                        normalized_columns.append(col)
+                    elif isinstance(col, dict):
+                        field = col.get("field")
+                        func = col.get("func")
+                        alias = col.get("alias", field)
+                        normalized_columns.append(alias)
+                    else:
+                        raise ValueError(f"Invalid column definition: {col}")
+
+                # 🔹 Ensure group_by fields appear
+                for g in group_by:
+                    if g not in normalized_columns:
+                        normalized_columns.append(g)
+
+                # 🔹 Return schema info only (no DB hits)
+                report_schemas[model_name] = {
+                    "available_fields": model_fields,
+                    "requested_fields": normalized_columns,
+                }
+
+            except Exception as e:
+                report_schemas[model_name] = {"error": str(e)}
+
+        return Response({"reports": report_schemas})
 
 
 
@@ -1897,92 +1952,4 @@ class HTMLToPDFView(APIView):
 
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-
-# from django.apps import apps
-# from django.db.models import Count, Sum, Avg
-# from slick_reporting.fields import ComputationField
-# from slick_reporting.generator import ReportGenerator
-# from rest_framework.views import APIView
-# from rest_framework.response import Response
-# from rest_framework.permissions import IsAuthenticated
-# from rest_framework import serializers
-
-
-# AGGREGATION_MAP = {
-#     "Count": Count,
-#     "Sum": Sum,
-#     "Avg": Avg,
-# }
-
-# class MultiDynamicReportView(APIView):
-#     permission_classes = [IsAuthenticated]
-
-#     def post(self, request):
-#         serializer = MultiReportSerializer(data=request.data)
-#         serializer.is_valid(raise_exception=True)
-#         reports_data = serializer.validated_data["reports"]
-
-#         all_results = {}
-
-#         for report_def in reports_data:
-#             try:
-#                 model = apps.get_model(app_label=report_def["app_label"], model_name=report_def["model"])
-#             except LookupError:
-#                 all_results[f'{report_def["model"]}'] = {"error": "Model not found"}
-#                 continue
-
-#             # Gather fields
-#             columns = []
-#             for col in report_def["columns"]:
-#                 if isinstance(col, str):
-#                     columns.append(col)
-#                 elif isinstance(col, dict):
-#                     agg_func = AGGREGATION_MAP.get(col.get("func"))
-#                     if not agg_func:
-#                         all_results[report_def["model"]] = {"error": f"Unsupported aggregation function: {col.get('func')}"}
-#                         continue
-
-#                     columns.append(
-#                         ComputationField.create(
-#                             method=agg_func,
-#                             field=col["field"],
-#                             name=col.get("alias", f"{col['field']}_{col['func']}"),
-#                             verbose_name=col.get(
-#                                 "verbose_name",
-#                                 col.get("alias", f"{col['field']}_{col['func']}")
-#                             ),
-#                         )
-#                     )
-
-#             group_by = report_def.get("group_by", [])
-#             if isinstance(group_by, str):
-#                 group_by = [group_by]
-#             group_by_str = ",".join(group_by)
-
-#             # Ensure group_by fields are in columns
-#             existing_column_names = [
-#                 col if isinstance(col, str) else col.name for col in columns
-#             ]
-#             for g in group_by:
-#                 if g not in existing_column_names:
-#                     columns.append(g)
-
-
-
-#             try:
-#                 report = ReportGenerator(
-#                     report_model=model,
-#                     date_field=report_def["date_field"],
-#                     group_by=group_by_str,
-#                     columns=columns,
-#                     start_date=report_def.get("date_from"),
-#                     end_date=report_def.get("date_to"),
-#                 )
-#                 results = list(report.get_report_data())
-#                 all_results[report_def["model"]] = results
-#             except Exception as e:
-#                 all_results[report_def["model"]] = {"error": str(e)}
-
-#         return Response({"reports": all_results})
 
