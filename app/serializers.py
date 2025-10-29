@@ -1761,3 +1761,10 @@ class ActivitySerializer(serializers.ModelSerializer):
             "created_at",
         ]
 
+
+class ReportTemplateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = models.ReportTemplate
+        fields = ["id", "name", "html_content", "css_content", "fields", "created_at"]
+
+

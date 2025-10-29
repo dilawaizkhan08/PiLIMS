@@ -567,4 +567,14 @@ class Activity(BaseModel):
         return f"{self.user} {self.action} {self.model_name}"
 
 
-    
+
+class ReportTemplate(models.Model):
+    name = models.CharField(max_length=255)
+    html_content = models.TextField()   # Raw HTML (with {{ placeholders }})
+    css_content = models.TextField(blank=True, null=True)
+    fields = models.JSONField(default=list)    # e.g. [{"label": "Customer", "path": "form.sample_name"}, {"label": "Analyst", "path": "analyst.name"}]
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return self.name
+

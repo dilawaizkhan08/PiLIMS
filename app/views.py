@@ -46,7 +46,13 @@ from rest_framework import viewsets, mixins
 from django.db.models import F
 from django.apps import apps
 from app.mixins import TrackUserMixin
-
+from django.http import HttpResponse
+import csv
+from io import StringIO
+from weasyprint import HTML, CSS
+import tempfile
+import os
+from django.db.models import Count, Sum, Avg, Q
 
 def get_config(key, default=None):
     from .models import SystemConfiguration
@@ -1700,11 +1706,6 @@ class BulkConfigUpdateView(TrackUserMixin,APIView):
 
 
 
-from django.apps import apps
-from django.db.models import Count, Sum, Avg, Q
-from rest_framework.views import APIView
-from rest_framework.response import Response
-
 AGGREGATION_MAP = {
     "Count": Count,
     "Sum": Sum,
@@ -1831,9 +1832,7 @@ class MultiDynamicReportSchemaView(APIView):
 
 
 
-from django.http import HttpResponse
-import csv
-from io import StringIO
+
 
 class ActivityViewSet(viewsets.ModelViewSet):
     queryset = models.Activity.objects.all().order_by("-created_at")
@@ -1868,17 +1867,6 @@ class ActivityViewSet(viewsets.ModelViewSet):
         response["Content-Disposition"] = 'attachment; filename="activity_logs.csv"'
 
         return response
-
-
-
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework import status
-from django.http import HttpResponse
-from rest_framework.permissions import AllowAny
-from weasyprint import HTML, CSS
-import tempfile
-import os
 
 
 class HTMLToPDFView(APIView):
@@ -1952,4 +1940,215 @@ class HTMLToPDFView(APIView):
 
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+
+# views_report_templates.py
+from django.template import Template, Context
+from django.utils.text import slugify
+from django.db.models.query import QuerySet
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status
+from . import models
+from .serializers import ReportTemplateSerializer
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+def get_nested_value(obj, attr_path):
+    """
+    Robust resolver for nested Django ORM paths.
+    Handles:
+      - dot or double-underscore paths
+      - ManyToMany / reverse relations (auto .all())
+      - JSONFields / dict access
+    """
+    if not attr_path:
+        return ""
+
+    path = attr_path.replace("__", ".")
+    parts = path.split(".")
+    value = obj
+
+    for idx, part in enumerate(parts):
+        if value is None:
+            return ""
+
+        # Handle dict / JSONField
+        if isinstance(value, dict):
+            value = value.get(part, "")
+        else:
+            # Attribute access or manager
+            if not hasattr(value, part):
+                return ""
+
+            value = getattr(value, part)
+
+            # For related managers (m2m or reverse FK), call .all()
+            if hasattr(value, "all") and callable(value.all):
+                value = value.all()
+
+        # If it's a queryset/list and there are deeper parts, map over it
+        if isinstance(value, (QuerySet, list)):
+            remaining = parts[idx + 1 :]
+            if not remaining:
+                # Last level — string join
+                return ", ".join(str(v) for v in value)
+            sub_path = ".".join(remaining)
+            results = [get_nested_value(v, sub_path) for v in value]
+            results = [r for r in results if r]
+            # deduplicate, preserve order
+            seen = set()
+            ordered = []
+            for r in results:
+                if r not in seen:
+                    seen.add(r)
+                    ordered.append(r)
+            return ", ".join(ordered)
+
+    if value is None:
+        return ""
+    if hasattr(value, "pk") and not isinstance(value, (str, int, float)):
+        return str(value)
+    return value
+
+
+
+class ReportTemplateCreateView(APIView):
+    """
+    Create a dynamic report template.
+    Accepts HTML, CSS, and nested field mappings.
+    Normalizes labels to template-safe keys.
+    """
+
+    def post(self, request):
+        data = request.data.copy()
+        fields = data.get("fields", [])
+        normalized_fields = []
+
+        for field in fields:
+            label = field.get("label", "")
+            path = field.get("path", "")
+            safe_label = (
+                slugify(label).replace("-", "_").replace(".", "_")
+            )
+            normalized_fields.append({
+                "label": safe_label,
+                "path": path
+            })
+
+        data["fields"] = normalized_fields
+
+        serializer = ReportTemplateSerializer(data=data)
+        if serializer.is_valid():
+            template = serializer.save()
+            return Response({
+                "message": "Template created successfully",
+                "template_id": template.id,
+                "normalized_fields": normalized_fields
+            }, status=status.HTTP_201_CREATED)
+
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class RenderReportView(APIView):
+    """
+    Render a stored template for a DynamicFormEntry sample.
+    Also merges optional aggregation/query results (if provided in template.query_config).
+    """
+
+    def get(self, request):
+        template_id = request.query_params.get("template_id")
+        sample_id = request.query_params.get("sample_id")
+
+        if not (template_id and sample_id):
+            return Response({"error": "template_id and sample_id required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            report_template = models.ReportTemplate.objects.get(id=template_id)
+        except models.ReportTemplate.DoesNotExist:
+            return Response({"error": "Template not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            entry = (models.DynamicFormEntry.objects
+                     .select_related("form", "analyst", "logged_by")
+                     .prefetch_related(
+                         "analyses",
+                         "analyses__components",
+                         "form__group_analysis_list",
+                         "form__group_analysis_list__user_groups",
+                         "form__user_groups",
+                     )
+                     .get(id=sample_id))
+        except models.DynamicFormEntry.DoesNotExist:
+            return Response({"error": "Sample not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        # Build context from template fields
+        context_data = {}
+        for field in report_template.fields:
+            label = field.get("label", "")
+            path = field.get("path", "")
+            safe_key = slugify(label).replace("-", "_").replace(".", "_")
+            value = get_nested_value(entry, path)
+            context_data[safe_key] = value
+
+        # Debugging: log context so you can inspect what values are resolved
+        logger.debug("RenderReportView - context_data for template_id=%s sample_id=%s: %s", template_id, sample_id, context_data)
+
+        # If template contains a query_config (aggregations) stored in DB (optional), run it
+        # Example: report_template may have attribute 'query_config' (JSONField) if you added it.
+        # We'll try to read it and merge first result into context.
+        qc = getattr(report_template, "query_config", None) or {}
+        if isinstance(qc, dict) and qc:
+            try:
+                # Build dynamic aggregation (simple support for Count, Sum, Avg)
+                from django.db.models import Count, Sum, Avg, Q
+                AGG = {"Count": Count, "Sum": Sum, "Avg": Avg}
+                app_label = qc.get("app_label")
+                model_name = qc.get("model")
+                group_by = qc.get("group_by", [])
+                columns = qc.get("columns", [])
+                filters = qc.get("filters", {})
+
+                if app_label and model_name:
+                    Model = models.apps.get_model(app_label, model_name) if hasattr(models, "apps") else None
+                    # try import via apps if provided; fallback to using django.apps
+                    if Model is None:
+                        from django.apps import apps
+                        Model = apps.get_model(app_label, model_name)
+
+                    q_filters = Q()
+                    for k, v in (filters or {}).items():
+                        q_filters &= Q(**{k: v})
+
+                    annotations = {}
+                    for col in (columns or []):
+                        f = col.get("field")
+                        func = col.get("func")
+                        alias = col.get("alias", f)
+                        agg_cls = AGG.get(func, Count)
+                        annotations[alias] = agg_cls(f)
+
+                    qs = Model.objects.filter(q_filters).values(*group_by).annotate(**annotations)
+                    # take first row or empty
+                    agg_row = qs.first() or {}
+                    # normalize keys for template
+                    for k, v in agg_row.items():
+                        context_data[k] = v
+            except Exception as e:
+                logger.exception("RenderReportView: error running query_config aggregation: %s", e)
+
+        # Render template
+        html_template = Template(report_template.html_content)
+        rendered_html = html_template.render(Context(context_data))
+
+        if report_template.css_content:
+            rendered_html = f"<style>{report_template.css_content}</style>\n{rendered_html}"
+
+        # Return html + debug context so you can inspect in Postman
+        return Response({"html": rendered_html, "context": context_data})
+
+
 
