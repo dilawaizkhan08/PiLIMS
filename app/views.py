@@ -2151,4 +2151,6 @@ class RenderReportView(APIView):
         return Response({"html": rendered_html, "context": context_data})
 
 
-
+class ReportTemplateViewSet(viewsets.ModelViewSet):
+    queryset = models.ReportTemplate.objects.all().order_by('-created_at')
+    serializer_class = ReportTemplateSerializer

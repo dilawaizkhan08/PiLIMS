@@ -35,6 +35,7 @@ router.register(r'modules', views.ModuleViewSet, basename="modules")
 router.register(r'request-attachments', views.DynamicRequestAttachmentViewSet, basename='request-attachments')
 router.register(r'sample-attachments', views.DynamicFormAttachmentViewSet, basename='sample-attachments')
 router.register(r'activities', views.ActivityViewSet, basename='activity')
+router.register(r'report-templates', views.ReportTemplateViewSet, basename='reporttemplate')
 
 
 
@@ -72,5 +73,6 @@ urlpatterns = [
 
     path("create-template/", views.ReportTemplateCreateView.as_view(), name="create_template"),
     path("render-report/", views.RenderReportView.as_view(), name="render_report"),
+    
 
 ]
