@@ -1980,7 +1980,6 @@ def get_nested_value(obj, attr_path):
         if isinstance(value, dict):
             value = value.get(part, "")
         else:
-            # Attribute access or manager
             if not hasattr(value, part):
                 return ""
 
@@ -1990,30 +1989,32 @@ def get_nested_value(obj, attr_path):
             if hasattr(value, "all") and callable(value.all):
                 value = value.all()
 
-        # If it's a queryset/list and there are deeper parts, map over it
+        # Handle lists/querysets
         if isinstance(value, (QuerySet, list)):
-            remaining = parts[idx + 1 :]
+            remaining = parts[idx + 1:]
             if not remaining:
-                # Last level — string join
+                # Last level — convert all to strings
                 return ", ".join(str(v) for v in value)
+
             sub_path = ".".join(remaining)
             results = [get_nested_value(v, sub_path) for v in value]
             results = [r for r in results if r]
-            # deduplicate, preserve order
+
+            # Deduplicate, preserve order
             seen = set()
             ordered = []
             for r in results:
                 if r not in seen:
                     seen.add(r)
                     ordered.append(r)
-            return ", ".join(ordered)
+
+            return ", ".join(str(r) for r in ordered)
 
     if value is None:
         return ""
     if hasattr(value, "pk") and not isinstance(value, (str, int, float)):
         return str(value)
     return value
-
 
 
 class ReportTemplateCreateView(APIView):
