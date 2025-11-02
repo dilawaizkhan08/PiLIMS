@@ -2231,3 +2231,132 @@ class RenderRequestReportView(APIView):
 class ReportTemplateViewSet(viewsets.ModelViewSet):
     queryset = models.ReportTemplate.objects.all().order_by('-created_at')
     serializer_class = ReportTemplateSerializer
+
+
+
+# analytics/views.py
+from datetime import timedelta
+from django.utils import timezone
+from django.db.models import Count, Avg, Sum, Q, F, ExpressionWrapper, DurationField
+from django.db.models.functions import TruncMonth, Now
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework.permissions import IsAuthenticated
+
+from app.models import (
+    User, Analysis, DynamicFormEntry, Component, Instrument,
+    Inventory, ComponentResult, Product
+)
+
+class AnalyticsAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        today = timezone.now().date()
+        thirty_days = today + timedelta(days=30)
+
+        # ========== CARDS (quick KPI numbers) ==========
+        total_users = User.objects.count()
+        active_users = User.objects.filter(is_active=True).count()
+        total_analyses = Analysis.objects.count()
+        total_products = Product.objects.count()
+
+        total_entries = DynamicFormEntry.objects.count()
+        completed_entries = DynamicFormEntry.objects.filter(status='completed').count()
+        pending_entries = DynamicFormEntry.objects.exclude(status='completed').count()
+
+        # Average components per analysis
+        comps = Component.objects.values('analysis').annotate(cnt=Count('id'))
+        avg_components_per_analysis = comps.aggregate(avg=Avg('cnt'))['avg'] or 0
+        avg_components_per_analysis = float(avg_components_per_analysis)
+
+        # Average completion time (for entries marked completed) in days
+        completed_age_agg = DynamicFormEntry.objects.filter(status='completed').annotate(
+            age=ExpressionWrapper(Now() - F('created_at'), output_field=DurationField())
+        ).aggregate(avg_age=Avg('age'))['avg_age']
+        if completed_age_agg:
+            avg_completion_days = round(completed_age_agg.total_seconds() / 86400, 2)
+        else:
+            avg_completion_days = None
+
+        # ========== CHARTS / TIMESERIES ==========
+        # Monthly entries (count per month)
+        monthly_entries_qs = DynamicFormEntry.objects.annotate(month=TruncMonth('created_at')).values('month').annotate(
+            count=Count('id')
+        ).order_by('month')
+        monthly_entries = [
+            {"month": item['month'].date().isoformat(), "count": item['count']}
+            for item in monthly_entries_qs
+        ]
+
+        # Status distribution for pie/bar chart
+        status_distribution_qs = DynamicFormEntry.objects.values('status').annotate(count=Count('id'))
+        status_distribution = {item['status']: item['count'] for item in status_distribution_qs}
+
+        # Top analyses by number of entries
+        top_analyses_qs = Analysis.objects.annotate(entries_count=Count('entries')).order_by('-entries_count')[:10]
+        top_analyses = [{"analysis": a.name, "entries": a.entries_count} for a in top_analyses_qs]
+
+        # Top components by results recorded
+        top_components_qs = Component.objects.annotate(result_count=Count('results')).order_by('-result_count')[:10]
+        top_components = [{"component": c.name, "analysis": c.analysis.name if c.analysis else None, "result_count": c.result_count} for c in top_components_qs]
+
+        # ========== ALERTS / LISTS ==========
+        # Instruments with calibration due within 30 days
+        instruments_due_qs = Instrument.objects.filter(next_calibration_date__lte=thirty_days).order_by('next_calibration_date')[:20]
+        instruments_due = [
+            {"id": ins.id, "name": ins.name, "next_calibration_date": ins.next_calibration_date.isoformat() if ins.next_calibration_date else None}
+            for ins in instruments_due_qs
+        ]
+
+        # Low stock inventories (example threshold 10)
+        low_stock_qs = Inventory.objects.filter(total_quantity__lt=10).annotate(total=F('total_quantity')).order_by('total')[:20]
+        low_stock = [{"id": inv.id, "name": inv.name, "total_quantity": inv.total_quantity, "location": inv.location} for inv in low_stock_qs]
+
+        # Leaderboard: users who logged/analysed most entries (top 10)
+        top_analysts_qs = User.objects.annotate(analyzed_count=Count('analyzed_samples')).order_by('-analyzed_count')[:10]
+        top_analysts = [{"id": u.id, "name": getattr(u, 'name', u.username), "analyzed_count": u.analyzed_count} for u in top_analysts_qs]
+
+        # ========== EXTRA METRICS ==========
+        # Components average numeric_value (if numeric)
+        comp_numeric_avg = ComponentResult.objects.aggregate(avg_numeric=Avg('numeric_value'))['avg_numeric']
+        comp_numeric_avg = float(comp_numeric_avg) if comp_numeric_avg is not None else None
+
+        # Product - analysis mapping counts
+        product_analysis_counts = Product.objects.annotate(analysis_count=Count('analyses')).order_by('-analysis_count')[:10]
+        product_analysis = [{"product": p.name, "analysis_count": p.analysis_count} for p in product_analysis_counts]
+
+        # Build final payload
+        payload = {
+            "cards": {
+                "total_users": total_users,
+                "active_users": active_users,
+                "total_analyses": total_analyses,
+                "total_products": total_products,
+                "total_entries": total_entries,
+                "completed_entries": completed_entries,
+                "pending_entries": pending_entries,
+                "avg_components_per_analysis": avg_components_per_analysis,
+                "avg_completion_days": avg_completion_days,
+            },
+            "charts": {
+                "monthly_entries": monthly_entries,
+                "status_distribution": status_distribution,
+                "top_analyses": top_analyses,
+                "top_components": top_components,
+            },
+            "alerts": {
+                "instruments_due_30_days": instruments_due,
+                "low_stock_inventories": low_stock,
+            },
+            "leaderboards": {
+                "top_analysts": top_analysts,
+                "product_analysis_counts": product_analysis,
+            },
+            "extras": {
+                "average_component_result_numeric_value": comp_numeric_avg,
+            }
+        }
+
+        return Response(payload)
+

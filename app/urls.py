@@ -74,6 +74,7 @@ urlpatterns = [
     path("create-template/", views.ReportTemplateCreateView.as_view(), name="create_template"),
     path("render-report/", views.RenderReportView.as_view(), name="render_report"),
     path("render-request-report/", views.RenderRequestReportView.as_view(), name="render-request-report"),
+    path('dashboard/', views.AnalyticsAPIView.as_view(), name='analytics-dashboard'),
     
 
 ]
