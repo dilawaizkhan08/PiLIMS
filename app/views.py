@@ -1947,13 +1947,8 @@ class HTMLToPDFView(APIView):
 from django.template import Template, Context
 from django.utils.text import slugify
 from django.db.models.query import QuerySet
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework import status
-from . import models
-from .serializers import ReportTemplateSerializer
+import tempfile, os, base64
 import logging
-
 logger = logging.getLogger(__name__)
 
 
@@ -2056,16 +2051,20 @@ class ReportTemplateCreateView(APIView):
 
 class RenderReportView(APIView):
     """
-    Render a stored template for a DynamicFormEntry sample.
-    Also merges optional aggregation/query results (if provided in template.query_config).
+    Render stored template for DynamicFormEntry sample.
+    Returns both rendered HTML and downloadable PDF file.
     """
 
     def get(self, request):
         template_id = request.query_params.get("template_id")
         sample_id = request.query_params.get("sample_id")
+        download = request.query_params.get("download")  # optional flag
 
         if not (template_id and sample_id):
-            return Response({"error": "template_id and sample_id required"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"error": "template_id and sample_id required"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
         try:
             report_template = models.ReportTemplate.objects.get(id=template_id)
@@ -2073,20 +2072,22 @@ class RenderReportView(APIView):
             return Response({"error": "Template not found"}, status=status.HTTP_404_NOT_FOUND)
 
         try:
-            entry = (models.DynamicFormEntry.objects
-                     .select_related("form", "analyst", "logged_by")
-                     .prefetch_related(
-                         "analyses",
-                         "analyses__components",
-                         "form__group_analysis_list",
-                         "form__group_analysis_list__user_groups",
-                         "form__user_groups",
-                     )
-                     .get(id=sample_id))
+            entry = (
+                models.DynamicFormEntry.objects
+                .select_related("form", "analyst", "logged_by")
+                .prefetch_related(
+                    "analyses",
+                    "analyses__components",
+                    "form__group_analysis_list",
+                    "form__group_analysis_list__user_groups",
+                    "form__user_groups",
+                )
+                .get(id=sample_id)
+            )
         except models.DynamicFormEntry.DoesNotExist:
             return Response({"error": "Sample not found"}, status=status.HTTP_404_NOT_FOUND)
 
-        # Build context from template fields
+        # Context
         context_data = {}
         for field in report_template.fields:
             label = field.get("label", "")
@@ -2095,62 +2096,137 @@ class RenderReportView(APIView):
             value = get_nested_value(entry, path)
             context_data[safe_key] = value
 
-        # Debugging: log context so you can inspect what values are resolved
-        logger.debug("RenderReportView - context_data for template_id=%s sample_id=%s: %s", template_id, sample_id, context_data)
-
-        # If template contains a query_config (aggregations) stored in DB (optional), run it
-        # Example: report_template may have attribute 'query_config' (JSONField) if you added it.
-        # We'll try to read it and merge first result into context.
-        qc = getattr(report_template, "query_config", None) or {}
-        if isinstance(qc, dict) and qc:
-            try:
-                # Build dynamic aggregation (simple support for Count, Sum, Avg)
-                from django.db.models import Count, Sum, Avg, Q
-                AGG = {"Count": Count, "Sum": Sum, "Avg": Avg}
-                app_label = qc.get("app_label")
-                model_name = qc.get("model")
-                group_by = qc.get("group_by", [])
-                columns = qc.get("columns", [])
-                filters = qc.get("filters", {})
-
-                if app_label and model_name:
-                    Model = models.apps.get_model(app_label, model_name) if hasattr(models, "apps") else None
-                    # try import via apps if provided; fallback to using django.apps
-                    if Model is None:
-                        from django.apps import apps
-                        Model = apps.get_model(app_label, model_name)
-
-                    q_filters = Q()
-                    for k, v in (filters or {}).items():
-                        q_filters &= Q(**{k: v})
-
-                    annotations = {}
-                    for col in (columns or []):
-                        f = col.get("field")
-                        func = col.get("func")
-                        alias = col.get("alias", f)
-                        agg_cls = AGG.get(func, Count)
-                        annotations[alias] = agg_cls(f)
-
-                    qs = Model.objects.filter(q_filters).values(*group_by).annotate(**annotations)
-                    # take first row or empty
-                    agg_row = qs.first() or {}
-                    # normalize keys for template
-                    for k, v in agg_row.items():
-                        context_data[k] = v
-            except Exception as e:
-                logger.exception("RenderReportView: error running query_config aggregation: %s", e)
-
-        # Render template
+        # Render HTML
         html_template = Template(report_template.html_content)
         rendered_html = html_template.render(Context(context_data))
-
         if report_template.css_content:
             rendered_html = f"<style>{report_template.css_content}</style>\n{rendered_html}"
 
-        # Return html + debug context so you can inspect in Postman
-        return Response({"html": rendered_html, "context": context_data})
+        # Generate PDF
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_pdf:
+            temp_path = temp_pdf.name
 
+        # Reduce default PDF margins
+        custom_css = """
+        @page {
+            size: A4;
+            margin: 10mm; /* reduce from ~25mm default */
+        }
+        body {
+            margin: 0;
+            padding: 0;
+        }
+        """
+
+        combined_css = f"{custom_css}\n{report_template.css_content or ''}"
+
+        HTML(string=rendered_html, base_url=request.build_absolute_uri("/")).write_pdf(
+            target=temp_path,
+            stylesheets=[CSS(string=combined_css)]
+        )
+
+
+        with open(temp_path, "rb") as f:
+            pdf_data = f.read()
+        os.remove(temp_path)
+
+        # ✅ If user requested ?download=true → send the actual file
+        if download:
+            response = HttpResponse(pdf_data, content_type="application/pdf")
+            response["Content-Disposition"] = f'attachment; filename="report_{sample_id}.pdf"'
+            return response
+
+        # ✅ Otherwise, send both HTML + PDF (embedded binary)
+        return HttpResponse(pdf_data, content_type="application/pdf")
+
+
+
+class RenderRequestReportView(APIView):
+    """
+    Render stored template for DynamicRequestEntry (Request Form Entry).
+    Returns rendered HTML and downloadable PDF file.
+    """
+
+    def get(self, request):
+        template_id = request.query_params.get("template_id")
+        request_entry_id = request.query_params.get("request_entry_id")
+        download = request.query_params.get("download")
+
+        if not (template_id and request_entry_id):
+            return Response(
+                {"error": "template_id and request_entry_id required"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            report_template = models.ReportTemplate.objects.get(id=template_id)
+        except models.ReportTemplate.DoesNotExist:
+            return Response({"error": "Template not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            entry = (
+                models.DynamicRequestEntry.objects
+                .select_related("request_form", "analyst", "logged_by")
+                .prefetch_related(
+                    "analyses",
+                    "analyses__components",
+                    "request_form__sample_form",
+                    "request_form__user_groups",
+                )
+                .get(id=request_entry_id)
+            )
+        except models.DynamicRequestEntry.DoesNotExist:
+            return Response({"error": "Request entry not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        # Build context
+        context_data = {}
+        for field in report_template.fields:
+            label = field.get("label", "")
+            path = field.get("path", "")
+            safe_key = slugify(label).replace("-", "_").replace(".", "_")
+            value = get_nested_value(entry, path)
+            context_data[safe_key] = value
+
+        # Render HTML
+        html_template = Template(report_template.html_content)
+        rendered_html = html_template.render(Context(context_data))
+        if report_template.css_content:
+            rendered_html = f"<style>{report_template.css_content}</style>\n{rendered_html}"
+
+        # Generate PDF with reduced margins
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_pdf:
+            temp_path = temp_pdf.name
+
+        custom_css = """
+        @page {
+            size: A4;
+            margin: 10mm; /* reduced margins */
+        }
+        body {
+            margin: 0;
+            padding: 0;
+        }
+        """
+
+        combined_css = f"{custom_css}\n{report_template.css_content or ''}"
+
+        HTML(string=rendered_html, base_url=request.build_absolute_uri("/")).write_pdf(
+            target=temp_path,
+            stylesheets=[CSS(string=combined_css)]
+        )
+
+        with open(temp_path, "rb") as f:
+            pdf_data = f.read()
+        os.remove(temp_path)
+
+        # ✅ Handle download flag
+        if download:
+            response = HttpResponse(pdf_data, content_type="application/pdf")
+            response["Content-Disposition"] = f'attachment; filename="request_report_{request_entry_id}.pdf"'
+            return response
+
+        return HttpResponse(pdf_data, content_type="application/pdf")
+    
 
 class ReportTemplateViewSet(viewsets.ModelViewSet):
     queryset = models.ReportTemplate.objects.all().order_by('-created_at')

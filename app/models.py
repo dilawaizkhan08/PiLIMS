@@ -376,8 +376,6 @@ class DynamicFormAttachment(models.Model):
         return f"{self.field.field_name} - {self.file.name}"
 
 
-
-
 class Customer(BaseModel):
     name = models.CharField(max_length=255)  # Required
     email = models.EmailField(unique=True)   # Required & unique
