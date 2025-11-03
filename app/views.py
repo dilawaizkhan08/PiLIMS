@@ -2265,97 +2265,217 @@ class ReportTemplateViewSet(viewsets.ModelViewSet):
 # analytics/views.py
 from datetime import timedelta
 from django.utils import timezone
-from django.db.models import Count, Avg, Sum, Q, F, ExpressionWrapper, DurationField
+from django.db.models import Count, Avg, F, ExpressionWrapper, DurationField
 from django.db.models.functions import TruncMonth, Now
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
+import calendar
 
 from app.models import (
     User, Analysis, DynamicFormEntry, Component, Instrument,
     Inventory, ComponentResult, Product
 )
 
+STATUS_CHOICES = [
+    ("initiated", "Initiated"),
+    ("received", "Received"),
+    ("in_progress", "In Progress"),
+    ("completed", "Completed"),
+    ("assign_analyst", "Assign Analyst"),
+    ("authorized", "Authorized"),
+    ("rejected", "Rejected"),
+    ("cancelled", "Cancelled"),
+    ("restored", "Restored"),
+]
+
+
 class AnalyticsAPIView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, *args, **kwargs):
-        today = timezone.now().date()
-        thirty_days = today + timedelta(days=30)
+        # Parse optional filters
+        start_date_str = request.query_params.get("start_date")
+        end_date_str = request.query_params.get("end_date")
 
-        # ========== CARDS (quick KPI numbers) ==========
+        # Default: last 90 days
+        today = timezone.now().date()
+        if not start_date_str or not end_date_str:
+            start_date = today - timedelta(days=90)
+            end_date = today
+        else:
+            try:
+                start_date = timezone.datetime.fromisoformat(start_date_str).date()
+                end_date = timezone.datetime.fromisoformat(end_date_str).date()
+            except ValueError:
+                return Response({"error": "Invalid date format. Use YYYY-MM-DD."}, status=400)
+
+        # Ensure end_date ≥ start_date
+        if end_date < start_date:
+            return Response({"error": "end_date must be greater than or equal to start_date."}, status=400)
+
+        # Filter by date range (use created_at fields)
+        entry_filter = {"created_at__date__range": (start_date, end_date)}
+
+        # ===================== CARDS =====================
         total_users = User.objects.count()
         active_users = User.objects.filter(is_active=True).count()
         total_analyses = Analysis.objects.count()
         total_products = Product.objects.count()
 
-        total_entries = DynamicFormEntry.objects.count()
-        completed_entries = DynamicFormEntry.objects.filter(status='completed').count()
-        pending_entries = DynamicFormEntry.objects.exclude(status='completed').count()
+        total_entries = DynamicFormEntry.objects.filter(**entry_filter).count()
+        completed_entries = DynamicFormEntry.objects.filter(status="completed", **entry_filter).count()
+        pending_entries = DynamicFormEntry.objects.filter(**entry_filter).exclude(status="completed").count()
 
-        # Average components per analysis
-        comps = Component.objects.values('analysis').annotate(cnt=Count('id'))
-        avg_components_per_analysis = comps.aggregate(avg=Avg('cnt'))['avg'] or 0
+        comps = Component.objects.values("analysis").annotate(cnt=Count("id"))
+        avg_components_per_analysis = comps.aggregate(avg=Avg("cnt"))["avg"] or 0
         avg_components_per_analysis = float(avg_components_per_analysis)
 
-        # Average completion time (for entries marked completed) in days
-        completed_age_agg = DynamicFormEntry.objects.filter(status='completed').annotate(
-            age=ExpressionWrapper(Now() - F('created_at'), output_field=DurationField())
-        ).aggregate(avg_age=Avg('age'))['avg_age']
-        if completed_age_agg:
-            avg_completion_days = round(completed_age_agg.total_seconds() / 86400, 2)
-        else:
-            avg_completion_days = None
+        completed_age_agg = DynamicFormEntry.objects.filter(status="completed", **entry_filter).annotate(
+            age=ExpressionWrapper(Now() - F("created_at"), output_field=DurationField())
+        ).aggregate(avg_age=Avg("age"))["avg_age"]
 
-        # ========== CHARTS / TIMESERIES ==========
-        # Monthly entries (count per month)
-        monthly_entries_qs = DynamicFormEntry.objects.annotate(month=TruncMonth('created_at')).values('month').annotate(
-            count=Count('id')
-        ).order_by('month')
+        avg_completion_days = (
+            round(completed_age_agg.total_seconds() / 86400, 2) if completed_age_agg else None
+        )
+
+        # ===================== CHARTS =====================
+        monthly_entries_qs = (
+            DynamicFormEntry.objects.filter(**entry_filter)
+            .annotate(month=TruncMonth("created_at"))
+            .values("month")
+            .annotate(count=Count("id"))
+            .order_by("month")
+        )
+
+        # Convert queryset to dict for faster lookup
+        monthly_data = {item["month"].month: item["count"] for item in monthly_entries_qs}
+
+        # Generate list for all 12 months
+        current_year = datetime.now().year
         monthly_entries = [
-            {"month": item['month'].date().isoformat(), "count": item['count']}
-            for item in monthly_entries_qs
+            {
+                "month": f"{calendar.month_name[m]} {current_year}",  # e.g., "January 2025"
+                "count": monthly_data.get(m, 0),
+            }
+            for m in range(1, 13)
         ]
 
-        # Status distribution for pie/bar chart
-        status_distribution_qs = DynamicFormEntry.objects.values('status').annotate(count=Count('id'))
-        status_distribution = {item['status']: item['count'] for item in status_distribution_qs}
+        status_distribution_qs = (
+            DynamicFormEntry.objects.filter(**entry_filter)
+            .values("status")
+            .annotate(count=Count("id"))
+        )
 
-        # Top analyses by number of entries
-        top_analyses_qs = Analysis.objects.annotate(entries_count=Count('entries')).order_by('-entries_count')[:10]
+        # Convert queryset to dictionary
+        actual_status_counts = {item["status"]: item["count"] for item in status_distribution_qs}
+
+        # Ensure all statuses are present, fill missing with 0
+        status_distribution = {
+            display_name: actual_status_counts.get(key, 0)
+            for key, display_name in STATUS_CHOICES
+        }
+
+        top_analyses_qs = (
+            Analysis.objects.annotate(entries_count=Count("entries", filter=Q(entries__created_at__date__range=(start_date, end_date))))
+            .order_by("-entries_count")[:3]
+        )
         top_analyses = [{"analysis": a.name, "entries": a.entries_count} for a in top_analyses_qs]
 
-        # Top components by results recorded
-        top_components_qs = Component.objects.annotate(result_count=Count('results')).order_by('-result_count')[:10]
-        top_components = [{"component": c.name, "analysis": c.analysis.name if c.analysis else None, "result_count": c.result_count} for c in top_components_qs]
+        top_components_qs = (
+            Component.objects.annotate(
+                result_count=Count("results", filter=Q(results__created_at__date__range=(start_date, end_date)))
+            )
+            .order_by("-result_count")[:3]
+        )
+        top_components = [
+            {
+                "component": c.name,
+                "analysis": c.analysis.name if c.analysis else None,
+                "result_count": c.result_count,
+            }
+            for c in top_components_qs
+        ]
 
-        # ========== ALERTS / LISTS ==========
-        # Instruments with calibration due within 30 days
-        instruments_due_qs = Instrument.objects.filter(next_calibration_date__lte=thirty_days).order_by('next_calibration_date')[:20]
+        # ===================== ALERTS =====================
+        thirty_days = today + timedelta(days=30)
+        # ---- Instruments due for calibration ----
+        instruments_due_qs = (
+            Instrument.objects.filter(next_calibration_date__lte=thirty_days)
+            .order_by("next_calibration_date")[:10]
+        )
         instruments_due = [
-            {"id": ins.id, "name": ins.name, "next_calibration_date": ins.next_calibration_date.isoformat() if ins.next_calibration_date else None}
+            {
+                "id": ins.id,
+                "name": ins.name,
+                "next_calibration_date": ins.next_calibration_date.isoformat() if ins.next_calibration_date else None,
+            }
             for ins in instruments_due_qs
         ]
 
-        # Low stock inventories (example threshold 10)
-        low_stock_qs = Inventory.objects.filter(total_quantity__lt=10).annotate(total=F('total_quantity')).order_by('total')[:20]
-        low_stock = [{"id": inv.id, "name": inv.name, "total_quantity": inv.total_quantity, "location": inv.location} for inv in low_stock_qs]
+        # ✅ Ensure always at least one record shown
+        if not instruments_due:
+            instruments_due = [
+                {"id": None, "name": "No instruments due", "next_calibration_date": None}
+            ]
 
-        # Leaderboard: users who logged/analysed most entries (top 10)
-        top_analysts_qs = User.objects.annotate(analyzed_count=Count('analyzed_samples')).order_by('-analyzed_count')[:10]
-        top_analysts = [{"id": u.id, "name": getattr(u, 'name', u.username), "analyzed_count": u.analyzed_count} for u in top_analysts_qs]
+        # ---- Low stock alerts ----
+        low_stock_qs = (
+            Inventory.objects.filter(total_quantity__lt=10)
+            .annotate(total=F("total_quantity"))
+            .order_by("total")[:10]
+        )
+        low_stock = [
+            {
+                "id": inv.id,
+                "name": inv.name,
+                "total_quantity": inv.total_quantity,
+                "location": inv.location,
+            }
+            for inv in low_stock_qs
+        ]
 
-        # ========== EXTRA METRICS ==========
-        # Components average numeric_value (if numeric)
-        comp_numeric_avg = ComponentResult.objects.aggregate(avg_numeric=Avg('numeric_value'))['avg_numeric']
+        # ✅ Ensure always at least one record shown
+        if not low_stock:
+            low_stock = [
+                {"id": None, "name": "No low-stock items", "total_quantity": 0, "location": None}
+            ]
+
+        # ===================== LEADERBOARD =====================
+        top_analysts_qs = (
+            User.objects.annotate(
+                analyzed_count=Count(
+                    "analyzed_samples", filter=Q(analyzed_samples__created_at__date__range=(start_date, end_date))
+                )
+            )
+            .order_by("-analyzed_count")[:10]
+        )
+        top_analysts = [
+            {"id": u.id, "name": getattr(u, "name", u.username), "analyzed_count": u.analyzed_count}
+            for u in top_analysts_qs
+        ]
+
+        # ===================== EXTRAS =====================
+        comp_numeric_avg = (
+            ComponentResult.objects.filter(created_at__date__range=(start_date, end_date)).aggregate(avg_numeric=Avg("numeric_value"))[
+                "avg_numeric"
+            ]
+        )
         comp_numeric_avg = float(comp_numeric_avg) if comp_numeric_avg is not None else None
 
-        # Product - analysis mapping counts
-        product_analysis_counts = Product.objects.annotate(analysis_count=Count('analyses')).order_by('-analysis_count')[:10]
-        product_analysis = [{"product": p.name, "analysis_count": p.analysis_count} for p in product_analysis_counts]
+        product_analysis_counts = (
+            Product.objects.annotate(analysis_count=Count("analyses")).order_by("-analysis_count")[:10]
+        )
+        product_analysis = [
+            {"product": p.name, "analysis_count": p.analysis_count} for p in product_analysis_counts
+        ]
 
-        # Build final payload
+        # ===================== RESPONSE =====================
         payload = {
+            "filters": {
+                "start_date": start_date.isoformat(),
+                "end_date": end_date.isoformat(),
+            },
             "cards": {
                 "total_users": total_users,
                 "active_users": active_users,
@@ -2383,7 +2503,7 @@ class AnalyticsAPIView(APIView):
             },
             "extras": {
                 "average_component_result_numeric_value": comp_numeric_avg,
-            }
+            },
         }
 
         return Response(payload)
