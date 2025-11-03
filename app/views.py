@@ -2110,11 +2110,25 @@ class RenderReportView(APIView):
         custom_css = """
         @page {
             size: A4;
-            margin: 10mm; /* reduce from ~25mm default */
+            margin: 10mm;
         }
         body {
             margin: 0;
-            padding: 0;
+            padding: 5px;
+            box-sizing: border-box;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        th, td {
+            border: 1px solid #000;
+            padding: 6px;
+            text-align: center;
+            font-size: 12px;
+        }
+        th {
+            background-color: #f2f2f2;
         }
         """
 
@@ -2200,11 +2214,25 @@ class RenderRequestReportView(APIView):
         custom_css = """
         @page {
             size: A4;
-            margin: 10mm; /* reduced margins */
+            margin: 10mm;
         }
         body {
             margin: 0;
-            padding: 0;
+            padding: 5px;
+            box-sizing: border-box;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        th, td {
+            border: 1px solid #000;
+            padding: 6px;
+            text-align: center;
+            font-size: 12px;
+        }
+        th {
+            background-color: #f2f2f2;
         }
         """
 
