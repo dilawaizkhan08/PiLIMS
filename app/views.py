@@ -2272,11 +2272,6 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 import calendar
 
-from app.models import (
-    User, Analysis, DynamicFormEntry, Component, Instrument,
-    Inventory, ComponentResult, Product
-)
-
 STATUS_CHOICES = [
     ("initiated", "Initiated"),
     ("received", "Received"),
@@ -2318,20 +2313,20 @@ class AnalyticsAPIView(APIView):
         entry_filter = {"created_at__date__range": (start_date, end_date)}
 
         # ===================== CARDS =====================
-        total_users = User.objects.count()
-        active_users = User.objects.filter(is_active=True).count()
-        total_analyses = Analysis.objects.count()
-        total_products = Product.objects.count()
+        total_users = models.User.objects.count()
+        active_users = models.User.objects.filter(is_active=True).count()
+        total_analyses = models.Analysis.objects.count()
+        total_products = models.Product.objects.count()
 
-        total_entries = DynamicFormEntry.objects.filter(**entry_filter).count()
-        completed_entries = DynamicFormEntry.objects.filter(status="completed", **entry_filter).count()
-        pending_entries = DynamicFormEntry.objects.filter(**entry_filter).exclude(status="completed").count()
+        total_entries = models.DynamicFormEntry.objects.filter(**entry_filter).count()
+        completed_entries = models.DynamicFormEntry.objects.filter(status="completed", **entry_filter).count()
+        pending_entries = models.DynamicFormEntry.objects.filter(**entry_filter).exclude(status="completed").count()
 
-        comps = Component.objects.values("analysis").annotate(cnt=Count("id"))
+        comps = models.Component.objects.values("analysis").annotate(cnt=Count("id"))
         avg_components_per_analysis = comps.aggregate(avg=Avg("cnt"))["avg"] or 0
         avg_components_per_analysis = float(avg_components_per_analysis)
 
-        completed_age_agg = DynamicFormEntry.objects.filter(status="completed", **entry_filter).annotate(
+        completed_age_agg = models.DynamicFormEntry.objects.filter(status="completed", **entry_filter).annotate(
             age=ExpressionWrapper(Now() - F("created_at"), output_field=DurationField())
         ).aggregate(avg_age=Avg("age"))["avg_age"]
 
@@ -2341,7 +2336,7 @@ class AnalyticsAPIView(APIView):
 
         # ===================== CHARTS =====================
         monthly_entries_qs = (
-            DynamicFormEntry.objects.filter(**entry_filter)
+            models.DynamicFormEntry.objects.filter(**entry_filter)
             .annotate(month=TruncMonth("created_at"))
             .values("month")
             .annotate(count=Count("id"))
@@ -2362,7 +2357,7 @@ class AnalyticsAPIView(APIView):
         ]
 
         status_distribution_qs = (
-            DynamicFormEntry.objects.filter(**entry_filter)
+            models.DynamicFormEntry.objects.filter(**entry_filter)
             .values("status")
             .annotate(count=Count("id"))
         )
@@ -2377,13 +2372,13 @@ class AnalyticsAPIView(APIView):
         }
 
         top_analyses_qs = (
-            Analysis.objects.annotate(entries_count=Count("entries", filter=Q(entries__created_at__date__range=(start_date, end_date))))
+            models.Analysis.objects.annotate(entries_count=Count("entries", filter=Q(entries__created_at__date__range=(start_date, end_date))))
             .order_by("-entries_count")[:3]
         )
         top_analyses = [{"analysis": a.name, "entries": a.entries_count} for a in top_analyses_qs]
 
         top_components_qs = (
-            Component.objects.annotate(
+            models.Component.objects.annotate(
                 result_count=Count("results", filter=Q(results__created_at__date__range=(start_date, end_date)))
             )
             .order_by("-result_count")[:3]
@@ -2401,7 +2396,7 @@ class AnalyticsAPIView(APIView):
         thirty_days = today + timedelta(days=30)
         # ---- Instruments due for calibration ----
         instruments_due_qs = (
-            Instrument.objects.filter(next_calibration_date__lte=thirty_days)
+            models.Instrument.objects.filter(next_calibration_date__lte=thirty_days)
             .order_by("next_calibration_date")[:10]
         )
         instruments_due = [
@@ -2421,7 +2416,7 @@ class AnalyticsAPIView(APIView):
 
         # ---- Low stock alerts ----
         low_stock_qs = (
-            Inventory.objects.filter(total_quantity__lt=10)
+            models.Inventory.objects.filter(total_quantity__lt=10)
             .annotate(total=F("total_quantity"))
             .order_by("total")[:10]
         )
@@ -2443,7 +2438,7 @@ class AnalyticsAPIView(APIView):
 
         # ===================== LEADERBOARD =====================
         top_analysts_qs = (
-            User.objects.annotate(
+            models.User.objects.annotate(
                 analyzed_count=Count(
                     "analyzed_samples", filter=Q(analyzed_samples__created_at__date__range=(start_date, end_date))
                 )
@@ -2457,14 +2452,14 @@ class AnalyticsAPIView(APIView):
 
         # ===================== EXTRAS =====================
         comp_numeric_avg = (
-            ComponentResult.objects.filter(created_at__date__range=(start_date, end_date)).aggregate(avg_numeric=Avg("numeric_value"))[
+            models.ComponentResult.objects.filter(created_at__date__range=(start_date, end_date)).aggregate(avg_numeric=Avg("numeric_value"))[
                 "avg_numeric"
             ]
         )
         comp_numeric_avg = float(comp_numeric_avg) if comp_numeric_avg is not None else None
 
         product_analysis_counts = (
-            Product.objects.annotate(analysis_count=Count("analyses")).order_by("-analysis_count")[:10]
+            models.Product.objects.annotate(analysis_count=Count("analyses")).order_by("-analysis_count")[:10]
         )
         product_analysis = [
             {"product": p.name, "analysis_count": p.analysis_count} for p in product_analysis_counts
@@ -2507,4 +2502,204 @@ class AnalyticsAPIView(APIView):
         }
 
         return Response(payload)
+
+
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status
+from django.http import HttpResponse
+from django.db import connection
+from django.utils.decorators import method_decorator
+from django.views.decorators.csrf import csrf_exempt
+from jinja2 import Template as JinjaTemplate
+from weasyprint import HTML, CSS
+import tempfile, os, json
+from app import models  # adjust this import to your project
+
+
+@method_decorator(csrf_exempt, name='dispatch')
+class QueryReportTemplateCreateView(APIView):
+
+    def validate_sql_query(self, sql_query, parameters):
+        """
+        Validate SQL before saving template.
+        Replace parameters with dummy safe values and run LIMIT 1.
+        """
+        try:
+            test_params = {}
+
+            # Convert parameters into dummy test values
+            for key, dtype in parameters.items():
+                if dtype == "int":
+                    test_params[key] = 1
+                else:
+                    test_params[key] = "test"
+
+            # Add LIMIT 1 to avoid heavy queries
+            sql_test = f"SELECT * FROM ({sql_query}) AS t LIMIT 1"
+
+            with connection.cursor() as cursor:
+                cursor.execute(sql_test, test_params)
+
+            return None  # No error found
+
+        except Exception as e:
+            return str(e)
+
+    def post(self, request):
+        try:
+            payload = request.data if hasattr(request, "data") else json.loads(request.body)
+
+            sql_query = payload.get("sql_query", "")
+            parameters = payload.get("parameters", {})
+
+            # 1️⃣ Validate SQL before creating template
+            validation_error = self.validate_sql_query(sql_query, parameters)
+            if validation_error:
+                return Response(
+                    {"error": f"Invalid SQL query: {validation_error}"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            # 2️⃣ Save template only if SQL OK
+            template = models.QueryReportTemplate.objects.create(
+                name=payload.get("name"),
+                html_content=payload.get("html_content", ""),
+                css_content=payload.get("css_content", ""),
+                sql_query=sql_query,
+                fields=payload.get("fields", []),
+                parameters=parameters,
+                output_format=payload.get("output_format", "pdf"),
+            )
+
+            return Response({
+                "message": "Template created successfully",
+                "template_id": template.id
+            }, status=status.HTTP_201_CREATED)
+
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class QueryReportRenderView(APIView):
+    """
+    GET /api/reports/render/?template_id=&sample_id=&download=true
+    → Executes SQL with sample_id = DynamicFormEntry.id
+    → Renders SQL result in Jinja2 HTML + CSS → PDF
+    """
+
+    def get(self, request):
+        template_id = request.query_params.get("template_id")
+        sample_id = request.query_params.get("sample_id")
+        download = request.query_params.get("download")
+
+        if not (template_id and sample_id):
+            return Response(
+                {"error": "template_id and sample_id required"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # 1️⃣ Get report template
+        try:
+            template_obj = models.QueryReportTemplate.objects.get(id=template_id)
+        except models.QueryReportTemplate.DoesNotExist:
+            return Response({"error": "Template not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        # 2️⃣ Check if DynamicFormEntry exists
+        try:
+            entry = models.DynamicFormEntry.objects.get(id=sample_id)
+        except models.DynamicFormEntry.DoesNotExist:
+            return Response({"error": f"DynamicFormEntry {sample_id} not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        # 3️⃣ Execute SQL query (pass sample_id to it)
+        try:
+            params = {"sample_id": int(sample_id)}
+            result = self.execute_query(template_obj.sql_query, params)
+            if not result:
+                return Response({"error": "No data returned from SQL"}, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            return Response({"error": f"SQL execution failed: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        # 4️⃣ Prepare context for Jinja2
+        context_data = {
+            "rows": result,    # full SQL result
+            "entry": entry,    # direct DynamicFormEntry instance (if needed)
+            **result[0]        # allow direct usage of column names in template
+        }
+
+        # 5️⃣ Render HTML with Jinja2
+        jinja_template = JinjaTemplate(template_obj.html_content)
+        rendered_html = jinja_template.render(context_data)
+
+        # 6️⃣ Add CSS
+        default_css = """
+        @page { size: A4; margin: 10mm; }
+        body { font-family: Arial, sans-serif; margin: 10px; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { border: 1px solid #000; padding: 6px; text-align: left; font-size: 12px; }
+        th { background-color: #f2f2f2; }
+        """
+        combined_css = f"{default_css}\n{template_obj.css_content or ''}"
+
+        # 7️⃣ Generate PDF
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_pdf:
+            temp_path = temp_pdf.name
+
+        HTML(string=rendered_html, base_url=request.build_absolute_uri("/")).write_pdf(
+            target=temp_path,
+            stylesheets=[CSS(string=combined_css)]
+        )
+
+        with open(temp_path, "rb") as f:
+            pdf_data = f.read()
+        os.remove(temp_path)
+
+        # 8️⃣ Return response (inline or download)
+        response = HttpResponse(pdf_data, content_type="application/pdf")
+        filename = f"report_entry_{sample_id}.pdf"
+        response["Content-Disposition"] = (
+            f'attachment; filename="{filename}"' if download else f'inline; filename="{filename}"'
+        )
+        return response
+
+    # -----------------------------------
+    # Helper: Execute SQL safely
+    # -----------------------------------
+    def execute_query(self, sql_query, params):
+        """
+        Execute user-defined SQL safely.
+        SQL must include placeholders like %(sample_id)s
+        """
+        with connection.cursor() as cursor:
+            cursor.execute(sql_query, params)
+            columns = [col[0] for col in cursor.description]
+            rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
+        return rows
+
+
+class DatabaseStructureView(APIView):
+    def get(self, request):
+        tables = []
+
+        for model in apps.get_models():
+            table_name = model._meta.db_table
+            fields = []
+
+            for field in model._meta.get_fields():
+
+                # Skip reverse relations
+                if not hasattr(field, "column") or field.column is None:
+                    continue
+
+                fields.append({
+                    "name": field.column,
+                    "type": field.get_internal_type()
+                })
+
+            tables.append({
+                "table_name": table_name,
+                "fields": fields
+            })
+
+        return Response({"tables": tables})
 

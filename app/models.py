@@ -576,3 +576,21 @@ class ReportTemplate(models.Model):
     def __str__(self):
         return self.name
 
+
+class QueryReportTemplate(BaseModel):
+    name = models.CharField(max_length=255)
+    html_content = models.TextField()   # Raw HTML with {{ placeholders }}
+    css_content = models.TextField(blank=True, null=True)
+    fields = models.JSONField(default=list)  # [{"label": "Customer", "path": "form.sample_name"}, ...]
+
+    # Added fields ↓
+    sql_query = models.TextField(blank=True, null=True)  # e.g. SELECT * FROM ...
+    parameters = models.JSONField(default=dict, blank=True, null=True)  # {"sample_id": "int"}
+    output_format = models.CharField(
+        max_length=10,
+        default='pdf',
+        choices=(('pdf', 'PDF'), ('html', 'HTML')),
+    )
+
+    def __str__(self):
+        return self.name
