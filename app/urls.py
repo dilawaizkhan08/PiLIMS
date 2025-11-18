@@ -51,7 +51,7 @@ urlpatterns = [
     path('register/', views.RegisterView.as_view(), name='register'),
 
     path('sample-forms/<int:form_id>/fields/', views.SampleFormSchemaView.as_view()),
-    path('sample-forms/<int:form_id>/submit/', views.SampleFormSubmitView.as_view()),
+    path('sample-forms/<int:form_id>/submit/<int:repetition>/', views.SampleFormSubmitView.as_view()),
 
     path('request-forms/<int:form_id>/schema/', views.RequestFormSchemaView.as_view(), name='request-form-schema'),
     path('request-forms/<int:form_id>/submit/', views.RequestFormSubmitView.as_view(), name='request-form-submit'),

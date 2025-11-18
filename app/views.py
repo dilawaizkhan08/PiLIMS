@@ -53,6 +53,7 @@ from weasyprint import HTML, CSS
 import tempfile
 import os
 from django.db.models import Count, Sum, Avg, Q
+from .filters import GenericSearchFilter
 
 def get_config(key, default=None):
     from .models import SystemConfiguration
@@ -130,7 +131,7 @@ class LoginView(views.APIView):
 class UserViewSet(TrackUserMixin, viewsets.ModelViewSet):
     serializer_class = UserSerializer
     permission_classes = [IsAuthenticated]
-    filter_backends = [SearchFilter, DjangoFilterBackend]
+    filter_backends = [SearchFilter, DjangoFilterBackend, GenericSearchFilter]
     search_fields = ['email', 'name']
     filterset_fields = ['is_active', 'role']
 
@@ -309,6 +310,7 @@ class AnalysisViewSet(TrackUserMixin,viewsets.ModelViewSet):
     queryset = models.Analysis.objects.all()
     serializer_class = AnalysisSerializer
     permission_classes = [IsAuthenticated, HasModulePermission]
+    filter_backends = [GenericSearchFilter]
 
 
 
@@ -317,6 +319,7 @@ class CustomFunctionViewSet(TrackUserMixin,viewsets.ModelViewSet):
     queryset = models.CustomFunction.objects.all()
     serializer_class = CustomFunctionSerializer
     permission_classes = [IsAuthenticated]
+    filter_backends = [GenericSearchFilter]
 
     # ========= 1) VALIDATE ENDPOINT ==========
     @action(detail=False, methods=["post"], url_path="validate")
@@ -342,33 +345,39 @@ class InstrumentViewSet(TrackUserMixin,viewsets.ModelViewSet):
     queryset = models.Instrument.objects.all()
     serializer_class = InstrumentSerializer
     permission_classes = [IsAuthenticated,HasModulePermission]
+    filter_backends = [GenericSearchFilter]
 
 class InstrumentHistoryViewSet(TrackUserMixin,viewsets.ModelViewSet):
     queryset = models.InstrumentHistory.objects.all()
     serializer_class = InstrumentHistorySerializer
     permission_classes = [IsAuthenticated,HasModulePermission]
+    filter_backends = [GenericSearchFilter]
 
 
 class InventoryViewSet(TrackUserMixin,viewsets.ModelViewSet):
     queryset = models.Inventory.objects.all()
     serializer_class = InventorySerializer
     permission_classes = [IsAuthenticated,HasModulePermission]
+    filter_backends = [GenericSearchFilter]
 
 
 class StockViewSet(TrackUserMixin,viewsets.ModelViewSet):
     queryset = models.Stock.objects.all()
     serializer_class = StockSerializer
     permission_classes = [IsAuthenticated,HasModulePermission]
+    filter_backends = [GenericSearchFilter]
 
 class UnitViewSet(TrackUserMixin,viewsets.ModelViewSet):
     queryset = models.Unit.objects.all()
     serializer_class = UnitSerializer
     permission_classes = [IsAuthenticated,HasModulePermission]
+    filter_backends = [GenericSearchFilter]
 
 class CustomerViewSet(TrackUserMixin,viewsets.ModelViewSet):
     queryset = models.Customer.objects.all().order_by('-created_at')
     serializer_class = CustomerSerializer
     permission_classes = [IsAuthenticated,HasModulePermission] 
+    filter_backends = [GenericSearchFilter]
 
     
     @action(detail=False, methods=["get"], url_path="stats")
@@ -409,24 +418,28 @@ class ListViewSet(TrackUserMixin,viewsets.ModelViewSet):
     queryset = models.List.objects.all()
     serializer_class = ListSerializer
     permission_classes = [IsAuthenticated,HasModulePermission]
+    filter_backends = [GenericSearchFilter]
 
 
 class ValueViewSet(TrackUserMixin,viewsets.ModelViewSet):
     queryset = models.Value.objects.all()
     serializer_class = ValueSerializer
     permission_classes = [IsAuthenticated,HasModulePermission]
+    filter_backends = [GenericSearchFilter]
 
 
 class UserGroupViewSet(TrackUserMixin,viewsets.ModelViewSet):
     queryset = models.UserGroup.objects.all()
     serializer_class = UserGroupSerializer
     permission_classes = [IsAuthenticated,HasModulePermission]
+    filter_backends = [GenericSearchFilter]
 
 
 class TestMethodViewSet(TrackUserMixin, viewsets.ModelViewSet):
     queryset = models.TestMethod.objects.all()
     serializer_class = TestMethodSerializer
     permission_classes = [IsAuthenticated,HasModulePermission]
+    filter_backends = [GenericSearchFilter]
 
     
 
@@ -434,8 +447,7 @@ class ComponentViewSet(TrackUserMixin,viewsets.ModelViewSet):
     queryset = models.Component.objects.all()
     serializer_class = ComponentSerializer
     permission_classes = [IsAuthenticated,HasModulePermission]
-
-
+    filter_backends = [GenericSearchFilter]
 
 
 
@@ -443,6 +455,7 @@ class SampleFormViewSet(TrackUserMixin,viewsets.ModelViewSet):
     queryset = models.SampleForm.objects.all()
     serializer_class = SampleFormSerializer
     permission_classes = [IsAuthenticated,HasModulePermission]
+    filter_backends = [GenericSearchFilter]
 
     @action(detail=False, methods=['get'])
     def property_options(self, request):
@@ -520,69 +533,74 @@ def convert_datetimes_to_strings(data):
 class SampleFormSubmitView(APIView):
     permission_classes = [IsAuthenticated, HasModulePermission]
 
-    def post(self, request, form_id):
+    def post(self, request, form_id, repetition):
+
         sample_form = get_object_or_404(models.SampleForm, pk=form_id)
+
+        if repetition < 1:
+            return Response({"error": "Repetition must be ≥ 1"}, status=400)
+
         serializer_class = build_dynamic_serializer(sample_form.fields.all())
         serializer = serializer_class(data=request.data)
 
         if serializer.is_valid():
-            # ✅ Create entry first
-            entry = models.DynamicFormEntry.objects.create(
-                form=sample_form,
-                data={},
-                logged_by=request.user
-            )
 
-            clean_data = {}
+            all_entries = []
 
-            # ✅ Save form_id also in data
-            clean_data["form_id"] = sample_form.id  
+            for _ in range(repetition):
 
-            for field in sample_form.fields.all():
-                value = (
-                    request.FILES.getlist(field.field_name)
-                    if field.field_property == "attachment"
-                    else serializer.validated_data.get(field.field_name)
+                entry = models.DynamicFormEntry.objects.create(
+                    form=sample_form,
+                    data={},
+                    logged_by=request.user
                 )
 
-                if field.field_property == "attachment" and value:
-                    file_urls = []
-                    for file_obj in value:
-                        attachment = models.DynamicFormAttachment.objects.create(
-                            entry=entry,
-                            field=field,
-                            file=file_obj
-                        )
-                        file_urls.append(attachment.file.url)
-                    clean_data[field.field_name] = file_urls
+                clean_data = {"form_id": sample_form.id}
 
-                elif isinstance(value, datetime):
-                    clean_data[field.field_name] = value.isoformat()
+                for field in sample_form.fields.all():
 
-                else:
-                    clean_data[field.field_name] = value
+                    value = (
+                        request.FILES.getlist(field.field_name)
+                        if field.field_property == "attachment"
+                        else serializer.validated_data.get(field.field_name)
+                    )
 
-            # ✅ handle analyses separately
-            analyses = request.data.getlist("analyses")
-            if analyses:
-                try:
+                    if field.field_property == "attachment" and value:
+                        file_urls = []
+                        for f in value:
+                            attachment = models.DynamicFormAttachment.objects.create(
+                                entry=entry,
+                                field=field,
+                                file=f
+                            )
+                            file_urls.append(attachment.file.url)
+
+                        clean_data[field.field_name] = file_urls
+
+                    elif isinstance(value, datetime):
+                        clean_data[field.field_name] = value.isoformat()
+                    else:
+                        clean_data[field.field_name] = value
+
+                analyses = request.data.getlist("analyses")
+                if analyses:
                     analysis_ids = [int(x) for x in analyses]
                     entry.analyses.set(models.Analysis.objects.filter(id__in=analysis_ids))
                     clean_data["analyses"] = analysis_ids
-                except ValueError:
-                    return Response(
-                        {"error": "Analyses must be integers"},
-                        status=status.HTTP_400_BAD_REQUEST
-                    )
 
-            entry.data = clean_data
-            entry.save()
+                entry.data = clean_data
+                entry.save()
+
+                all_entries.append({
+                    "entry_id": entry.id,
+                    "data": entry.data
+                })
 
             return Response({
                 "message": "Form submitted successfully",
-                "form_id": sample_form.id,     # ✅ return in response
-                "entry_id": entry.id,
-                "data": entry.data
+                "form_id": sample_form.id,
+                "repetition": repetition,
+                "entries": all_entries
             }, status=status.HTTP_201_CREATED)
 
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
@@ -593,6 +611,7 @@ class DynamicSampleFormEntryViewSet(TrackUserMixin,viewsets.ModelViewSet):
     serializer_class = DynamicFormEntrySerializer
     permission_classes = [IsAuthenticated,HasModulePermission]
     parser_classes = [MultiPartParser, FormParser, JSONParser]
+    filter_backends = [GenericSearchFilter]
 
      
     @action(detail=False, methods=["post"])
@@ -685,6 +704,7 @@ class DynamicRequestAttachmentViewSet(TrackUserMixin,viewsets.ModelViewSet):
     queryset = models.DynamicRequestAttachment.objects.all()
     serializer_class = DynamicRequestAttachmentSerializer
     permission_classes = [IsAuthenticated]
+    
 
     def create(self, request, *args, **kwargs):
         """
@@ -748,6 +768,7 @@ class RequestFormViewSet(TrackUserMixin,viewsets.ModelViewSet):
     queryset = models.RequestForm.objects.all()
     serializer_class = RequestFormSerializer
     permission_classes = [IsAuthenticated,HasModulePermission]
+    filter_backends = [GenericSearchFilter]
 
     @action(detail=False, methods=['get'])
     def property_options(self, request):
@@ -934,53 +955,70 @@ class RequestFormSubmitView(TrackUserMixin,APIView):
         # ------------------ HANDLE SAMPLE FORMS ------------------
         sample_clean_list = []
         if request_form.sample_form.exists() and sample_forms_data:
-            # ✅ pick first sample form (if only one linked)
-            sample_form = request_form.sample_form.first()
 
+            sample_form = request_form.sample_form.first()
             sample_serializer_class = build_dynamic_serializer(sample_form.fields.all())
 
             for sample in sample_forms_data:
-                sample_serializer = sample_serializer_class(data=sample)
+
+                # repetition per sample (default 1)
+                repetition = int(sample.get("repetition", 1))
+                if repetition < 1:
+                    repetition = 1
+
+                # validate once
+                sample_copy = {k: v for k, v in sample.items() if k != "repetition"}
+                sample_serializer = sample_serializer_class(data=sample_copy)
                 sample_serializer.is_valid(raise_exception=True)
 
-                sample_entry = models.DynamicFormEntry.objects.create(
-                    form=sample_form,
-                    data={},
-                    logged_by=request.user
-                )
+                # create multiple sample entries
+                for _ in range(repetition):
 
-                clean_sample = {}
-                for field in sample_form.fields.all():
-                    if field.field_property == "attachment":
-                        urls = sample.get(field.field_name, [])
-                        if not isinstance(urls, list):
-                            urls = [urls]
+                    sample_entry = models.DynamicFormEntry.objects.create(
+                        form=sample_form,
+                        data={},
+                        logged_by=request.user
+                    )
 
-                        file_list = []
-                        for url in urls:
-                            file_path = url.split('/media/')[-1]
-                            # ✅ now use DynamicFormAttachment (not DynamicRequestAttachment)
-                            attachment = models.DynamicFormAttachment.objects.create(
-                                entry=sample_entry,
-                                field=field,
-                                file=f"uploads/sample/{file_path.split('/')[-1]}"
+                    clean_sample = {}
+
+                    for field in sample_form.fields.all():
+
+                        if field.field_property == "attachment":
+                            urls = sample_copy.get(field.field_name, [])
+                            if not isinstance(urls, list):
+                                urls = [urls]
+
+                            file_list = []
+                            for url in urls:
+                                file_path = url.split('/media/')[-1]
+
+                                # Create new DynamicFormAttachment
+                                attachment = models.DynamicFormAttachment.objects.create(
+                                    entry=sample_entry,
+                                    field=field,
+                                    file=f"uploads/sample/{file_path.split('/')[-1]}"
+                                )
+
+                                file_list.append({
+                                    "id": attachment.id,
+                                    "url": request.build_absolute_uri(attachment.file.url),
+                                    "path": attachment.file.path
+                                })
+
+                            clean_sample[field.field_name] = file_list
+
+                        else:
+                            value = sample_serializer.validated_data.get(field.field_name)
+                            clean_sample[field.field_name] = (
+                                value.isoformat() if isinstance(value, datetime) else value
                             )
-                            file_list.append({
-                                "id": attachment.id,
-                                "url": request.build_absolute_uri(attachment.file.url),
-                                "path": attachment.file.path
-                            })
-                        clean_sample[field.field_name] = file_list
 
-                    else:
-                        value = sample_serializer.validated_data.get(field.field_name)
-                        clean_sample[field.field_name] = (
-                            value.isoformat() if isinstance(value, datetime) else value
-                        )
+                    sample_entry.data = clean_sample
+                    sample_entry.save()
 
-                sample_entry.data = clean_sample
-                sample_entry.save()
-                sample_clean_list.append(clean_sample)
+                    # append each repeated sample entry separately
+                    sample_clean_list.append(clean_sample)
 
         # ------------------ SAVE ENTRY ------------------
         entry.data = {
@@ -1001,6 +1039,7 @@ class DynamicRequestFormEntryViewSet(TrackUserMixin,viewsets.ModelViewSet):
     queryset = models.DynamicRequestEntry.objects.all().order_by("-created_at")
     serializer_class = DynamicRequestEntrySerializer
     permission_classes = [IsAuthenticated, HasModulePermission]
+    filter_backends = [GenericSearchFilter]
 
     def partial_update(self, request, pk=None):
         entry = self.get_object()
@@ -1241,12 +1280,14 @@ class ProductViewSet(TrackUserMixin,viewsets.ModelViewSet):
     queryset = models.Product.objects.all()
     serializer_class = ProductSerializer
     permission_classes = [IsAuthenticated,HasModulePermission]
+    filter_backends = [GenericSearchFilter]
     
 
 
 class RoleViewSet(TrackUserMixin,viewsets.ModelViewSet):
     queryset = models.Role.objects.all()
     serializer_class = RoleSerializer
+    filter_backends = [GenericSearchFilter]
 
 
 class ModuleViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
@@ -1431,12 +1472,10 @@ class EntryAnalysesSchemaView(APIView):
         })
 
 
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework import status
-from django.shortcuts import get_object_or_404
+
+
 from app import models
-from app.serializers import ComponentResultSerializer
+
 
 
 class AnalysisResultSubmitView(TrackUserMixin,APIView):
@@ -2514,7 +2553,7 @@ from django.views.decorators.csrf import csrf_exempt
 from jinja2 import Template as JinjaTemplate
 from weasyprint import HTML, CSS
 import tempfile, os, json
-from app import models  # adjust this import to your project
+
 
 
 @method_decorator(csrf_exempt, name='dispatch')
@@ -2702,4 +2741,6 @@ class DatabaseStructureView(APIView):
             })
 
         return Response({"tables": tables})
+
+
 
