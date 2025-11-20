@@ -2300,6 +2300,11 @@ class ReportTemplateViewSet(viewsets.ModelViewSet):
     serializer_class = ReportTemplateSerializer
 
 
+class QueryReportTemplateViewSet(viewsets.ModelViewSet):
+    queryset = models.QueryReportTemplate.objects.all().order_by('-id')
+    serializer_class = QueryReportTemplateSerializer
+
+
 
 # analytics/views.py
 from datetime import timedelta

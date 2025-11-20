@@ -581,7 +581,7 @@ class QueryReportTemplate(BaseModel):
     name = models.CharField(max_length=255)
     html_content = models.TextField()   # Raw HTML with {{ placeholders }}
     css_content = models.TextField(blank=True, null=True)
-    fields = models.JSONField(default=list)  # [{"label": "Customer", "path": "form.sample_name"}, ...]
+    fields = models.JSONField(default=list) 
 
     # Added fields ↓
     sql_query = models.TextField(blank=True, null=True)  # e.g. SELECT * FROM ...

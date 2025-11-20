@@ -1768,3 +1768,9 @@ class ReportTemplateSerializer(serializers.ModelSerializer):
         fields = ["id", "name", "html_content", "css_content", "fields", "created_at"]
 
 
+class QueryReportTemplateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = models.QueryReportTemplate
+        fields = ["name","html_content","css_content","sql_query","parameters","output_format",]
+
+
