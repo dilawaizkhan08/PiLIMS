@@ -236,11 +236,6 @@ class InstrumentHistory(BaseModel):
         return f"{self.instrument.name} - {self.action_type} on {self.start_date}"
     
 
-# ================================== 
-
-
-
-
 class Inventory(BaseModel):
     name = models.CharField(max_length=255)
     type =  models.CharField(max_length=255, null=True, blank=True)
@@ -407,6 +402,7 @@ class RequestForm(BaseModel):
     user_groups = models.ManyToManyField(UserGroup, related_name="request_forms")
     description = models.TextField(blank=True, null=True)
 
+
     def __str__(self):
         return self.request_name
 
@@ -457,6 +453,7 @@ class DynamicRequestEntry(BaseModel):
     )
 
     analyses = models.ManyToManyField("Analysis", related_name="requests_entries", blank=True)
+    comment = models.TextField(null=True, blank=True)
 
 
 class DynamicRequestAttachment(models.Model):

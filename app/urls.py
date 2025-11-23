@@ -62,6 +62,7 @@ urlpatterns = [
     path("entries/<int:entry_id>/analyses/", views.EntryAnalysesSchemaView.as_view(), name="entry-analyses-schema"),
     path("entries/<int:entry_id>/analysis/<int:analysis_id>/submit/", views.AnalysisResultSubmitView.as_view(), name="analysis-submit"),
      
+    path("requests/<int:request_id>/comment/", views.AddCommentToRequest.as_view(), name="add_request_comment"),
 
     path("configs/", views.SystemConfigurationListCreateView.as_view(), name="config-list"),
     path("configs/<int:pk>/", views.SystemConfigurationDetailView.as_view(), name="config-detail"),

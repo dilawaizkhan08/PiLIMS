@@ -696,14 +696,11 @@ class StockSerializer(serializers.ModelSerializer):
 
 class InventorySerializer(serializers.ModelSerializer):
     stocks = StockSerializer(many=True)
-
-    # ✅ Nested serializer for GET
     user_groups = UserGroupSerializer(many=True, read_only=True)
-
-    # ✅ Accept IDs for write
     user_groups_ids = serializers.PrimaryKeyRelatedField(
         many=True, queryset=models.UserGroup.objects.all(), required=False
     )
+    unit_name = serializers.SerializerMethodField()
 
     class Meta:
         model = models.Inventory
@@ -711,9 +708,12 @@ class InventorySerializer(serializers.ModelSerializer):
             'id', 'name', 'type',
             'user_groups',        # ✅ GET → [{id, name}]
             'user_groups_ids',    # ✅ POST/PUT → [1,2]
-            'location', 'unit', 'total_quantity',
+            'location', 'unit', 'unit_name', 'total_quantity',
             'description', 'stocks'
         ]
+
+    def get_unit_name(self, obj):
+        return obj.unit.name if obj.unit else None
 
     def create(self, validated_data):
         stocks_data = validated_data.pop('stocks', [])
@@ -1042,26 +1042,35 @@ import json
 
 class DynamicFormEntrySerializer(serializers.ModelSerializer):
     analyses_data = serializers.JSONField(write_only=True, required=False)
-
-    # 👇 These are extra fields, not in DB
+    logged_by_name = serializers.SerializerMethodField()
     form_name = serializers.SerializerMethodField()
     form_id = serializers.SerializerMethodField()
+    analyst_name = serializers.SerializerMethodField()
 
     class Meta:
         model = models.DynamicFormEntry
         fields = [
             "id", "form_name", "form_id", "data",
-            "status", "analyses_data", "analyst_id", "created_at"
+            "status", "analyses_data", "analyst_id", "analyst_name", "created_at", "logged_by", "logged_by_name"
         ]
 
-    # -------------------------
-    #   Helper Fields
-    # -------------------------
+
     def get_form_name(self, obj):
         return obj.form.sample_name if obj.form else None
 
     def get_form_id(self, obj):
         return obj.form.id if obj.form else None
+    
+    def get_logged_by_name(self, obj):
+        if obj.logged_by:
+            return f"{obj.logged_by.name}".strip()
+        return None
+    
+    def get_analyst_name(self, obj):
+        if obj.analyst:
+            return f"{obj.analyst.name}".strip()
+        return None
+
 
     # -------------------------
     #   Create
@@ -1156,7 +1165,6 @@ class DynamicFormEntrySerializer(serializers.ModelSerializer):
     #   Save Analyses
     # -------------------------
     def _save_entry_analyses(self, entry, analyses_data):
-        # ⚡ Remove "received" check — handled in update()
         for analysis_item in analyses_data:
             analysis_id = analysis_item["analysis_id"]
             component_ids = analysis_item.get("component_ids", [])
@@ -1294,10 +1302,8 @@ class RequestFieldSerializer(serializers.ModelSerializer):
 class RequestFormSerializer(serializers.ModelSerializer):
     fields = RequestFieldSerializer(many=True)
 
-    # ✅ Read-only nested
     user_groups = UserGroupSerializer(many=True, read_only=True)
 
-    # ✅ Write-only IDs
     user_groups_ids = serializers.PrimaryKeyRelatedField(
         many=True, queryset=models.UserGroup.objects.all(), required=False
     )
@@ -1306,7 +1312,6 @@ class RequestFormSerializer(serializers.ModelSerializer):
 
     sample_form = SampleFormSerializer(many=True, read_only=True)
 
-    # ✅ Write-only IDs
     sample_form_ids = serializers.PrimaryKeyRelatedField(
         many=True, queryset=models.SampleForm.objects.all(), required=False
     )
@@ -1483,8 +1488,8 @@ class DynamicRequestAttachmentSerializer(serializers.ModelSerializer):
 
 class DynamicRequestEntrySerializer(serializers.ModelSerializer):
     form_name = serializers.CharField(source="request_form.request_name", read_only=True)
-    logged_by_name = serializers.CharField(source="logged_by.username", read_only=True)
-    analyst_name = serializers.CharField(source="analyst.username", read_only=True)
+    logged_by_name = serializers.CharField(source="logged_by.name", read_only=True)
+    analyst_name = serializers.CharField(source="analyst.name", read_only=True)
 
     request_form_attachments = serializers.SerializerMethodField()
     sample_forms = serializers.SerializerMethodField()
@@ -1495,7 +1500,7 @@ class DynamicRequestEntrySerializer(serializers.ModelSerializer):
         fields = [
             "id", "form_name", "form_id", "data", "analyst_name",
             "logged_by_name", "created_at", "status",
-            "request_form_attachments", "sample_forms"
+            "request_form_attachments", "sample_forms", "comment"
         ]
 
     def get_request_form_attachments(self, obj):
@@ -1731,8 +1736,6 @@ class BulkConfigUpdateSerializer(serializers.Serializer):
     value = serializers.CharField(max_length=255)
 
 
-
-
 class ReportDefinitionSerializer(serializers.Serializer):
     app_label = serializers.CharField()
     model = serializers.CharField()
@@ -1741,6 +1744,7 @@ class ReportDefinitionSerializer(serializers.Serializer):
     columns = serializers.ListField()
     date_from = serializers.DateField(required=False)
     date_to = serializers.DateField(required=False)
+
 
 class MultiReportSerializer(serializers.Serializer):
     reports = ReportDefinitionSerializer(many=True)
@@ -1772,5 +1776,9 @@ class QueryReportTemplateSerializer(serializers.ModelSerializer):
     class Meta:
         model = models.QueryReportTemplate
         fields = ["id","name","html_content","css_content","sql_query","parameters","output_format", "created_at", "updated_at"]
+
+
+class AddCommentSerializer(serializers.Serializer):
+    comment = serializers.CharField(required=True)
 
 

@@ -624,37 +624,59 @@ class DynamicSampleFormEntryViewSet(TrackUserMixin,viewsets.ModelViewSet):
             return Response({"error": "Both 'status' and 'ids' are required"}, status=400)
 
         entries = models.DynamicFormEntry.objects.filter(id__in=ids)
+        valid_statuses = dict(models.DynamicFormEntry.STATUS_CHOICES)
 
-        # ✅ Handle special "assign_analyst" action
+        # ------------------------------------
+        #  GLOBAL VALIDATION: COMPLETED IS LOCKED FOREVER
+        # ------------------------------------
+        for entry in entries:
+            if entry.status == "completed":
+                return Response({
+                    "error": f"Entry {entry.id} is already 'completed' and cannot be updated further."
+                }, status=400)
+
+        # ------------------------------------
+        #  ASSIGN ANALYST LOGIC
+        # ------------------------------------
         if new_status == "assign_analyst":
             if not analyst_id:
-                return Response({"error": "analyst_id is required when assigning an analyst"}, status=400)
+                return Response({"error": "analyst_id is required when assigning analyst"}, status=400)
 
             try:
                 analyst = models.User.objects.get(id=analyst_id)
             except models.User.DoesNotExist:
                 return Response({"error": f"Analyst with id {analyst_id} not found"}, status=404)
 
-            updated_count = entries.update(analyst=analyst, status="in_progress")
+            # ✔ only after received
+            for entry in entries:
+                if entry.status != "received":
+                    return Response({
+                        "error": f"Entry {entry.id} must be 'received' before assigning analyst."
+                    }, status=400)
+
+            # ✔ assign analyst but DO NOT update status
+            updated_count = entries.update(analyst=analyst)
+
             return Response({
-                "message": f"Assigned analyst {analyst.id} and set status to 'in_progress' for {updated_count} entries",
+                "message": f"Analyst {analyst.id} assigned to {updated_count} entries (status unchanged)",
                 "updated_ids": ids
             })
 
-        # ✅ Handle normal status updates
-        valid_statuses = dict(models.DynamicFormEntry.STATUS_CHOICES)
+        # ------------------------------------
+        #  NORMAL STATUS UPDATE LOGIC
+        # ------------------------------------
         if new_status not in valid_statuses:
             return Response({"error": "Invalid status"}, status=400)
 
-        allowed_manual = ["received", "completed", "authorized", "rejected", "cancelled", "restored"]
-
         for entry in entries:
-            if new_status not in allowed_manual:
-                return Response({"error": f"Cannot manually change status to '{new_status}'."}, status=400)
+            # 1️⃣ initiated → only received allowed
             if entry.status == "initiated" and new_status != "received":
-                return Response(
-                    {"error": f"Entry {entry.id} must be 'received' before other actions."}, status=400
-                )
+                return Response({
+                    "error": f"Entry {entry.id} is 'initiated' and can only be updated to 'received'."
+                }, status=400)
+
+            # 2️⃣ received → anything allowed (except completed lock above)
+            # No additional rules here
 
         updated_count = entries.update(status=new_status)
 
@@ -662,6 +684,7 @@ class DynamicSampleFormEntryViewSet(TrackUserMixin,viewsets.ModelViewSet):
             "message": f"Status updated to '{new_status}' for {updated_count} entries",
             "updated_ids": ids
         })
+
     
 
     @action(detail=False, methods=["get"], url_path="stats")
@@ -1195,14 +1218,18 @@ class DynamicRequestFormEntryViewSet(TrackUserMixin,viewsets.ModelViewSet):
         new_status = request.data.get("status")
         ids = request.data.get("ids", [])
 
-        # ✅ Validate request
+        # ---------------------------
+        # 1️⃣ Basic validation
+        # ---------------------------
         if not new_status or not ids:
             return Response(
                 {"error": "Both 'status' and 'ids' are required"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # ✅ Validate status value
+        # ---------------------------
+        # 2️⃣ Validate status is valid
+        # ---------------------------
         valid_statuses = dict(models.DynamicRequestEntry.STATUS_CHOICES)
         if new_status not in valid_statuses:
             return Response(
@@ -1210,26 +1237,39 @@ class DynamicRequestFormEntryViewSet(TrackUserMixin,viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # ✅ Allowed manual transitions only
+        # ---------------------------
+        # 3️⃣ Allowed manual transitions
+        # ---------------------------
         allowed_manual = ["received", "authorized", "rejected", "cancelled", "restored"]
+
         if new_status not in allowed_manual:
             return Response(
                 {"error": f"Cannot manually change status to '{new_status}'."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # ✅ Fetch matching entries
+        # ---------------------------
+        # 4️⃣ Fetch entries
+        # ---------------------------
         entries = models.DynamicRequestEntry.objects.filter(id__in=ids)
 
-        # ✅ Validate transition rules
+        # ---------------------------
+        # 5️⃣ Validate transition rules
+        # ---------------------------
         for entry in entries:
+
+            # Rule 1: initiated can ONLY go to received
             if entry.status == "initiated" and new_status != "received":
                 return Response(
-                    {"error": f"Request {entry.id} must be 'received' before other actions."},
+                    {"error": f"Request {entry.id} is 'initiated' and can only be updated to 'received'."},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-        # ✅ Perform bulk update
+            # Rule 2: If already received → allow all allowed_manual transitions (no block needed)
+
+        # ---------------------------
+        # 6️⃣ Perform bulk update
+        # ---------------------------
         updated_count = entries.update(status=new_status)
 
         return Response(
@@ -1239,7 +1279,7 @@ class DynamicRequestFormEntryViewSet(TrackUserMixin,viewsets.ModelViewSet):
             },
             status=status.HTTP_200_OK,
         )
-    
+
         
     @action(detail=False, methods=["get"], url_path="stats")
     def get_stats(self, request):
@@ -1281,7 +1321,6 @@ class ProductViewSet(TrackUserMixin,viewsets.ModelViewSet):
     serializer_class = ProductSerializer
     permission_classes = [IsAuthenticated,HasModulePermission]
     filter_backends = [GenericSearchFilter]
-    
 
 
 class RoleViewSet(TrackUserMixin,viewsets.ModelViewSet):
@@ -2748,4 +2787,20 @@ class DatabaseStructureView(APIView):
         return Response({"tables": tables})
 
 
+
+class AddCommentToRequest(APIView):
+
+    def post(self, request, request_id):
+        try:
+            entry = models.DynamicRequestEntry.objects.get(id=request_id)
+        except models.DynamicRequestEntry.DoesNotExist:
+            return Response({"error": "Request entry not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        serializer = AddCommentSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        entry.comment = serializer.validated_data["comment"]
+        entry.save()
+
+        return Response({"message": "Comment added successfully"}, status=status.HTTP_200_OK)
 
