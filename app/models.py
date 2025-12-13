@@ -53,6 +53,9 @@ class User(AbstractUser, BaseModel):
     is_staff = models.BooleanField(default=False)
     
     failed_login_attempts = models.PositiveIntegerField(default=0)
+    last_activity = models.DateTimeField(null=True, blank=True)
+    signature = models.ImageField(upload_to="signatures/", null=True, blank=True)
+    
 
     def clean(self):
         super().clean()
@@ -371,6 +374,72 @@ class DynamicFormAttachment(models.Model):
         return f"{self.field.field_name} - {self.file.name}"
 
 
+class StatusHistory(models.Model):
+    entry = models.ForeignKey("DynamicFormEntry", on_delete=models.CASCADE, related_name="status_history")
+    old_status = models.CharField(max_length=20, null=True, blank=True)
+    new_status = models.CharField(max_length=20)
+    updated_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True)
+    updated_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.entry.id}: {self.old_status} → {self.new_status} by {self.updated_by}"
+
+
+class SampleComponent(models.Model):
+    entry_analysis = models.ForeignKey(
+        "DynamicFormEntryAnalysis",
+        on_delete=models.CASCADE,
+        related_name="sample_components"
+    )
+
+    component = models.ForeignKey(
+        "Component",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="sample_overrides"
+    )
+
+    # ===== OVERRIDABLE FIELDS =====
+    name = models.CharField(max_length=255, blank=True, null=True)
+    unit = models.ForeignKey("Unit", on_delete=models.SET_NULL, null=True, blank=True)
+
+    minimum = models.FloatField(null=True, blank=True)
+    maximum = models.FloatField(null=True, blank=True)
+    decimal_places = models.IntegerField(null=True, blank=True)
+    rounding = models.IntegerField(null=True, blank=True)
+
+    spec_limits = models.JSONField(blank=True, null=True)
+    description = models.TextField(null=True, blank=True)
+    optional = models.BooleanField(null=True)
+
+    # 🔥 CRITICAL SHIFT
+    calculated = models.BooleanField(default=False)
+    custom_function = models.ForeignKey(
+        "CustomFunction",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True
+    )
+
+    def __str__(self):
+        return f"{self.name or self.component.name} (Sample Component)"
+
+
+class SampleComponentFunctionParameter(models.Model):
+    sample_component = models.ForeignKey(
+        SampleComponent,
+        on_delete=models.CASCADE,
+        related_name="function_parameters"
+    )
+    parameter = models.CharField(max_length=255)
+    mapped_sample_component = models.ForeignKey(
+        SampleComponent,
+        on_delete=models.CASCADE,
+        related_name="used_in_calculations"
+    )
+
+
 class Customer(BaseModel):
     name = models.CharField(max_length=255)  # Required
     email = models.EmailField(unique=True)   # Required & unique
@@ -465,7 +534,6 @@ class DynamicRequestAttachment(models.Model):
         return f"{self.field.field_name} - {self.file.name}"
 
 
-
 class Product(BaseModel):
     name = models.CharField(max_length=255)
     version = models.PositiveIntegerField(default=1)
@@ -517,7 +585,7 @@ class Permission(models.Model):
 
 class ComponentResult(models.Model):
     entry = models.ForeignKey(DynamicFormEntry, related_name="results", on_delete=models.CASCADE)
-    component = models.ForeignKey(Component, related_name="results", on_delete=models.CASCADE)
+    sample_component = models.ForeignKey(SampleComponent, related_name="results", on_delete=models.CASCADE)
     value = models.TextField(null=True, blank=True)
     numeric_value = models.FloatField(null=True, blank=True)
     remarks = models.TextField(null=True, blank=True)
@@ -557,6 +625,7 @@ class Activity(BaseModel):
     object_id = models.CharField(max_length=100, null=True, blank=True)
     action = models.CharField(max_length=20, choices=ACTION_CHOICES)
     description = models.TextField(blank=True, null=True)
+    changes = models.JSONField(null=True, blank=True) 
 
     def __str__(self):
         return f"{self.user} {self.action} {self.model_name}"

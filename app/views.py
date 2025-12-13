@@ -1,4 +1,5 @@
 import uuid
+from django.db import transaction, IntegrityError
 import random
 from django.core.cache import cache
 from django.core.mail import send_mail
@@ -86,46 +87,64 @@ class LoginView(views.APIView):
 
     def post(self, request, *args, **kwargs):
         serializer = LoginSerializer(data=request.data)
-        if serializer.is_valid():
-            email = serializer.validated_data['email']
-            password = serializer.validated_data['password']
+        serializer.is_valid(raise_exception=True)
 
-            try:
-                user = User.objects.get(email=email)
-            except User.DoesNotExist:
-                return Response({"error": "Invalid credentials"}, status=status.HTTP_401_UNAUTHORIZED)
+        email = serializer.validated_data["email"]
+        password = serializer.validated_data["password"]
 
-            # 🔑 yahan se config table se value uthayega
-            max_attempts = int(get_config("max_wrong_password_attempts", 5))
+        try:
+            user = User.objects.get(email=email)
+        except User.DoesNotExist:
+            return Response({"error": "Invalid credentials"}, status=401)
 
-            if not user.is_active:
-                return Response({"error": "Your account is deactivated. Please contact admin."}, status=status.HTTP_403_FORBIDDEN)
+        if not user.is_active:
+            return Response(
+                {"error": "Your account is deactivated. Please contact admin."},
+                status=403,
+            )
 
-            user_auth = authenticate(request, email=email, password=password)
+        max_attempts = int(get_config("max_wrong_password_attempts", 5))
+        user_auth = authenticate(request, email=email, password=password)
 
-            if user_auth:
-                user.failed_login_attempts = 0
-                user.save(update_fields=["failed_login_attempts"])
-                token, _ = Token.objects.get_or_create(user=user)
-                update_last_login(None, user)
+        if user_auth:
+            # Reset failed login attempts
+            user_auth.failed_login_attempts = 0
+            user_auth.last_activity = timezone.now()
+            user_auth.save(update_fields=["failed_login_attempts", "last_activity"])
 
-                user_data = UserSerializer(user, context={'request': request}).data
-                return Response({"token": token.key, "user": user_data}, status=status.HTTP_200_OK)
+            # Safe token handling
+            token = Token.objects.filter(user=user_auth).first()
+            if not token:
+                try:
+                    token = Token.objects.create(user=user_auth)
+                except IntegrityError:
+                    token = Token.objects.get(user=user_auth)
 
-            # ❌ Wrong password case
-            user.failed_login_attempts = F("failed_login_attempts") + 1
-            user.save(update_fields=["failed_login_attempts"])
-            user.refresh_from_db()
+            update_last_login(None, user_auth)
+            user_data = UserSerializer(user_auth, context={"request": request}).data
+            return Response({"token": token.key, "user": user_data}, status=200)
 
-            if user.failed_login_attempts >= max_attempts:
-                user.is_active = False
-                user.save(update_fields=["is_active"])
-                return Response({"error": "Your account has been locked due to too many failed login attempts."}, status=status.HTTP_403_FORBIDDEN)
+        # Wrong password handling
+        user.failed_login_attempts = F("failed_login_attempts") + 1
+        user.save(update_fields=["failed_login_attempts"])
+        user.refresh_from_db()
 
-            remaining = max_attempts - user.failed_login_attempts
-            return Response({"error": f"Invalid credentials. You have {remaining} attempts left."}, status=status.HTTP_401_UNAUTHORIZED)
+        if user.failed_login_attempts >= max_attempts:
+            user.is_active = False
+            user.save(update_fields=["is_active"])
+            return Response(
+                {
+                    "error": "Your account has been locked due to too many failed login attempts."
+                },
+                status=403,
+            )
 
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        remaining = max_attempts - user.failed_login_attempts
+        return Response(
+            {"error": f"Invalid credentials. You have {remaining} attempts left."},
+            status=401,
+        )
+
 
 
 class UserViewSet(TrackUserMixin, viewsets.ModelViewSet):
@@ -208,6 +227,8 @@ class UserViewSet(TrackUserMixin, viewsets.ModelViewSet):
         }
 
         return Response(data, status=status.HTTP_200_OK)
+
+
 
 class UserProfileUpdateView(generics.RetrieveUpdateAPIView):
     serializer_class = UserProfileSerializer
@@ -306,11 +327,24 @@ class AnalysisAttachmentViewSet(TrackUserMixin,viewsets.ModelViewSet):
 
 
 
-class AnalysisViewSet(TrackUserMixin,viewsets.ModelViewSet):
+class AnalysisViewSet(TrackUserMixin, viewsets.ModelViewSet):
     queryset = models.Analysis.objects.all()
     serializer_class = AnalysisSerializer
     permission_classes = [IsAuthenticated, HasModulePermission]
     filter_backends = [GenericSearchFilter]
+
+    def get_queryset(self):
+        user = self.request.user
+
+        # Superusers OR Admins see everything
+        if user.is_superuser or user.role == "Admin":
+            return models.Analysis.objects.all()
+
+        # Normal users → filter by user_groups
+        return models.Analysis.objects.filter(
+            user_groups__in=user.user_groups.all()
+        ).distinct()
+
 
 
 
@@ -347,18 +381,45 @@ class InstrumentViewSet(TrackUserMixin,viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated,HasModulePermission]
     filter_backends = [GenericSearchFilter]
 
+    def get_queryset(self):
+        user = self.request.user
+
+        # Superusers OR Admins → full access
+        if user.is_superuser or user.role == "Admin":
+            return models.Instrument.objects.all()
+
+        # Normal users → only instruments in their user_groups
+        return models.Instrument.objects.filter(
+            user_groups__in=user.user_groups.all()
+        ).distinct()
+
+
 class InstrumentHistoryViewSet(TrackUserMixin,viewsets.ModelViewSet):
     queryset = models.InstrumentHistory.objects.all()
     serializer_class = InstrumentHistorySerializer
     permission_classes = [IsAuthenticated,HasModulePermission]
     filter_backends = [GenericSearchFilter]
 
+    
 
-class InventoryViewSet(TrackUserMixin,viewsets.ModelViewSet):
+
+class InventoryViewSet(TrackUserMixin, viewsets.ModelViewSet):
     queryset = models.Inventory.objects.all()
     serializer_class = InventorySerializer
-    permission_classes = [IsAuthenticated,HasModulePermission]
+    permission_classes = [IsAuthenticated, HasModulePermission]
     filter_backends = [GenericSearchFilter]
+
+    def get_queryset(self):
+        user = self.request.user
+
+        # Superadmins & Admins → full access
+        if user.is_superuser or user.role == "Admin":
+            return models.Inventory.objects.all()
+
+        # Normal users → only inventories in their user_groups
+        return models.Inventory.objects.filter(
+            user_groups__in=user.user_groups.all()
+        ).distinct()
 
 
 class StockViewSet(TrackUserMixin,viewsets.ModelViewSet):
@@ -367,11 +428,24 @@ class StockViewSet(TrackUserMixin,viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated,HasModulePermission]
     filter_backends = [GenericSearchFilter]
 
-class UnitViewSet(TrackUserMixin,viewsets.ModelViewSet):
+class UnitViewSet(TrackUserMixin, viewsets.ModelViewSet):
     queryset = models.Unit.objects.all()
     serializer_class = UnitSerializer
-    permission_classes = [IsAuthenticated,HasModulePermission]
+    permission_classes = [IsAuthenticated, HasModulePermission]
     filter_backends = [GenericSearchFilter]
+
+    def get_queryset(self):
+        user = self.request.user
+
+        # Superusers OR admin users see everything
+        if user.is_superuser or user.role == "Admin":
+            return models.Unit.objects.all()
+
+        # Normal users → filter by user_groups
+        return models.Unit.objects.filter(
+            user_groups__in=user.user_groups.all()
+        ).distinct()
+
 
 class CustomerViewSet(TrackUserMixin,viewsets.ModelViewSet):
     queryset = models.Customer.objects.all().order_by('-created_at')
@@ -414,11 +488,23 @@ class CustomerViewSet(TrackUserMixin,viewsets.ModelViewSet):
 
         return Response(data, status=status.HTTP_200_OK)
 
-class ListViewSet(TrackUserMixin,viewsets.ModelViewSet):
+class ListViewSet(TrackUserMixin, viewsets.ModelViewSet):
     queryset = models.List.objects.all()
     serializer_class = ListSerializer
-    permission_classes = [IsAuthenticated,HasModulePermission]
+    permission_classes = [IsAuthenticated, HasModulePermission]
     filter_backends = [GenericSearchFilter]
+
+    def get_queryset(self):
+        user = self.request.user
+
+        # Superusers OR admin users → see everything
+        if user.is_superuser or user.role == "Admin":
+            return models.List.objects.all()
+
+        # Normal users → only lists matching their user_groups
+        return models.List.objects.filter(
+            user_groups__in=user.user_groups.all()
+        ).distinct()
 
 
 class ValueViewSet(TrackUserMixin,viewsets.ModelViewSet):
@@ -441,6 +527,18 @@ class TestMethodViewSet(TrackUserMixin, viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated,HasModulePermission]
     filter_backends = [GenericSearchFilter]
 
+    def get_queryset(self):
+        user = self.request.user
+
+        # Superusers OR admin users see everything
+        if user.is_superuser or user.role == "Admin":
+            return models.TestMethod.objects.all()
+
+        # Normal users → filter by user_groups
+        return models.TestMethod.objects.filter(
+            user_groups__in=user.user_groups.all()
+        ).distinct()
+
     
 
 class ComponentViewSet(TrackUserMixin,viewsets.ModelViewSet):
@@ -451,11 +549,23 @@ class ComponentViewSet(TrackUserMixin,viewsets.ModelViewSet):
 
 
 
-class SampleFormViewSet(TrackUserMixin,viewsets.ModelViewSet):
+class SampleFormViewSet(TrackUserMixin, viewsets.ModelViewSet):
     queryset = models.SampleForm.objects.all()
     serializer_class = SampleFormSerializer
-    permission_classes = [IsAuthenticated,HasModulePermission]
+    permission_classes = [IsAuthenticated, HasModulePermission]
     filter_backends = [GenericSearchFilter]
+
+    def get_queryset(self):
+        user = self.request.user
+
+        # Superadmins & Admin role → full access
+        if user.is_superuser or user.role == "Admin":
+            return models.SampleForm.objects.all()
+
+        # Normal users → show only their user_group items
+        return models.SampleForm.objects.filter(
+            user_groups__in=user.user_groups.all()
+        ).distinct()
 
     @action(detail=False, methods=['get'])
     def property_options(self, request):
@@ -473,7 +583,7 @@ class SampleFormViewSet(TrackUserMixin,viewsets.ModelViewSet):
             return Response({"type": "link_to_table", "options": tables})
 
         return Response({"type": field_property, "options": []})
-    
+
 
 from django.shortcuts import get_object_or_404
 from datetime import datetime
@@ -596,8 +706,13 @@ class SampleFormSubmitView(APIView):
                     "data": entry.data
                 })
 
+            message_lines = []
+
+            for entry in all_entries:
+                message_lines.append(f"Sample with id {entry['entry_id']} submitted successfully")
+
             return Response({
-                "message": "Form submitted successfully",
+                "messages": message_lines,
                 "form_id": sample_form.id,
                 "repetition": repetition,
                 "entries": all_entries
@@ -625,9 +740,10 @@ class DynamicSampleFormEntryViewSet(TrackUserMixin,viewsets.ModelViewSet):
 
         entries = models.DynamicFormEntry.objects.filter(id__in=ids)
         valid_statuses = dict(models.DynamicFormEntry.STATUS_CHOICES)
+        user = request.user  # logged-in user
 
         # ------------------------------------
-        #  GLOBAL VALIDATION: COMPLETED IS LOCKED FOREVER
+        #  COMPLETED IS LOCKED FOREVER
         # ------------------------------------
         for entry in entries:
             if entry.status == "completed":
@@ -647,44 +763,59 @@ class DynamicSampleFormEntryViewSet(TrackUserMixin,viewsets.ModelViewSet):
             except models.User.DoesNotExist:
                 return Response({"error": f"Analyst with id {analyst_id} not found"}, status=404)
 
-            # ✔ only after received
+            # Only allowed when entry status = received
             for entry in entries:
                 if entry.status != "received":
                     return Response({
                         "error": f"Entry {entry.id} must be 'received' before assigning analyst."
                     }, status=400)
 
-            # ✔ assign analyst but DO NOT update status
-            updated_count = entries.update(analyst=analyst)
+            # Log status change for each entry
+            for entry in entries:
+                models.StatusHistory.objects.create(
+                    entry=entry,
+                    old_status=entry.status,
+                    new_status="assign_analyst",
+                    updated_by=user
+                )
+
+            entries.update(analyst=analyst)
 
             return Response({
-                "message": f"Analyst {analyst.id} assigned to {updated_count} entries (status unchanged)",
+                "message": f"Analyst {analyst.id} assigned to entries (status unchanged)",
                 "updated_ids": ids
             })
 
         # ------------------------------------
-        #  NORMAL STATUS UPDATE LOGIC
+        #  NORMAL STATUS UPDATE
         # ------------------------------------
         if new_status not in valid_statuses:
             return Response({"error": "Invalid status"}, status=400)
 
+        # Business rules
         for entry in entries:
-            # 1️⃣ initiated → only received allowed
             if entry.status == "initiated" and new_status != "received":
                 return Response({
                     "error": f"Entry {entry.id} is 'initiated' and can only be updated to 'received'."
                 }, status=400)
 
-            # 2️⃣ received → anything allowed (except completed lock above)
-            # No additional rules here
+        # Save status histor
+        for entry in entries:
+            models.StatusHistory.objects.create(
+                entry=entry,
+                old_status=entry.status,
+                new_status=new_status,
+                updated_by=user
+            )
 
+        # Update status (bulk update)
         updated_count = entries.update(status=new_status)
+
 
         return Response({
             "message": f"Status updated to '{new_status}' for {updated_count} entries",
             "updated_ids": ids
         })
-
     
 
     @action(detail=False, methods=["get"], url_path="stats")
@@ -755,7 +886,6 @@ class DynamicRequestAttachmentViewSet(TrackUserMixin,viewsets.ModelViewSet):
         return Response(attachments, status=status.HTTP_201_CREATED)
 
 
-
 class DynamicFormAttachmentViewSet(TrackUserMixin,viewsets.ModelViewSet):
     queryset = models.DynamicFormAttachment.objects.all()
     serializer_class = DynamicFormAttachmentSerializer
@@ -787,11 +917,33 @@ class DynamicFormAttachmentViewSet(TrackUserMixin,viewsets.ModelViewSet):
         return Response(attachments, status=status.HTTP_201_CREATED)
 
 
+class SampleComponentViewSet(viewsets.ModelViewSet):
+    queryset = models.SampleComponent.objects.all()
+    serializer_class = SampleComponentSerializer
+    permission_classes = [IsAuthenticated]
+
+    def partial_update(self, request, *args, **kwargs):
+        """Allow updating sample-specific component only"""
+        return super().partial_update(request, *args, **kwargs)
+
+
 class RequestFormViewSet(TrackUserMixin,viewsets.ModelViewSet):
     queryset = models.RequestForm.objects.all()
     serializer_class = RequestFormSerializer
     permission_classes = [IsAuthenticated,HasModulePermission]
     filter_backends = [GenericSearchFilter]
+
+    def get_queryset(self):
+        user = self.request.user
+
+        # Superadmins & Admin role → full access
+        if user.is_superuser or user.role == "Admin":
+            return models.RequestForm.objects.all()
+
+        # Normal users → only items in their assigned user_groups
+        return models.RequestForm.objects.filter(
+            user_groups__in=user.user_groups.all()
+        ).distinct()
 
     @action(detail=False, methods=['get'])
     def property_options(self, request):
@@ -1055,7 +1207,6 @@ class RequestFormSubmitView(TrackUserMixin,APIView):
 
         serializer = DynamicRequestEntrySerializer(entry, context={"request": request})
         return Response(serializer.data, status=status.HTTP_201_CREATED)
-
 
 
 class DynamicRequestFormEntryViewSet(TrackUserMixin,viewsets.ModelViewSet):
@@ -1323,6 +1474,19 @@ class ProductViewSet(TrackUserMixin,viewsets.ModelViewSet):
     filter_backends = [GenericSearchFilter]
 
 
+    def get_queryset(self):
+        user = self.request.user
+
+        # Superadmins & Admin role → full access
+        if user.is_superuser or user.role == "Admin":
+            return models.Product.objects.all()
+
+        # Normal users → only those in their assigned user groups
+        return models.Product.objects.filter(
+            user_groups__in=user.user_groups.all()
+        ).distinct()
+
+
 class RoleViewSet(TrackUserMixin,viewsets.ModelViewSet):
     queryset = models.Role.objects.all()
     serializer_class = RoleSerializer
@@ -1464,278 +1628,251 @@ class DynamicTableDataView(APIView):
             "data": data
         }, status=status.HTTP_200_OK)
 
+from django.shortcuts import get_object_or_404
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status
+
+from app import models
+from app.serializers import ComponentResultSerializer
+from app.mixins import TrackUserMixin
+
 
 class EntryAnalysesSchemaView(APIView):
+    """
+    Returns analyses and their components for a given entry.
+    """
     def get(self, request, entry_id):
         entry = get_object_or_404(models.DynamicFormEntry, pk=entry_id)
 
         analyses_data = []
-        for analysis in entry.analyses.all():
+
+        entry_analyses = models.DynamicFormEntryAnalysis.objects.filter(
+            entry=entry
+        ).select_related("analysis").prefetch_related(
+            "sample_components__component"
+        )
+
+        for ea in entry_analyses:
             comps = []
-            for comp in analysis.components.all():
-                if comp.listname:
-                    try:
-                        lst = models.List.objects.get(name=comp.listname)
-                        choices = list(lst.values.values_list("value", flat=True))
-                    except models.List.DoesNotExist:
-                        choices = []
-                else:
-                    choices = None
+            for sc in ea.sample_components.all():
+                comp = sc.component
+
+                choices = sc.spec_limits if comp.type.lower() == "list" else None
 
                 comps.append({
-                    "id": comp.id,
-                    "name": comp.name,
+                    "id": sc.id,  # Sample Component ID
+                    "name": sc.name,
                     "type": comp.type,
-                    "unit": {
-                        "id": comp.unit.id,
-                        "name": comp.unit.name
-                    } if comp.unit else None,
-                    "minimum": comp.minimum,
-                    "maximum": comp.maximum,
-                    "decimal_places": comp.decimal_places,
-                    "required": not comp.optional,
+                    "unit": {"id": sc.unit.id, "name": sc.unit.name} if sc.unit else None,
+                    "minimum": sc.minimum,
+                    "maximum": sc.maximum,
+                    "decimal_places": sc.decimal_places,
+                    "required": not sc.optional,
                     "choices": choices,
-                    "specifications": comp.spec_limits,
+                    "specifications": sc.spec_limits,
                     "calculated": comp.calculated,
                 })
 
             analyses_data.append({
-                "analysis_id": analysis.id,
-                "analysis_name": analysis.name,
+                "analysis_id": ea.analysis.id,
+                "analysis_name": ea.analysis.name,
                 "components": comps
             })
 
-        return Response({
-            "entry_id": entry.id,
-            "analyses": analyses_data
-        })
+        return Response({"entry_id": entry.id, "analyses": analyses_data})
 
 
-
-
-from app import models
-
-
-
-class AnalysisResultSubmitView(TrackUserMixin,APIView):
+class AnalysisResultSubmitView(TrackUserMixin, APIView):
+    """
+    Submit results for an analysis, automatically calculating dependent fields.
+    """
     def post(self, request, entry_id, analysis_id):
         entry = get_object_or_404(models.DynamicFormEntry, pk=entry_id)
-        analysis = get_object_or_404(models.Analysis, pk=analysis_id)
-
-        # ✅ Ensure analysis belongs to this entry
-        if not entry.analyses.filter(id=analysis.id).exists():
-            return Response(
-                {"error": "This analysis is not linked with the entry"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        # 🔹 Save comment if provided
-        comment = request.data.get("comment")
-        if comment:
-            entry.comment = comment
-            entry.save(update_fields=["comment"])
+        entry_analysis = get_object_or_404(
+            models.DynamicFormEntryAnalysis,
+            entry=entry,
+            analysis_id=analysis_id
+        )
 
         results_data = request.data.get("results", [])
         saved_results = []
+        errors = []
 
-        # 1️⃣ Save user-entered values for non-calculated components
+        # ---------------------------
+        # 1️⃣ Save user-entered results (non-calculated)
+        # ---------------------------
         for res in results_data:
-            comp_id = res.get("component_id")
-            comp = get_object_or_404(models.Component, pk=comp_id, analysis=analysis)
-
-            if comp.calculated:
-                continue  # skip user input for calculated fields
-
-            # ✅ Validate list-type components
-            if comp.type.lower() == "list":
-                allowed_choices = comp.spec_limits or []
-                if res.get("value") not in allowed_choices:
-                    return Response(
-                        {
-                            "error": f"Invalid choice '{res.get('value')}' for component {comp.name}. "
-                                     f"Allowed values are: {allowed_choices}"
-                        },
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
-                numeric_val = None
-            else:
-                numeric_val = res.get("numeric_value")
-
-            # ✅ Save or update result
-            result, _ = models.ComponentResult.objects.update_or_create(
-                entry=entry,
-                component=comp,
-                defaults={
-                    "value": res.get("value"),
-                    "numeric_value": numeric_val,
-                    "created_by": request.user,
-                },
+            sc_id = res.get("component_id")
+            sc = get_object_or_404(
+                models.SampleComponent,
+                pk=sc_id,
+                entry_analysis=entry_analysis
             )
-            saved_results.append(result)
 
-        # 2️⃣ Auto-calculate results
-        calculated_components = analysis.components.filter(
-            calculated=True, custom_function__isnull=False
-        )
+            if sc.calculated:
+                continue
 
-        for comp in calculated_components:
-            param_values = {}
-            for param in comp.function_parameters.all():
-                mapped_result = models.ComponentResult.objects.filter(
-                    entry=entry, component=param.mapped_component
-                ).first()
-                if not mapped_result or mapped_result.numeric_value is None:
-                    param_values[param.parameter] = 0
-                else:
-                    param_values[param.parameter] = mapped_result.numeric_value
+            numeric_value = res.get("numeric_value") if (sc.component and sc.component.type.lower() != "list") else None
 
-            missing_vars = [v for v in comp.custom_function.variables if v not in param_values]
-            if missing_vars:
-                return Response(
-                    {"error": f"Missing input for variables: {', '.join(missing_vars)}"},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
+            if sc.component and sc.component.type.lower() == "list":
+                allowed_choices = sc.spec_limits or []
+                if res.get("value") not in allowed_choices:
+                    errors.append(f"Invalid choice '{res.get('value')}' for {sc.name}. Allowed: {allowed_choices}")
+                    continue
+                numeric_value = None
 
             try:
-                numeric_value = comp.custom_function.evaluate(**param_values)
-            except Exception as e:
-                return Response(
-                    {"error": f"Failed to calculate value for {comp.name}: {str(e)}"},
-                    status=status.HTTP_400_BAD_REQUEST,
+                result, _ = models.ComponentResult.objects.update_or_create(
+                    entry=entry,
+                    sample_component=sc,
+                    defaults={
+                        "value": res.get("value"),
+                        "numeric_value": numeric_value,
+                        "created_by": request.user,
+                    }
                 )
+                saved_results.append(result)
+            except Exception as e:
+                errors.append(f"{sc.name}: {str(e)}")
 
-            result, _ = models.ComponentResult.objects.update_or_create(
-                entry=entry,
-                component=comp,
-                defaults={
-                    "value": str(numeric_value),
-                    "numeric_value": numeric_value,
-                    "remarks": "Auto-calculated",
-                    "authorization_flag": False,
-                    "authorization_remark": None,
-                    "created_by": request.user,
-                },
-            )
-            saved_results.append(result)
+        # ---------------------------
+        # 2️⃣ Auto-calculate calculated sample components
+        # ---------------------------
+        calculated_samples = entry_analysis.sample_components.filter(
+            calculated=True,
+            custom_function__isnull=False
+        ).prefetch_related("function_parameters__mapped_sample_component")
 
-        # ✅ Status update logic
-        has_any_analysis = entry.analyses.exists()
-        has_any_result = models.ComponentResult.objects.filter(entry=entry).exists()
+        for sc in calculated_samples:
+            param_values = {}
 
-        if has_any_analysis and has_any_result:
-            if entry.status not in ["completed", "cancelled"]:
-                entry.status = "in_progress"
-                entry.save(update_fields=["status"])
-        else:
-            if entry.status != "received":
-                entry.status = "received"
-                entry.save(update_fields=["status"])
+            # Gather numeric values from inputs or existing results
+            for param in sc.function_parameters.all():
+                mapped_result = next(
+                    (r for r in saved_results if r.sample_component_id == param.mapped_sample_component.id),
+                    None
+                )
+                if not mapped_result:
+                    mapped_result = models.ComponentResult.objects.filter(
+                        entry=entry,
+                        sample_component=param.mapped_sample_component
+                    ).first()
 
-        serializer = ComponentResultSerializer(saved_results, many=True)
-        return Response(
-            {
-                "message": "Results saved successfully",
-                "entry_id": entry.id,
-                "analysis_id": analysis.id,
-                "comment": entry.comment,
-                "status": entry.status,  # ✅ return updated status too
-                "results": serializer.data,
-            },
-            status=status.HTTP_200_OK,
-        )
+                if not mapped_result or mapped_result.numeric_value is None:
+                    errors.append(f"{sc.name}: missing input for variable '{param.parameter}'")
+                    break
 
-    # ------------------------------------------------------------
+                param_values[param.parameter] = mapped_result.numeric_value
+
+            if len(param_values) != len(sc.custom_function.variables):
+                continue  # skip calculation if inputs are missing
+
+            try:
+                numeric_value = sc.custom_function.evaluate(**param_values)
+            except Exception as e:
+                errors.append(f"{sc.name}: Error executing function: {str(e)}")
+                continue
+
+            # Save calculated result
+            try:
+                result, _ = models.ComponentResult.objects.update_or_create(
+                    entry=entry,
+                    sample_component=sc,
+                    defaults={
+                        "value": str(numeric_value),
+                        "numeric_value": numeric_value,
+                        "remarks": "Auto-calculated",
+                        "authorization_flag": False,
+                        "authorization_remark": None,
+                        "created_by": request.user,
+                    }
+                )
+                saved_results.append(result)
+            except Exception as e:
+                errors.append(f"{sc.name}: {str(e)}")
+
+        response = {
+            "message": "Results processed",
+            "results": ComponentResultSerializer(saved_results, many=True).data
+        }
+
+        if errors:
+            response["errors"] = errors
+
+        return Response(response, status=status.HTTP_200_OK)
+
+    # ---------------------------
+    # Get all results for analysis
+    # ---------------------------
     def get(self, request, entry_id, analysis_id):
         entry = get_object_or_404(models.DynamicFormEntry, pk=entry_id)
-        analysis = get_object_or_404(models.Analysis, pk=analysis_id)
-
-        if not entry.analyses.filter(id=analysis.id).exists():
-            return Response(
-                {"error": "This analysis is not linked with the entry"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
 
         results = models.ComponentResult.objects.filter(
-            entry=entry, component__analysis=analysis
-        )
+            entry=entry,
+            sample_component__entry_analysis__analysis_id=analysis_id
+        ).select_related("sample_component")
+
         serializer = ComponentResultSerializer(results, many=True)
 
-        return Response(
-            {
-                "message": "Results fetched successfully",
-                "entry_id": entry.id,
-                "analysis_id": analysis.id,
-                "results": serializer.data,
-            },
-            status=status.HTTP_200_OK,
-        )
+        return Response({
+            "message": "Results fetched successfully",
+            "entry_id": entry.id,
+            "analysis_id": analysis_id,
+            "results": serializer.data,
+        }, status=status.HTTP_200_OK)
 
-    # ------------------------------------------------------------
+    # ---------------------------
+    # Update individual result remarks/authorization
+    # ---------------------------
     def patch(self, request, entry_id, analysis_id):
         entry = get_object_or_404(models.DynamicFormEntry, pk=entry_id)
-        analysis = get_object_or_404(models.Analysis, pk=analysis_id)
 
-        if not entry.analyses.filter(id=analysis.id).exists():
-            return Response(
-                {"error": "This analysis is not linked with the entry"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        sc_id = request.data.get("component_id")
+        if not sc_id:
+            return Response({"error": "component_id is required"}, status=status.HTTP_400_BAD_REQUEST)
 
-        comp_id = request.data.get("component_id")
-        if not comp_id:
-            return Response(
-                {"error": "component_id is required"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        sc = get_object_or_404(
+            models.SampleComponent,
+            pk=sc_id,
+            entry_analysis__entry=entry,
+            entry_analysis__analysis_id=analysis_id
+        )
 
-        comp = get_object_or_404(models.Component, pk=comp_id, analysis=analysis)
-        result = models.ComponentResult.objects.filter(entry=entry, component=comp).first()
+        result = models.ComponentResult.objects.filter(
+            entry=entry,
+            sample_component=sc
+        ).first()
 
         if not result:
-            return Response(
-                {"error": f"No result found for component {comp.name}"},
-                status=status.HTTP_404_NOT_FOUND,
-            )
+            return Response({"error": f"No result found for component {sc.name}"}, status=status.HTTP_404_NOT_FOUND)
 
         remarks = request.data.get("remarks")
         auth_flag = request.data.get("authorization_flag")
         auth_remark = request.data.get("authorization_remark")
 
-        # ✅ 1️⃣ User can always update remarks
         if remarks is not None:
             result.remarks = remarks
 
-        # ✅ 2️⃣ User cannot enable authorization_flag until remarks are set
         if auth_flag is not None:
             if not result.remarks:
-                return Response(
-                    {"error": "Add remarks before enabling authorization."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
+                return Response({"error": "Add remarks before enabling authorization."}, status=status.HTTP_400_BAD_REQUEST)
             result.authorization_flag = bool(auth_flag)
 
-        # ✅ 3️⃣ User cannot add authorization_remark unless authorization_flag is True
         if auth_remark is not None:
             if not result.authorization_flag:
-                return Response(
-                    {"error": "Enable authorization flag before adding authorization remark."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
+                return Response({"error": "Enable authorization flag before adding authorization remark."}, status=status.HTTP_400_BAD_REQUEST)
             result.authorization_remark = auth_remark
 
         result.save()
-
         serializer = ComponentResultSerializer(result)
-        return Response(
-            {
-                "message": f"Result updated successfully for component {comp.name}",
-                "entry_id": entry.id,
-                "analysis_id": analysis.id,
-                "result": serializer.data,
-            },
-            status=status.HTTP_200_OK,
-        )
 
+        return Response({
+            "message": f"Result updated successfully for component {sc.name}",
+            "entry_id": entry.id,
+            "analysis_id": analysis_id,
+            "result": serializer.data,
+        }, status=status.HTTP_200_OK)
 
 
 class SystemConfigurationListCreateView(generics.ListCreateAPIView):
@@ -1781,8 +1918,6 @@ class BulkConfigUpdateView(TrackUserMixin,APIView):
             "errors": errors
         }, status=status.HTTP_200_OK)
     
-
-
 
 AGGREGATION_MAP = {
     "Count": Count,
@@ -1907,9 +2042,6 @@ class MultiDynamicReportSchemaView(APIView):
                 report_schemas[model_name] = {"error": str(e)}
 
         return Response({"reports": report_schemas})
-
-
-
 
 
 class ActivityViewSet(viewsets.ModelViewSet):

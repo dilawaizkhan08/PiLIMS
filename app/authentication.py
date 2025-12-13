@@ -1,53 +1,62 @@
+# authentication.py
+
 from rest_framework.authentication import TokenAuthentication
 from rest_framework.exceptions import AuthenticationFailed
 from rest_framework.authtoken.models import Token
 from django.utils import timezone
 from datetime import timedelta
-from app.models import SystemConfiguration,User
+from app.models import SystemConfiguration, User
 from django.contrib.auth.backends import ModelBackend
+
 
 class IdleTimeoutTokenAuthentication(TokenAuthentication):
     """
-    Extends DRF TokenAuthentication with idle timeout logic.
-    No DB model changes required.
+    TokenAuthentication with idle timeout using `last_activity`.
     """
 
     def authenticate_credentials(self, key):
         try:
-            token = Token.objects.select_related('user').get(key=key)
+            token = Token.objects.select_related("user").get(key=key)
         except Token.DoesNotExist:
-            raise AuthenticationFailed('Invalid token.')
+            raise AuthenticationFailed("Invalid token.")
 
-        if not token.user.is_active:
-            raise AuthenticationFailed('User inactive or deleted.')
+        user = token.user
 
-        # Get timeout from SystemConfiguration
-        timeout_minutes = 30
+        if not user.is_active:
+            raise AuthenticationFailed("User inactive or deleted.")
+
+        # Get idle timeout from system configuration
+        timeout_minutes = 30  # default
         config = SystemConfiguration.objects.filter(key="user_idle_time_minutes").first()
         if config and config.value.isdigit():
             timeout_minutes = int(config.value)
 
-        # Fetch last activity time from session
-        last_activity = token.user.last_login  # can use a separate field if needed
         now = timezone.now()
+        last_activity = user.last_activity or token.created
 
-        # If no activity, fallback to token creation time
-        last_time = last_activity or token.created
-        if now - last_time > timedelta(minutes=timeout_minutes):
+        # Safety: if last_activity somehow in the future, reset to now
+        if last_activity > now:
+            last_activity = now
+
+        if now - last_activity > timedelta(minutes=timeout_minutes):
+            # Expire token
             token.delete()
-            raise AuthenticationFailed('Session expired due to inactivity. Please log in again.')
+            raise AuthenticationFailed(
+                "Session expired due to inactivity. Please log in again."
+            )
 
-        # Update last login time (i.e., activity)
-        token.user.last_login = now
-        token.user.save(update_fields=["last_login"])
+        # Update last_activity timestamp
+        user.last_activity = now
+        user.save(update_fields=["last_activity"])
 
-        return (token.user, token)
+        return (user, token)
 
 
 class EmailBackend(ModelBackend):
     """
-    Custom authentication backend that allows login using email instead of username.
+    Custom authentication backend using email instead of username.
     """
+
     def authenticate(self, request, email=None, password=None, **kwargs):
         try:
             user = User.objects.get(email=email)

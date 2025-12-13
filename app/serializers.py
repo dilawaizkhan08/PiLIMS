@@ -10,6 +10,7 @@ from django.contrib.auth import password_validation
 from rest_framework.exceptions import ValidationError
 import ast
 import inflection
+from django.core.files.uploadedfile import UploadedFile
 
 def get_config(key, default=None):
     from .models import SystemConfiguration
@@ -59,10 +60,16 @@ class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = models.User
         fields = '__all__'
+        read_only_fields = ["groups", "user_permissions"]
 
     def create(self, validated_data):
         request = self.context.get('request')
-        password = validated_data.pop('password')
+
+        # Remove fields not allowed in **kwargs
+        validated_data.pop("groups", None)
+        validated_data.pop("user_permissions", None)
+
+        password = validated_data.pop("password")
 
         user = models.User(**validated_data)
         user.set_password(password)
@@ -73,40 +80,44 @@ class UserSerializer(serializers.ModelSerializer):
         user.save()
         return user
 
-
     def update(self, instance, validated_data):
+        validated_data.pop("groups", None)
+        validated_data.pop("user_permissions", None)
+
         password = validated_data.pop('password', None)
+
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
+
         if password:
             instance.set_password(password)
+
         instance.save()
         return instance
-    
-    
+
+    # ---------------- VALIDATIONS ----------------
+
     def validate_username(self, value):
         user_id = self.instance.id if self.instance else None
         if models.User.objects.filter(username=value).exclude(id=user_id).exists():
             raise serializers.ValidationError("This username is already taken.")
         return value
 
-    
     def validate_name(self, value):
-        max_length = int(get_config("max_name_length", 70)) 
+        max_length = int(get_config("max_name_length", 70))
         if len(value) > max_length:
             raise serializers.ValidationError(
-                f"Name cannot exceed {max_length} characters (limit: {max_length})."
+                f"Name cannot exceed {max_length} characters."
             )
         return value
 
     def validate_password(self, value):
-        min_length = int(get_config("min_password_length", 10))  # fixed typo: was max_name_length
+        min_length = int(get_config("min_password_length", 10))
         if len(value) < min_length:
             raise serializers.ValidationError(
                 f"Password must be at least {min_length} characters long."
             )
 
-        # ✅ Custom complexity rules
         if not re.search(r"[A-Z]", value):
             raise serializers.ValidationError("Password must contain at least one uppercase letter.")
         if not re.search(r"[a-z]", value):
@@ -116,28 +127,26 @@ class UserSerializer(serializers.ModelSerializer):
         if not re.search(r"[!@#$%^&*(),.?\":{}|<>_\-+=]", value):
             raise serializers.ValidationError("Password must contain at least one special character.")
 
-        # ✅ Run Django's built-in validators too
         try:
             dj_validate_password(value)
         except ValidationError as e:
             raise serializers.ValidationError(e.messages)
 
         return value
-    
+
     def validate_dob(self, value):
         if value and value > timezone.now().date():
             raise serializers.ValidationError("Date of Birth cannot be in the future.")
         return value
-
 
     def validate_phone_number(self, value):
         if value:
             try:
                 parsed = phonenumbers.parse(value, None)
                 if not phonenumbers.is_valid_number(parsed):
-                    raise serializers.ValidationError("Enter a valid international phone number (e.g. +14155552671).")
+                    raise serializers.ValidationError("Enter a valid international phone number.")
             except phonenumbers.NumberParseException:
-                raise serializers.ValidationError("Invalid phone number format. Use +CountryCodeXXXXXXXXX format.")
+                raise serializers.ValidationError("Invalid phone number format.")
         return value
 
 
@@ -1170,15 +1179,59 @@ class DynamicFormEntrySerializer(serializers.ModelSerializer):
             component_ids = analysis_item.get("component_ids", [])
             analysis = models.Analysis.objects.get(id=analysis_id)
 
-            ea = models.DynamicFormEntryAnalysis.objects.create(entry=entry, analysis=analysis)
+            # Ensure a single DynamicFormEntryAnalysis per entry+analysis
+            ea, _ = models.DynamicFormEntryAnalysis.objects.get_or_create(
+                entry=entry,
+                analysis=analysis
+            )
 
+            # Set components
             if component_ids:
                 components = models.Component.objects.filter(
-                    id__in=component_ids, analysis=analysis
+                    id__in=component_ids,
+                    analysis=analysis
                 )
             else:
                 components = analysis.components.all()
+
             ea.components.set(components)
+
+            # 🔹 DELETE old SampleComponents for this entry_analysis first
+            models.SampleComponent.objects.filter(entry_analysis=ea).delete()
+
+            # 🔹 RECREATE sample components for this analysis
+            for comp in components:
+                sc = models.SampleComponent.objects.create(
+                    entry_analysis=ea,
+                    component=comp,
+                    name=comp.name,
+                    unit=comp.unit,
+                    minimum=comp.minimum,
+                    maximum=comp.maximum,
+                    decimal_places=comp.decimal_places,
+                    rounding=comp.rounding,
+                    spec_limits=comp.spec_limits,
+                    description=comp.description,
+                    optional=comp.optional,
+                    calculated=comp.calculated,
+                    custom_function=comp.custom_function,
+                )
+
+                # 🔹 Clone function parameters if calculated
+                if comp.calculated:
+                    for param in comp.function_parameters.all():
+                        mapped_sc = models.SampleComponent.objects.filter(
+                            entry_analysis=ea,
+                            component=param.mapped_component
+                        ).first()
+
+                        if mapped_sc:
+                            models.SampleComponentFunctionParameter.objects.create(
+                                sample_component=sc,
+                                parameter=param.parameter,
+                                mapped_sample_component=mapped_sc
+                            )
+
 
     # -------------------------
     #   Representation
@@ -1186,7 +1239,7 @@ class DynamicFormEntrySerializer(serializers.ModelSerializer):
     def to_representation(self, instance):
         data = super().to_representation(instance)
 
-        # ✅ Format file paths properly
+        # Format uploaded files
         formatted_data = {}
         for key, value in instance.data.items():
             if isinstance(value, str) and value.startswith("uploads/sample/"):
@@ -1196,22 +1249,239 @@ class DynamicFormEntrySerializer(serializers.ModelSerializer):
                 formatted_data[key] = value
         data["data"] = formatted_data
 
-        # ✅ Include analyses + components
+        # Include analyses + sample components
         entry_analyses = models.DynamicFormEntryAnalysis.objects.filter(
             entry=instance
-        ).prefetch_related("components")
+        ).prefetch_related("components", "sample_components__component")
 
-        data["analyses_data"] = [
-            {
+        analyses_data = []
+        for ea in entry_analyses:
+            components_data = []
+            for sc in ea.sample_components.all():
+                components_data.append({
+                    "id": sc.id,
+                    "name": sc.name,
+                    "unit": sc.unit.name if sc.unit else None,
+                    "minimum": sc.minimum,
+                    "maximum": sc.maximum,
+                    "decimal_places": sc.decimal_places,
+                    "rounding": sc.rounding,
+                    "spec_limits": sc.spec_limits,
+                    "description": sc.description,
+                    "optional": sc.optional,
+                    "calculated": sc.calculated,
+                })
+
+            analyses_data.append({
                 "analysis_id": ea.analysis.id,
-                "component_ids": list(ea.components.values_list("id", flat=True))
-            }
-            for ea in entry_analyses
-        ]
+                "analysis_name": ea.analysis.name,
+                "components": components_data
+            })
 
+
+        data["analyses_data"] = analyses_data
         return data
 
-from django.core.files.uploadedfile import UploadedFile
+
+
+class SampleComponentSerializer(serializers.ModelSerializer):
+    # Optional overrides for related objects
+    unit_id = serializers.PrimaryKeyRelatedField(
+        queryset=models.Unit.objects.all(),
+        source="unit",
+        required=False,
+        allow_null=True
+    )
+    unit = serializers.StringRelatedField(read_only=True)
+
+    component_id = serializers.PrimaryKeyRelatedField(
+        queryset=models.Component.objects.all(),
+        source="component",
+        required=False,
+        allow_null=True
+    )
+    component_name = serializers.CharField(source="component.name", read_only=True)
+
+    function_id = serializers.PrimaryKeyRelatedField(
+        queryset=models.CustomFunction.objects.all(),
+        source="custom_function",
+        required=False,
+        allow_null=True
+    )
+    function = CustomFunctionSerializer(source="custom_function", read_only=True)
+
+    spec_limits = serializers.ListField(
+        child=serializers.CharField(),
+        required=False,
+        allow_empty=True
+    )
+
+    rounding_display = serializers.CharField(source="get_rounding_display", read_only=True)
+    parameters = serializers.SerializerMethodField()
+
+    class Meta:
+        model = models.SampleComponent
+        fields = [
+            "id",
+            "entry_analysis",
+            "component_id",
+            "component_name",
+            "name",
+            "unit_id",
+            "unit",
+            "minimum",
+            "maximum",
+            "decimal_places",
+            "rounding",
+            "rounding_display",
+            "spec_limits",
+            "description",
+            "optional",
+            "calculated",
+            "function_id",
+            "function",
+            "parameters",
+        ]
+
+    def validate(self, attrs):
+        comp_obj = attrs.get("component") or getattr(self.instance, "component", None)
+        comp_type = getattr(comp_obj, "type", None)
+
+        if comp_type == choices.ComponentTypes.LIST:
+            list_obj = getattr(comp_obj, "listname", None)
+            if not list_obj:
+                raise serializers.ValidationError(
+                    {"component_id": "Component list is required for 'List' type."}
+                )
+
+            allowed_values = set(list_obj.values.values_list("value", flat=True))
+            spec_limits = attrs.get("spec_limits")
+
+            if not spec_limits:
+                attrs["spec_limits"] = list(allowed_values)
+            else:
+                invalid = [val for val in spec_limits if val not in allowed_values]
+                if invalid:
+                    raise serializers.ValidationError({
+                        "spec_limits": f"Invalid values for list '{list_obj.name}': {', '.join(invalid)}"
+                    })
+
+        return attrs
+
+    def create(self, validated_data):
+        parameters_data = self.initial_data.get("parameters", [])
+        sample_component = models.SampleComponent.objects.create(**validated_data)
+
+        if sample_component.calculated and sample_component.custom_function:
+            expected_vars = set(sample_component.custom_function.variables)
+            provided_vars = {p["parameter"] for p in parameters_data}
+
+            missing = expected_vars - provided_vars
+            if missing:
+                raise serializers.ValidationError(
+                    {"parameters": f"Missing mappings for variables: {', '.join(missing)}"}
+                )
+
+            extra = provided_vars - expected_vars
+            if extra:
+                raise serializers.ValidationError(
+                    {"parameters": f"Unexpected variables: {', '.join(extra)}"}
+                )
+
+            for param in parameters_data:
+                var_name = param["parameter"]
+                mapped_id = param["mapped_sample_component"]
+
+                try:
+                    mapped_component = models.SampleComponent.objects.get(id=mapped_id)
+                except models.SampleComponent.DoesNotExist:
+                    raise serializers.ValidationError(
+                        {"parameters": f"SampleComponent {mapped_id} not found"}
+                    )
+
+                models.SampleComponentFunctionParameter.objects.create(
+                    sample_component=sample_component,
+                    parameter=var_name,
+                    mapped_sample_component=mapped_component
+                )
+
+        return sample_component
+
+    def update(self, instance, validated_data):
+        parameters_data = self.initial_data.get("parameters", [])
+
+        # Update regular fields
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+
+        if instance.calculated and instance.custom_function and parameters_data:
+            # Fetch existing parameters for this sample component
+            existing_params = {p.parameter: p for p in instance.function_parameters.all()}
+
+            expected_vars = set(instance.custom_function.variables)
+            provided_vars = {p["parameter"] for p in parameters_data}
+
+            missing = expected_vars - provided_vars
+            if missing:
+                raise serializers.ValidationError(
+                    {"parameters": f"Missing mappings for variables: {', '.join(missing)}"}
+                )
+
+            extra = provided_vars - expected_vars
+            if extra:
+                raise serializers.ValidationError(
+                    {"parameters": f"Unexpected variables: {', '.join(extra)}"}
+                )
+
+            # Update existing or create new
+            for param in parameters_data:
+                var_name = param["parameter"]
+                mapped_id = param["mapped_sample_component"]
+
+                try:
+                    mapped_component = models.SampleComponent.objects.get(id=mapped_id)
+                except models.SampleComponent.DoesNotExist:
+                    raise serializers.ValidationError(
+                        {"parameters": f"SampleComponent {mapped_id} not found"}
+                    )
+
+                if var_name in existing_params:
+                    # Update existing mapping
+                    fp = existing_params[var_name]
+                    fp.mapped_sample_component = mapped_component
+                    fp.save()
+                else:
+                    # Create new mapping
+                    models.SampleComponentFunctionParameter.objects.create(
+                        sample_component=instance,
+                        parameter=var_name,
+                        mapped_sample_component=mapped_component
+                    )
+
+        return instance
+
+
+    def get_parameters(self, obj):
+        if obj.calculated and obj.custom_function:
+            # preserve the order defined in the function variables
+            var_order = obj.custom_function.variables
+            mapping = {p.parameter: p for p in obj.function_parameters.all()}
+
+            return [
+                {
+                    "parameter": var_name,
+                    "mapped_sample_component": {
+                        "id": mapping[var_name].mapped_sample_component.id,
+                        "name": mapping[var_name].mapped_sample_component.name
+                        or mapping[var_name].mapped_sample_component.component.name
+                    }
+                }
+                for var_name in var_order
+            ]
+        return []
+
+
 
 
 class FileOrURLField(serializers.Field):
@@ -1695,18 +1965,22 @@ class AnalysisSchemaSerializer(serializers.ModelSerializer):
         fields = ["id", "name", "components"]
 
 
+from rest_framework import serializers
+from . import models
+from .choices import ComponentTypes
+
 class ComponentResultSerializer(serializers.ModelSerializer):
-    component_name = serializers.CharField(source="component.name", read_only=True)
-    component_type = serializers.CharField(source="component.type", read_only=True)
+    sample_component_name = serializers.CharField(source="sample_component.name", read_only=True)
+    component_type = serializers.CharField(source="sample_component.component.type", read_only=True)
     spec_limits = serializers.SerializerMethodField()
 
     class Meta:
         model = models.ComponentResult
         fields = [
             "id",
-            "component_id",
-            "component_name",
-            "component_type",
+            "sample_component",          # FK reference
+            "sample_component_name",     # Read-only name
+            "component_type",            # Read-only type
             "value",
             "numeric_value",
             "remarks",
@@ -1717,10 +1991,8 @@ class ComponentResultSerializer(serializers.ModelSerializer):
         ]
 
     def get_spec_limits(self, obj):
-        comp = obj.component
-        if comp.type == choices.ComponentTypes.LIST:
-            # ✅ show only the saved spec_limits for that component
-            return comp.spec_limits or []
+        if obj.sample_component.component.type == ComponentTypes.LIST:
+            return obj.sample_component.spec_limits or []
         return None
 
 
@@ -1755,15 +2027,7 @@ class ActivitySerializer(serializers.ModelSerializer):
 
     class Meta:
         model = models.Activity
-        fields = [
-            "id",
-            "user_name",
-            "model_name",
-            "object_id",
-            "action",
-            "description",
-            "created_at",
-        ]
+        fields = '__all__'
 
 
 class ReportTemplateSerializer(serializers.ModelSerializer):

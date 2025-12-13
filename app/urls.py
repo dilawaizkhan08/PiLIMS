@@ -36,6 +36,7 @@ router.register(r'request-attachments', views.DynamicRequestAttachmentViewSet, b
 router.register(r'sample-attachments', views.DynamicFormAttachmentViewSet, basename='sample-attachments')
 router.register(r'activities', views.ActivityViewSet, basename='activity')
 router.register(r'report-templates', views.QueryReportTemplateViewSet, basename='reporttemplate')
+router.register(r"sample-components", views.SampleComponentViewSet, basename="sample-components")
 
 
 
