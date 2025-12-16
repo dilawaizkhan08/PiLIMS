@@ -2675,7 +2675,16 @@ class AnalyticsAPIView(APIView):
 
         top_components_qs = (
             models.Component.objects.annotate(
-                result_count=Count("results", filter=Q(results__created_at__date__range=(start_date, end_date)))
+                result_count=Count(
+                            "sample_overrides__results",
+                            filter=Q(
+                                sample_overrides__results__created_at__date__range=(
+                                    start_date,
+                                    end_date
+                                )
+                            )
+                        )
+
             )
             .order_by("-result_count")[:3]
         )
