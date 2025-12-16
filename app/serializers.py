@@ -1200,6 +1200,8 @@ class DynamicFormEntrySerializer(serializers.ModelSerializer):
             models.SampleComponent.objects.filter(entry_analysis=ea).delete()
 
             # 🔹 RECREATE sample components for this analysis
+            old_to_new_sc_map = {}  # Keep mapping of old component -> new SampleComponent
+
             for comp in components:
                 sc = models.SampleComponent.objects.create(
                     entry_analysis=ea,
@@ -1214,24 +1216,30 @@ class DynamicFormEntrySerializer(serializers.ModelSerializer):
                     description=comp.description,
                     optional=comp.optional,
                     calculated=comp.calculated,
-                    custom_function=comp.custom_function,
+                    custom_function=comp.custom_function if comp.calculated else None,
                 )
+                old_to_new_sc_map[comp.id] = sc
 
-                # 🔹 Clone function parameters if calculated
-                if comp.calculated:
-                    for param in comp.function_parameters.all():
-                        mapped_sc = models.SampleComponent.objects.filter(
-                            entry_analysis=ea,
-                            component=param.mapped_component
-                        ).first()
+            # 🔹 Clone function parameters for calculated components
+            for comp in components:
+                if not comp.calculated:
+                    continue
 
-                        if mapped_sc:
-                            models.SampleComponentFunctionParameter.objects.create(
-                                sample_component=sc,
-                                parameter=param.parameter,
-                                mapped_sample_component=mapped_sc
-                            )
+                # Get the new SampleComponent for this calculated component
+                new_sc = old_to_new_sc_map.get(comp.id)
+                if not new_sc:
+                    continue
 
+                # Clone parameters
+                for param in comp.function_parameters.all():
+                    # Map the old mapped_component to the new SampleComponent
+                    mapped_sc = old_to_new_sc_map.get(param.mapped_component.id)
+                    if mapped_sc:
+                        models.SampleComponentFunctionParameter.objects.create(
+                            sample_component=new_sc,
+                            parameter=param.parameter,
+                            mapped_sample_component=mapped_sc
+                        )
 
     # -------------------------
     #   Representation
@@ -1978,23 +1986,21 @@ class ComponentResultSerializer(serializers.ModelSerializer):
         model = models.ComponentResult
         fields = [
             "id",
-            "sample_component",          # FK reference
-            "sample_component_name",     # Read-only name
-            "component_type",            # Read-only type
+            "sample_component",
+            "sample_component_name",
+            "component_type",
             "value",
             "numeric_value",
             "remarks",
             "created_by",
             "spec_limits",
             "authorization_flag",
-            "authorization_remark"
+            "authorization_remark",
         ]
 
     def get_spec_limits(self, obj):
         if obj.sample_component.component.type == ComponentTypes.LIST:
             return obj.sample_component.spec_limits or []
-        return None
-
 
 
 class SystemConfigurationSerializer(serializers.ModelSerializer):

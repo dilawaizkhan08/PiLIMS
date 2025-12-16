@@ -1687,6 +1687,7 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
     """
     Submit results for an analysis, automatically calculating dependent fields.
     """
+
     def post(self, request, entry_id, analysis_id):
         entry = get_object_or_404(models.DynamicFormEntry, pk=entry_id)
         entry_analysis = get_object_or_404(
@@ -1700,59 +1701,79 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
         errors = []
 
         # ---------------------------
-        # 1️⃣ Save user-entered results (non-calculated)
+        # Update comment if provided
+        # ---------------------------
+        comment = request.data.get("comment")
+        if comment:
+            entry.comment = comment
+            entry.save(update_fields=["comment"])
+
+        # ---------------------------
+        # 1️⃣ Save user-entered results
         # ---------------------------
         for res in results_data:
             sc_id = res.get("component_id")
-            sc = get_object_or_404(
-                models.SampleComponent,
-                pk=sc_id,
-                entry_analysis=entry_analysis
-            )
-
-            if sc.calculated:
+            if not sc_id:
+                errors.append("Missing component_id in payload")
                 continue
 
-            numeric_value = res.get("numeric_value") if (sc.component and sc.component.type.lower() != "list") else None
-
-            if sc.component and sc.component.type.lower() == "list":
-                allowed_choices = sc.spec_limits or []
-                if res.get("value") not in allowed_choices:
-                    errors.append(f"Invalid choice '{res.get('value')}' for {sc.name}. Allowed: {allowed_choices}")
-                    continue
-                numeric_value = None
-
             try:
-                result, _ = models.ComponentResult.objects.update_or_create(
+                sc = models.SampleComponent.objects.get(pk=sc_id, entry_analysis=entry_analysis)
+            except models.SampleComponent.DoesNotExist:
+                errors.append(f"SampleComponent {sc_id} not found")
+                continue
+
+            numeric_value = None
+            try:
+                if res.get("numeric_value") not in [None, ""]:
+                    numeric_value = float(res.get("numeric_value"))
+            except ValueError:
+                errors.append(f"{sc.name}: invalid numeric value")
+                continue
+
+            # ---------------------------
+            # Update existing result if exists, else create new
+            # ---------------------------
+            existing_result = models.ComponentResult.objects.filter(
+                entry=entry,
+                sample_component=sc
+            ).first()
+
+            if existing_result:
+                existing_result.value = res.get("value")
+                existing_result.numeric_value = numeric_value
+                existing_result.created_by = request.user
+                existing_result.save()
+                saved_results.append(existing_result)
+            else:
+                new_result = models.ComponentResult.objects.create(
                     entry=entry,
                     sample_component=sc,
-                    defaults={
-                        "value": res.get("value"),
-                        "numeric_value": numeric_value,
-                        "created_by": request.user,
-                    }
+                    value=res.get("value"),
+                    numeric_value=numeric_value,
+                    created_by=request.user
                 )
-                saved_results.append(result)
-            except Exception as e:
-                errors.append(f"{sc.name}: {str(e)}")
+                saved_results.append(new_result)
 
         # ---------------------------
-        # 2️⃣ Auto-calculate calculated sample components
+        # 2️⃣ Auto-calculate calculated fields
         # ---------------------------
-        calculated_samples = entry_analysis.sample_components.filter(
+        calculated_components = entry_analysis.sample_components.filter(
             calculated=True,
             custom_function__isnull=False
         ).prefetch_related("function_parameters__mapped_sample_component")
 
-        for sc in calculated_samples:
+        for sc in calculated_components:
             param_values = {}
+            missing_input = False
 
-            # Gather numeric values from inputs or existing results
             for param in sc.function_parameters.all():
+                # Check if mapped result exists in saved_results first
                 mapped_result = next(
                     (r for r in saved_results if r.sample_component_id == param.mapped_sample_component.id),
                     None
                 )
+
                 if not mapped_result:
                     mapped_result = models.ComponentResult.objects.filter(
                         entry=entry,
@@ -1761,12 +1782,13 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
 
                 if not mapped_result or mapped_result.numeric_value is None:
                     errors.append(f"{sc.name}: missing input for variable '{param.parameter}'")
+                    missing_input = True
                     break
 
                 param_values[param.parameter] = mapped_result.numeric_value
 
-            if len(param_values) != len(sc.custom_function.variables):
-                continue  # skip calculation if inputs are missing
+            if missing_input:
+                continue
 
             try:
                 numeric_value = sc.custom_function.evaluate(**param_values)
@@ -1774,27 +1796,66 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
                 errors.append(f"{sc.name}: Error executing function: {str(e)}")
                 continue
 
-            # Save calculated result
-            try:
-                result, _ = models.ComponentResult.objects.update_or_create(
+            # Update existing auto-calculated result if exists
+            existing_calc_result = models.ComponentResult.objects.filter(
+                entry=entry,
+                sample_component=sc
+            ).first()
+
+            if existing_calc_result:
+                existing_calc_result.value = str(numeric_value)
+                existing_calc_result.numeric_value = numeric_value
+                existing_calc_result.remarks = "Auto-calculated"
+                existing_calc_result.authorization_flag = False
+                existing_calc_result.authorization_remark = None
+                existing_calc_result.created_by = request.user
+                existing_calc_result.save()
+                saved_results.append(existing_calc_result)
+            else:
+                new_calc_result = models.ComponentResult.objects.create(
                     entry=entry,
                     sample_component=sc,
-                    defaults={
-                        "value": str(numeric_value),
-                        "numeric_value": numeric_value,
-                        "remarks": "Auto-calculated",
-                        "authorization_flag": False,
-                        "authorization_remark": None,
-                        "created_by": request.user,
-                    }
+                    value=str(numeric_value),
+                    numeric_value=numeric_value,
+                    remarks="Auto-calculated",
+                    authorization_flag=False,
+                    authorization_remark=None,
+                    created_by=request.user
                 )
-                saved_results.append(result)
-            except Exception as e:
-                errors.append(f"{sc.name}: {str(e)}")
+                saved_results.append(new_calc_result)
+
+        # ---------------------------
+        # Update entry status
+        # ---------------------------
+        has_any_result = models.ComponentResult.objects.filter(
+            entry=entry,
+            sample_component__entry_analysis=entry_analysis
+        ).exists()
+
+        if has_any_result:
+            if entry.status not in ["completed", "cancelled"]:
+                entry.status = "in_progress"
+                entry.save(update_fields=["status"])
+        else:
+            if entry.status != "received":
+                entry.status = "received"
+                entry.save(update_fields=["status"])
+
+        # ---------------------------
+        # Fetch all saved results for response
+        # ---------------------------
+        results_qs = models.ComponentResult.objects.filter(
+            entry=entry,
+            sample_component__entry_analysis=entry_analysis
+        ).select_related("sample_component")
 
         response = {
-            "message": "Results processed",
-            "results": ComponentResultSerializer(saved_results, many=True).data
+            "message": "Results saved successfully" if not errors else "Saved with errors",
+            "entry_id": entry.id,
+            "analysis_id": analysis_id,
+            "comment": entry.comment,
+            "status": entry.status,
+            "results": ComponentResultSerializer(results_qs, many=True).data
         }
 
         if errors:
@@ -1802,6 +1863,25 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
 
         return Response(response, status=status.HTTP_200_OK)
 
+    # ---------------------------
+    # Get all results
+    # ---------------------------
+    def get(self, request, entry_id, analysis_id):
+        entry = get_object_or_404(models.DynamicFormEntry, pk=entry_id)
+
+        results = models.ComponentResult.objects.filter(
+            entry=entry,
+            sample_component__entry_analysis__analysis_id=analysis_id
+        ).select_related("sample_component")
+
+        serializer = ComponentResultSerializer(results, many=True)
+
+        return Response({
+            "message": "Results fetched successfully",
+            "entry_id": entry.id,
+            "analysis_id": analysis_id,
+            "results": serializer.data,
+        }, status=status.HTTP_200_OK)
     # ---------------------------
     # Get all results for analysis
     # ---------------------------
@@ -1873,6 +1953,7 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
             "analysis_id": analysis_id,
             "result": serializer.data,
         }, status=status.HTTP_200_OK)
+
 
 
 class SystemConfigurationListCreateView(generics.ListCreateAPIView):
