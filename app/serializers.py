@@ -235,7 +235,7 @@ class ResetPasswordSerializer(serializers.Serializer):
 
 
 class UserGroupSerializer(serializers.ModelSerializer):
-    users = serializers.PrimaryKeyRelatedField(queryset=models.User.objects.all(), many=True)
+    users = UserSerializer(many=True, read_only=True)
 
     class Meta:
         model = models.UserGroup
@@ -1824,91 +1824,152 @@ class ProductAnalysisSerializer(serializers.Serializer):
         child=serializers.IntegerField(), required=False
     )
 
-
-class ProductSerializer(serializers.ModelSerializer):
-    # ✅ Nested read serializer (response)
-    user_groups = UserGroupSerializer(many=True, read_only=True)
-
-    # ✅ IDs for write, but also returned in GET
-    user_groups_ids = serializers.PrimaryKeyRelatedField(
-        many=True, queryset=models.UserGroup.objects.all(), required=False
+def clone_component_to_sample(component):
+    sample = models.SampleComponent.objects.create(
+        component=component,
+        name=component.name,
+        unit=component.unit,
+        minimum=component.minimum,
+        maximum=component.maximum,
+        decimal_places=component.decimal_places,
+        rounding=component.rounding,
+        spec_limits=component.spec_limits,
+        description=component.description,
+        optional=component.optional,
+        calculated=component.calculated,
+        custom_function=component.custom_function
     )
 
-    # ✅ Accept analyses data in request
-    analyses_data = ProductAnalysisSerializer(many=True, write_only=True, required=False)
+    # copy function parameters
+    for param in component.function_parameters.all():
+        models.SampleComponentFunctionParameter.objects.create(
+            sample_component=sample,
+            parameter=param.parameter,
+            mapped_sample_component=sample
+        )
+
+    return sample
+
+
+
+class ProductSerializer(serializers.ModelSerializer):
+
+    user_groups = UserGroupSerializer(many=True, read_only=True)
+
+    user_groups_ids = serializers.PrimaryKeyRelatedField(
+        many=True,
+        queryset=models.UserGroup.objects.all(),
+        write_only=True,
+        required=False
+    )
+
+    analyses_data = ProductAnalysisSerializer(
+        many=True,
+        write_only=True,
+        required=False
+    )
 
     class Meta:
         model = models.Product
         fields = [
-            "id", "name", "version",
+            "id",
+            "name",
+            "version",
             "description",
-            "user_groups",        # GET full details
-            "user_groups_ids",    # POST/PUT/PATCH IDs + show in GET
-            "analyses_data"       # write-only in request, rebuilt in response
+            "user_groups",
+            "user_groups_ids",
+            "analyses_data",
         ]
 
+    # ================= CREATE =================
     def create(self, validated_data):
         analyses_data = validated_data.pop("analyses_data", [])
         user_groups = validated_data.pop("user_groups_ids", [])
 
         product = models.Product.objects.create(**validated_data)
-        product.user_groups.set(user_groups)  # ✅ assign M2M
+        product.user_groups.set(user_groups)
 
         self._save_product_analyses(product, analyses_data)
         return product
 
+    # ================= UPDATE =================
     def update(self, instance, validated_data):
         analyses_data = validated_data.pop("analyses_data", None)
         user_groups = validated_data.pop("user_groups_ids", None)
 
-        # ✅ Update base fields
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
         instance.save()
 
-        # ✅ Update M2M if provided
         if user_groups is not None:
             instance.user_groups.set(user_groups)
 
-        # ✅ Update analyses if provided
         if analyses_data is not None:
             models.ProductAnalysis.objects.filter(product=instance).delete()
             self._save_product_analyses(instance, analyses_data)
 
         return instance
 
+    # ================= CORE LOGIC =================
     def _save_product_analyses(self, product, analyses_data):
-        for analysis_item in analyses_data:
-            analysis_id = analysis_item["analysis_id"]
-            component_ids = analysis_item.get("component_ids", [])
-            analysis = models.Analysis.objects.get(id=analysis_id)
+        for item in analyses_data:
+            analysis = models.Analysis.objects.get(id=item["analysis_id"])
+            component_ids = item.get("component_ids", [])
 
-            pa = models.ProductAnalysis.objects.create(product=product, analysis=analysis)
+            pa = models.ProductAnalysis.objects.create(
+                product=product,
+                analysis=analysis
+            )
 
+            # 🔹 SAME OLD BEHAVIOR
             if component_ids:
                 components = models.Component.objects.filter(
-                    id__in=component_ids, analysis=analysis
+                    id__in=component_ids,
+                    analysis=analysis
                 )
             else:
                 components = analysis.components.all()
 
             pa.components.set(components)
 
+            # 🔥 NEW: create replicas
+            for component in components:
+                clone_component_to_sample(component)
+
+    # ================= RESPONSE =================
     def to_representation(self, instance):
         data = super().to_representation(instance)
 
-        # ✅ include user_groups_ids in GET
-        data["user_groups_ids"] = list(instance.user_groups.values_list("id", flat=True))
+        data["user_groups_ids"] = list(
+            instance.user_groups.values_list("id", flat=True)
+        )
 
-        # ✅ include analyses_data in GET
-        product_analyses = models.ProductAnalysis.objects.filter(product=instance)
-        data["analyses_data"] = [
-            {
+        analyses_response = []
+
+        for pa in models.ProductAnalysis.objects.filter(product=instance):
+            sample_components = models.SampleComponent.objects.filter(
+                component__in=pa.components.all()
+            )
+
+            analyses_response.append({
                 "analysis_id": pa.analysis.id,
-                "component_ids": list(pa.components.values_list("id", flat=True)),
-            }
-            for pa in product_analyses
-        ]
+                "components": [
+                    {
+                        "id": sc.id,
+                        "name": sc.name,
+                        "minimum": sc.minimum,
+                        "maximum": sc.maximum,
+                        "decimal_places": sc.decimal_places,
+                        "rounding": sc.rounding,
+                        "optional": sc.optional,
+                        "calculated": sc.calculated,
+                        "unit": sc.unit.id if sc.unit else None,
+                    }
+                    for sc in sample_components
+                ]
+            })
+
+        data["analyses_data"] = analyses_response
         return data
 
 
