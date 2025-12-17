@@ -1467,6 +1467,7 @@ class DynamicRequestFormEntryViewSet(TrackUserMixin,viewsets.ModelViewSet):
 
         return Response(data, status=status.HTTP_200_OK)
 
+
 class ProductViewSet(TrackUserMixin,viewsets.ModelViewSet):
     queryset = models.Product.objects.all()
     serializer_class = ProductSerializer
