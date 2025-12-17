@@ -270,8 +270,6 @@ class Stock(BaseModel):
         self.inventory.save()
 
 
-
-
 class Value(BaseModel):
     list = models.ForeignKey(List, related_name='values', on_delete=models.CASCADE)
     value = models.CharField(max_length=255)
@@ -279,7 +277,6 @@ class Value(BaseModel):
     def __str__(self):
         return self.value
     
-
 
 class SampleForm(BaseModel):
     sample_name = models.CharField(max_length=255)
@@ -318,7 +315,7 @@ class SampleField(BaseModel):
 
 
 class DynamicFormEntryAnalysis(BaseModel):
-    entry = models.ForeignKey("DynamicFormEntry", on_delete=models.CASCADE)
+    entry = models.ForeignKey("DynamicFormEntry", on_delete=models.CASCADE, null=True, blank=True)
     analysis = models.ForeignKey("Analysis", on_delete=models.CASCADE)
     components = models.ManyToManyField("Component", blank=True)
 
@@ -389,7 +386,7 @@ class SampleComponent(models.Model):
     entry_analysis = models.ForeignKey(
         "DynamicFormEntryAnalysis",
         on_delete=models.CASCADE,
-        related_name="sample_components"
+        related_name="sample_components",null=True,blank=True
     )
 
     component = models.ForeignKey(
@@ -549,7 +546,10 @@ class Product(BaseModel):
 class ProductAnalysis(BaseModel):
     product = models.ForeignKey(Product, on_delete=models.CASCADE)
     analysis = models.ForeignKey(Analysis, on_delete=models.CASCADE)
-    components = models.ManyToManyField(Component, blank=True)
+    sample_components = models.ManyToManyField(
+        "SampleComponent", blank=True
+    )
+
 
     def __str__(self):
         return f"{self.product.name} - {self.analysis.name}"

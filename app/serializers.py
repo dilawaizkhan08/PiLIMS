@@ -235,11 +235,19 @@ class ResetPasswordSerializer(serializers.Serializer):
 
 
 class UserGroupSerializer(serializers.ModelSerializer):
-    users = UserSerializer(many=True, read_only=True)
+    users = serializers.PrimaryKeyRelatedField(
+        queryset=models.User.objects.all(), 
+        many=True
+    )
+    # read-only field for user names
+    names = serializers.SerializerMethodField()
 
     class Meta:
         model = models.UserGroup
-        fields = ['id', 'name', 'users']
+        fields = ['id', 'name', 'users', 'names']
+
+    def get_names(self, obj):
+        return [user.name for user in obj.users.all()]
 
 
 
@@ -1816,72 +1824,37 @@ class CustomerSerializer(serializers.ModelSerializer):
         return phonenumbers.format_number(parsed, phonenumbers.PhoneNumberFormat.E164)
 
 
-
-
 class ProductAnalysisSerializer(serializers.Serializer):
     analysis_id = serializers.IntegerField()
     component_ids = serializers.ListField(
         child=serializers.IntegerField(), required=False
     )
 
-def clone_component_to_sample(component):
-    sample = models.SampleComponent.objects.create(
-        component=component,
-        name=component.name,
-        unit=component.unit,
-        minimum=component.minimum,
-        maximum=component.maximum,
-        decimal_places=component.decimal_places,
-        rounding=component.rounding,
-        spec_limits=component.spec_limits,
-        description=component.description,
-        optional=component.optional,
-        calculated=component.calculated,
-        custom_function=component.custom_function
-    )
-
-    # copy function parameters
-    for param in component.function_parameters.all():
-        models.SampleComponentFunctionParameter.objects.create(
-            sample_component=sample,
-            parameter=param.parameter,
-            mapped_sample_component=sample
-        )
-
-    return sample
-
-
 
 class ProductSerializer(serializers.ModelSerializer):
-
     user_groups = UserGroupSerializer(many=True, read_only=True)
 
     user_groups_ids = serializers.PrimaryKeyRelatedField(
-        many=True,
-        queryset=models.UserGroup.objects.all(),
-        write_only=True,
-        required=False
+        many=True, queryset=models.UserGroup.objects.all(), required=False
     )
 
     analyses_data = ProductAnalysisSerializer(
-        many=True,
-        write_only=True,
-        required=False
+        many=True, write_only=True, required=False
     )
 
     class Meta:
         model = models.Product
         fields = [
-            "id",
-            "name",
-            "version",
+            "id", "name", "version",
             "description",
             "user_groups",
             "user_groups_ids",
-            "analyses_data",
+            "analyses_data"
         ]
 
-    # ================= CREATE =================
+    # -----------------------------------------------------------
+    # CREATE
+    # -----------------------------------------------------------
     def create(self, validated_data):
         analyses_data = validated_data.pop("analyses_data", [])
         user_groups = validated_data.pop("user_groups_ids", [])
@@ -1892,7 +1865,9 @@ class ProductSerializer(serializers.ModelSerializer):
         self._save_product_analyses(product, analyses_data)
         return product
 
-    # ================= UPDATE =================
+    # -----------------------------------------------------------
+    # UPDATE
+    # -----------------------------------------------------------
     def update(self, instance, validated_data):
         analyses_data = validated_data.pop("analyses_data", None)
         user_groups = validated_data.pop("user_groups_ids", None)
@@ -1910,33 +1885,69 @@ class ProductSerializer(serializers.ModelSerializer):
 
         return instance
 
-    # ================= CORE LOGIC =================
+    # -----------------------------------------------------------
+    # 🔥 CORE LOGIC
+    # Create SampleComponent replicas instead of using real components
+    # -----------------------------------------------------------
     def _save_product_analyses(self, product, analyses_data):
-        for item in analyses_data:
-            analysis = models.Analysis.objects.get(id=item["analysis_id"])
-            component_ids = item.get("component_ids", [])
+        for analysis_item in analyses_data:
+            analysis_id = analysis_item["analysis_id"]
+            component_ids = analysis_item.get("component_ids", [])
+
+            analysis = models.Analysis.objects.get(id=analysis_id)
 
             pa = models.ProductAnalysis.objects.create(
                 product=product,
                 analysis=analysis
             )
 
-            # 🔹 SAME OLD BEHAVIOR
-            if component_ids:
-                components = models.Component.objects.filter(
-                    id__in=component_ids,
-                    analysis=analysis
+            replica_map = {}  # real_component_id → replica SampleComponent
+
+            # ---------- STEP 1: CREATE SAMPLE COMPONENT REPLICAS ----------
+            for cid in component_ids:
+                real = models.Component.objects.get(id=cid)
+
+                replica = models.SampleComponent.objects.create(
+                    entry_analysis=None,     # not linked to dynamic entry yet
+                    component=real,
+
+                    # overridden fields copied from real component
+                    name=real.name,
+                    unit=real.unit,
+                    minimum=real.minimum,
+                    maximum=real.maximum,
+                    decimal_places=real.decimal_places,
+                    rounding=real.rounding,
+                    description=real.description,
+                    optional=real.optional,
+                    calculated=real.calculated,
+                    spec_limits=real.spec_limits,
+                    custom_function=real.custom_function if real.calculated else None,
                 )
-            else:
-                components = analysis.components.all()
 
-            pa.components.set(components)
+                replica_map[real.id] = replica
 
-            # 🔥 NEW: create replicas
-            for component in components:
-                clone_component_to_sample(component)
+            # ---------- STEP 2: CLONE FUNCTION PARAMETERS ----------
+            for real in models.Component.objects.filter(id__in=component_ids):
+                replica = replica_map[real.id]
 
-    # ================= RESPONSE =================
+                for fp in real.function_parameters.all():
+                    mapped_real = fp.mapped_component
+                    mapped_replica = replica_map.get(mapped_real.id)
+
+                    models.SampleComponentFunctionParameter.objects.create(
+                        sample_component=replica,
+                        parameter=fp.parameter,
+                        mapped_sample_component=mapped_replica,
+                    )
+
+            # ---------- STEP 3: SAVE all replicas in ProductAnalysis ----------
+            pa.sample_components.set(replica_map.values())
+
+    # -----------------------------------------------------------
+    # REPRESENTATION (GET)
+    # Return replica sample_component_ids instead of real component_ids
+    # -----------------------------------------------------------
     def to_representation(self, instance):
         data = super().to_representation(instance)
 
@@ -1944,34 +1955,20 @@ class ProductSerializer(serializers.ModelSerializer):
             instance.user_groups.values_list("id", flat=True)
         )
 
-        analyses_response = []
+        product_analyses = models.ProductAnalysis.objects.filter(product=instance)
 
-        for pa in models.ProductAnalysis.objects.filter(product=instance):
-            sample_components = models.SampleComponent.objects.filter(
-                component__in=pa.components.all()
-            )
-
-            analyses_response.append({
+        analyses_output = []
+        for pa in product_analyses:
+            analyses_output.append({
                 "analysis_id": pa.analysis.id,
-                "components": [
-                    {
-                        "id": sc.id,
-                        "name": sc.name,
-                        "minimum": sc.minimum,
-                        "maximum": sc.maximum,
-                        "decimal_places": sc.decimal_places,
-                        "rounding": sc.rounding,
-                        "optional": sc.optional,
-                        "calculated": sc.calculated,
-                        "unit": sc.unit.id if sc.unit else None,
-                    }
-                    for sc in sample_components
-                ]
+                "sample_component_ids": list(
+                    pa.sample_components.values_list("id", flat=True)
+                )
             })
 
-        data["analyses_data"] = analyses_response
-        return data
+        data["analyses_data"] = analyses_output
 
+        return data
 
 
 class PermissionSerializer(serializers.ModelSerializer):
