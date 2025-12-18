@@ -2048,19 +2048,29 @@ class ProductSerializer(serializers.ModelSerializer):
             instance.user_groups.values_list("id", flat=True)
         )
 
-        product_analyses = models.ProductAnalysis.objects.filter(product=instance)
-
         analyses_output = []
-        for pa in product_analyses:
+
+        for pa in instance.productanalysis_set.all():
+
+            # Sample component replica IDs
+            sample_component_ids = list(
+                pa.sample_components.values_list("id", flat=True)
+            )
+
+            # Original component IDs (payload)
+            original_component_ids = list(
+                pa.sample_components.values_list("component_id", flat=True)
+            )
+
             analyses_output.append({
                 "analysis_id": pa.analysis.id,
-                "component_ids": list(
-                    pa.sample_components.values_list("id", flat=True)
-                )
+                "component_ids": original_component_ids,     # <-- payload component IDs
+                "sample_component_ids": sample_component_ids # <-- replica IDs
             })
 
         data["analyses_data"] = analyses_output
         return data
+
 
 
 class PermissionSerializer(serializers.ModelSerializer):
