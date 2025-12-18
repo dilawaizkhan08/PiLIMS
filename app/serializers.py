@@ -1480,21 +1480,33 @@ class SampleComponentSerializer(serializers.ModelSerializer):
 
     def get_parameters(self, obj):
         if obj.calculated and obj.custom_function:
-            # preserve the order defined in the function variables
             var_order = obj.custom_function.variables
             mapping = {p.parameter: p for p in obj.function_parameters.all()}
 
-            return [
-                {
+            result = []
+            for var_name in var_order:
+                param_obj = mapping.get(var_name)
+
+                if not param_obj:
+                    # Return null mapping instead of crashing
+                    result.append({
+                        "parameter": var_name,
+                        "mapped_sample_component": None
+                    })
+                    continue
+
+                mapped = param_obj.mapped_sample_component
+
+                result.append({
                     "parameter": var_name,
                     "mapped_sample_component": {
-                        "id": mapping[var_name].mapped_sample_component.id,
-                        "name": mapping[var_name].mapped_sample_component.name
-                        or mapping[var_name].mapped_sample_component.component.name
+                        "id": mapped.id,
+                        "name": mapped.name or mapped.component.name,
                     }
-                }
-                for var_name in var_order
-            ]
+                })
+
+            return result
+
         return []
 
 
