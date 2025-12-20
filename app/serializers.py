@@ -1275,7 +1275,8 @@ class DynamicFormEntrySerializer(serializers.ModelSerializer):
             components_data = []
             for sc in ea.sample_components.all():
                 components_data.append({
-                    "id": sc.id,
+                    "id": sc.component.id if sc.component else None,  # original Component id
+                    "sample_id": sc.id,                               # newly created SampleComponent id
                     "name": sc.name,
                     "unit": sc.unit.name if sc.unit else None,
                     "minimum": sc.minimum,
@@ -1287,7 +1288,6 @@ class DynamicFormEntrySerializer(serializers.ModelSerializer):
                     "optional": sc.optional,
                     "calculated": sc.calculated,
                 })
-
             analyses_data.append({
                 "analysis_id": ea.analysis.id,
                 "analysis_name": ea.analysis.name,
