@@ -55,6 +55,26 @@ import tempfile
 import os
 from django.db.models import Count, Sum, Avg, Q
 from .filters import GenericSearchFilter
+from .utility import create_entry_analyses
+from .serializers import build_dynamic_serializer
+from django.shortcuts import get_object_or_404
+from datetime import datetime
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status
+from django.apps import apps
+from django.db import models
+import inflection
+
+from django.shortcuts import get_object_or_404
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status
+
+from app import models
+from app.serializers import ComponentResultSerializer
+from app.mixins import TrackUserMixin
+
 
 def get_config(key, default=None):
     from .models import SystemConfiguration
@@ -146,7 +166,6 @@ class LoginView(views.APIView):
         )
 
 
-
 class UserViewSet(TrackUserMixin, viewsets.ModelViewSet):
     serializer_class = UserSerializer
     permission_classes = [IsAuthenticated]
@@ -227,7 +246,6 @@ class UserViewSet(TrackUserMixin, viewsets.ModelViewSet):
         }
 
         return Response(data, status=status.HTTP_200_OK)
-
 
 
 class UserProfileUpdateView(generics.RetrieveUpdateAPIView):
@@ -326,7 +344,6 @@ class AnalysisAttachmentViewSet(TrackUserMixin,viewsets.ModelViewSet):
         return Response(attachments, status=status.HTTP_201_CREATED)
 
 
-
 class AnalysisViewSet(TrackUserMixin, viewsets.ModelViewSet):
     queryset = models.Analysis.objects.all()
     serializer_class = AnalysisSerializer
@@ -344,9 +361,6 @@ class AnalysisViewSet(TrackUserMixin, viewsets.ModelViewSet):
         return models.Analysis.objects.filter(
             user_groups__in=user.user_groups.all()
         ).distinct()
-
-
-
 
 
 class CustomFunctionViewSet(TrackUserMixin,viewsets.ModelViewSet):
@@ -371,8 +385,6 @@ class CustomFunctionViewSet(TrackUserMixin,viewsets.ModelViewSet):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)  # validation logic from serializer
         return super().create(request, *args, **kwargs)
-
-
 
 
 class InstrumentViewSet(TrackUserMixin,viewsets.ModelViewSet):
@@ -400,8 +412,6 @@ class InstrumentHistoryViewSet(TrackUserMixin,viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated,HasModulePermission]
     filter_backends = [GenericSearchFilter]
 
-    
-
 
 class InventoryViewSet(TrackUserMixin, viewsets.ModelViewSet):
     queryset = models.Inventory.objects.all()
@@ -427,6 +437,7 @@ class StockViewSet(TrackUserMixin,viewsets.ModelViewSet):
     serializer_class = StockSerializer
     permission_classes = [IsAuthenticated,HasModulePermission]
     filter_backends = [GenericSearchFilter]
+
 
 class UnitViewSet(TrackUserMixin, viewsets.ModelViewSet):
     queryset = models.Unit.objects.all()
@@ -488,6 +499,7 @@ class CustomerViewSet(TrackUserMixin,viewsets.ModelViewSet):
 
         return Response(data, status=status.HTTP_200_OK)
 
+
 class ListViewSet(TrackUserMixin, viewsets.ModelViewSet):
     queryset = models.List.objects.all()
     serializer_class = ListSerializer
@@ -540,13 +552,11 @@ class TestMethodViewSet(TrackUserMixin, viewsets.ModelViewSet):
         ).distinct()
 
     
-
 class ComponentViewSet(TrackUserMixin,viewsets.ModelViewSet):
     queryset = models.Component.objects.all()
     serializer_class = ComponentSerializer
     permission_classes = [IsAuthenticated,HasModulePermission]
     filter_backends = [GenericSearchFilter]
-
 
 
 class SampleFormViewSet(TrackUserMixin, viewsets.ModelViewSet):
@@ -584,9 +594,6 @@ class SampleFormViewSet(TrackUserMixin, viewsets.ModelViewSet):
 
         return Response({"type": field_property, "options": []})
 
-
-from django.shortcuts import get_object_or_404
-from datetime import datetime
 
 class SampleFormSchemaView(APIView):
     permission_classes = [IsAuthenticated, HasModulePermission]
@@ -630,6 +637,7 @@ class SampleFormSchemaView(APIView):
             "fields": field_meta
         })
 
+
 def convert_datetimes_to_strings(data):
     new_data = {}
     for k, v in data.items():
@@ -638,7 +646,6 @@ def convert_datetimes_to_strings(data):
         else:
             new_data[k] = v
     return new_data
-
 
 
 class SampleFormSubmitView(APIView):
@@ -654,73 +661,115 @@ class SampleFormSubmitView(APIView):
         serializer_class = build_dynamic_serializer(sample_form.fields.all())
         serializer = serializer_class(data=request.data)
 
-        if serializer.is_valid():
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-            all_entries = []
+        all_entries = []
 
-            for _ in range(repetition):
+        for _ in range(repetition):
 
-                entry = models.DynamicFormEntry.objects.create(
-                    form=sample_form,
-                    data={},
-                    logged_by=request.user
+            entry = models.DynamicFormEntry.objects.create(
+                form=sample_form,
+                data={},
+                logged_by=request.user
+            )
+
+            clean_data = {"form_id": sample_form.id}
+            auto_analysis_ids = set()   # 🔹 product based analyses
+
+            # ----------------------------------
+            #  HANDLE FORM FIELDS
+            # ----------------------------------
+            for field in sample_form.fields.all():
+
+                value = (
+                    request.FILES.getlist(field.field_name)
+                    if field.field_property == "attachment"
+                    else serializer.validated_data.get(field.field_name)
                 )
 
-                clean_data = {"form_id": sample_form.id}
+                # 1️⃣ ATTACHMENTS
+                if field.field_property == "attachment" and value:
+                    file_urls = []
+                    for f in value:
+                        attachment = models.DynamicFormAttachment.objects.create(
+                            entry=entry,
+                            field=field,
+                            file=f
+                        )
+                        file_urls.append(attachment.file.url)
+                    clean_data[field.field_name] = file_urls
+                    continue
 
-                for field in sample_form.fields.all():
+                # 2️⃣ DATETIME
+                if isinstance(value, datetime):
+                    clean_data[field.field_name] = value.isoformat()
+                    continue
 
-                    value = (
-                        request.FILES.getlist(field.field_name)
-                        if field.field_property == "attachment"
-                        else serializer.validated_data.get(field.field_name)
-                    )
+                # 3️⃣ LINK TO PRODUCT → AUTO ANALYSES
+                if (
+                    field.field_property == "link_to_table"
+                    and field.link_to_table == "app_product"
+                    and value
+                ):
+                    clean_data[field.field_name] = value
+                    try:
+                        product = models.Product.objects.get(id=value)
+                        product_analysis_ids = list(
+                            product.analyses.values_list("id", flat=True)
+                        )
+                        auto_analysis_ids.update(product_analysis_ids)
+                    except models.Product.DoesNotExist:
+                        pass
+                    continue
 
-                    if field.field_property == "attachment" and value:
-                        file_urls = []
-                        for f in value:
-                            attachment = models.DynamicFormAttachment.objects.create(
-                                entry=entry,
-                                field=field,
-                                file=f
-                            )
-                            file_urls.append(attachment.file.url)
+                # 4️⃣ NORMAL FIELD
+                clean_data[field.field_name] = value
 
-                        clean_data[field.field_name] = file_urls
+            # ----------------------------------
+            #  MANUAL + AUTO ANALYSES (DB ONLY)
+            # ----------------------------------
+            manual_analyses = request.data.getlist("analyses")
+            manual_ids = {int(x) for x in manual_analyses} if manual_analyses else set()
 
-                    elif isinstance(value, datetime):
-                        clean_data[field.field_name] = value.isoformat()
-                    else:
-                        clean_data[field.field_name] = value
+            final_analysis_ids = manual_ids.union(auto_analysis_ids)
 
-                analyses = request.data.getlist("analyses")
-                if analyses:
-                    analysis_ids = [int(x) for x in analyses]
-                    entry.analyses.set(models.Analysis.objects.filter(id__in=analysis_ids))
-                    clean_data["analyses"] = analysis_ids
+            if final_analysis_ids:
+                entry.analyses.set(
+                    models.Analysis.objects.filter(id__in=final_analysis_ids)
+                )
 
-                entry.data = clean_data
-                entry.save()
+                # 🔥 AUTO CREATE entry_analyses + sample_components
+                create_entry_analyses(entry, final_analysis_ids)
 
-                all_entries.append({
-                    "entry_id": entry.id,
-                    "data": entry.data
-                })
+            # ----------------------------------
+            #  SAVE ENTRY DATA (RESPONSE SAME)
+            # ----------------------------------
+            if manual_analyses:
+                clean_data["analyses"] = list(manual_ids)
 
-            message_lines = []
+            entry.data = clean_data
+            entry.save()
 
-            for entry in all_entries:
-                message_lines.append(f"Sample with id {entry['entry_id']} submitted successfully")
+            all_entries.append({
+                "entry_id": entry.id,
+                "data": entry.data
+            })
 
-            return Response({
-                "messages": message_lines,
-                "form_id": sample_form.id,
-                "repetition": repetition,
-                "entries": all_entries
-            }, status=status.HTTP_201_CREATED)
+        # ----------------------------------
+        #  RESPONSE (UNCHANGED)
+        # ----------------------------------
+        message_lines = [
+            f"Sample with id {entry['entry_id']} submitted successfully"
+            for entry in all_entries
+        ]
 
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
+        return Response({
+            "messages": message_lines,
+            "form_id": sample_form.id,
+            "repetition": repetition,
+            "entries": all_entries
+        }, status=status.HTTP_201_CREATED)
 
 
 class DynamicSampleFormEntryViewSet(TrackUserMixin,viewsets.ModelViewSet):
@@ -1517,13 +1566,6 @@ class CustomJSONEncoder(json.JSONEncoder):
         return super().default(obj)
 
 
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework import status
-from django.apps import apps
-from django.db import models
-import inflection
-
 class DynamicTableDataView(APIView):
     """
     POST request example:
@@ -1631,15 +1673,6 @@ class DynamicTableDataView(APIView):
             "data": data
         }, status=status.HTTP_200_OK)
 
-from django.shortcuts import get_object_or_404
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework import status
-
-from app import models
-from app.serializers import ComponentResultSerializer
-from app.mixins import TrackUserMixin
-
 
 class EntryAnalysesSchemaView(APIView):
     """
@@ -1683,7 +1716,7 @@ class EntryAnalysesSchemaView(APIView):
                 "components": comps
             })
 
-        return Response({"entry_id": entry.id, "analyses": analyses_data})
+        return Response({"entry_id": entry.id, "comment": entry.comment, "analyses": analyses_data})
 
 
 class AnalysisResultSubmitView(TrackUserMixin, APIView):
@@ -1949,19 +1982,16 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
         }, status=status.HTTP_200_OK)
 
 
-
 class SystemConfigurationListCreateView(generics.ListCreateAPIView):
     queryset = models.SystemConfiguration.objects.all()
     serializer_class = SystemConfigurationSerializer
     # permission_classes = [IsAdminUser]
 
 
-
 class SystemConfigurationDetailView(generics.RetrieveUpdateDestroyAPIView):
     queryset = models.SystemConfiguration.objects.all()
     serializer_class = SystemConfigurationSerializer
     # permission_classes = [IsAdminUser]
-
 
 
 class BulkConfigUpdateView(TrackUserMixin,APIView):
@@ -1999,7 +2029,6 @@ AGGREGATION_MAP = {
     "Sum": Sum,
     "Avg": Avg,
 }
-
 
 class MultiDynamicReportView(APIView):
     def post(self, request):
@@ -2439,7 +2468,6 @@ class RenderReportView(APIView):
         return HttpResponse(pdf_data, content_type="application/pdf")
 
 
-
 class RenderRequestReportView(APIView):
     """
     Render stored template for DynamicRequestEntry (Request Form Entry).
@@ -2549,7 +2577,6 @@ class ReportTemplateViewSet(viewsets.ModelViewSet):
 class QueryReportTemplateViewSet(viewsets.ModelViewSet):
     queryset = models.QueryReportTemplate.objects.all().order_by('-id')
     serializer_class = QueryReportTemplateSerializer
-
 
 
 # analytics/views.py
