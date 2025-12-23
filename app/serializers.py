@@ -1067,7 +1067,7 @@ class DynamicFormEntrySerializer(serializers.ModelSerializer):
     class Meta:
         model = models.DynamicFormEntry
         fields = [
-            "id", "form_name", "form_id", "data",
+            "id", "comment","form_name", "form_id", "data",
             "status", "analyses_data", "analyst_id", "analyst_name", "created_at", "logged_by", "logged_by_name"
         ]
 
