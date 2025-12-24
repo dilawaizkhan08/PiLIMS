@@ -1244,7 +1244,10 @@ class RequestFormSubmitView(TrackUserMixin,APIView):
                     sample_entry.save()
 
                     # append each repeated sample entry separately
-                    sample_clean_list.append(clean_sample)
+                    sample_clean_list.append({
+                        "id": sample_entry.id,
+                        **clean_sample
+                    })
 
         # ------------------ SAVE ENTRY ------------------
         entry.data = {
@@ -1409,7 +1412,9 @@ class DynamicRequestFormEntryViewSet(TrackUserMixin,viewsets.ModelViewSet):
         # ---------------- Save entry ----------------
         entry.data = {
             "request_form": req_clean_data,
-            "sample_forms": [{"id": e.id} for e in sample_entry_list]
+            "sample_forms": [
+                {"id": e.id, **e.data} for e in sample_entry_list
+            ]
         }
         entry.save()
 
