@@ -29,6 +29,8 @@ router.register(r'request-forms', views.RequestFormViewSet, basename='requestfor
 router.register(r"request-entries", views.DynamicRequestFormEntryViewSet, basename='request-entries')
 
 router.register(r'products', views.ProductViewSet, basename='products')
+router.register(r'sampling-points', views.SamplingPointViewSet, basename='sampling-point')
+router.register(r'grades', views.GradeViewSet, basename='grade')
 
 router.register(r'roles', views.RoleViewSet,  basename="roles")
 router.register(r'modules', views.ModuleViewSet, basename="modules")

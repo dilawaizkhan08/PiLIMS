@@ -1835,36 +1835,62 @@ class CustomerSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Invalid phone number. Use format like +14155552671.")
         return phonenumbers.format_number(parsed, phonenumbers.PhoneNumberFormat.E164)
 
-from rest_framework import serializers
-from django.db import transaction
-from app import models
 
-class ProductAnalysisSerializer(serializers.Serializer):
+class SamplingPointSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = models.SamplingPoint
+        fields = ['id', 'name']
+
+class GradeSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = models.Grade
+        fields = ['id', 'name']
+
+
+
+class ProductSamplingGradeAnalysisSerializer(serializers.Serializer):
     analysis_id = serializers.IntegerField()
     component_ids = serializers.ListField(
-        child=serializers.IntegerField(), required=False
+        child=serializers.IntegerField(),
+        required=False
     )
 
+
+class ProductSamplingGradeSerializer(serializers.Serializer):
+    sampling_point_id = serializers.IntegerField()
+    grade_id = serializers.IntegerField()
+    analyses = ProductSamplingGradeAnalysisSerializer(many=True)
+
+
+# ----------------------------------
+# MAIN PRODUCT SERIALIZER
+# ----------------------------------
 
 class ProductSerializer(serializers.ModelSerializer):
     user_groups = UserGroupSerializer(many=True, read_only=True)
 
     user_groups_ids = serializers.PrimaryKeyRelatedField(
-        many=True, queryset=models.UserGroup.objects.all(), required=False
+        many=True,
+        queryset=models.UserGroup.objects.all(),
+        required=False
     )
 
-    analyses_data = ProductAnalysisSerializer(
-        many=True, write_only=True, required=False
+    analyses_data = ProductSamplingGradeSerializer(
+        many=True,
+        write_only=True,
+        required=False
     )
 
     class Meta:
         model = models.Product
         fields = [
-            "id", "name", "version",
+            "id",
+            "name",
+            "version",
             "description",
             "user_groups",
             "user_groups_ids",
-            "analyses_data"
+            "analyses_data",
         ]
 
     # ----------------------------
@@ -1877,7 +1903,7 @@ class ProductSerializer(serializers.ModelSerializer):
         product = models.Product.objects.create(**validated_data)
         product.user_groups.set(user_groups)
 
-        self._save_product_analyses(product, analyses_data)
+        self._save_sampling_grade_analyses(product, analyses_data)
         return product
 
     # ----------------------------
@@ -1887,123 +1913,65 @@ class ProductSerializer(serializers.ModelSerializer):
         analyses_data = validated_data.pop("analyses_data", None)
         user_groups = validated_data.pop("user_groups_ids", None)
 
-        # Update simple fields
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
         instance.save()
 
-        # Update user groups if provided
         if user_groups is not None:
             instance.user_groups.set(user_groups)
 
         if analyses_data is not None:
-            payload_analysis_ids = [a["analysis_id"] for a in analyses_data]
+            for psg in instance.sampling_grades.all():
+                for pa in psg.analyses.all():
+                    pa.sample_components.clear()
+                    pa.delete()
+                psg.delete()
 
-            # 1️⃣ Remove ProductAnalyses not in payload (and their components safely)
-            for pa in instance.productanalysis_set.exclude(analysis_id__in=payload_analysis_ids):
-                pa.sample_components.all().delete()
-                pa.delete()
-
-            # 2️⃣ Sync SampleComponents for each analysis
-            for analysis_item in analyses_data:
-                analysis_id = analysis_item["analysis_id"]
-                component_ids = analysis_item.get("component_ids", [])
-
-                analysis = models.Analysis.objects.get(id=analysis_id)
-
-                pa, created = models.ProductAnalysis.objects.get_or_create(
-                    product=instance,
-                    analysis=analysis
-                )
-
-                self._sync_sample_components(pa, component_ids)
+            self._save_sampling_grade_analyses(instance, analyses_data)
 
         return instance
 
     # ----------------------------
-    # Sync SampleComponents (Add + Remove)
+    # SAVE STRUCTURE
     # ----------------------------
-    def _sync_sample_components(self, pa, component_ids):
-        """
-        - Add new components
-        - Remove components not in payload
-        - Keep existing intact
-        - Handle function parameters safely
-        """
-        existing = {sc.component_id: sc for sc in pa.sample_components.all()}
-        existing_ids = set(existing.keys())
-        payload_ids = set(component_ids)
-
-        # Remove components not in payload
-        to_remove = existing_ids - payload_ids
-        if to_remove:
-            # Delete related function parameters first
-            models.SampleComponentFunctionParameter.objects.filter(
-                sample_component__in=[existing[cid].id for cid in to_remove]
-            ).delete()
-            # Then delete SampleComponents
-            pa.sample_components.filter(component_id__in=to_remove).delete()
-
-        # Add new components
-        to_add = payload_ids - existing_ids
-        replica_map = {cid: existing[cid] for cid in existing_ids & payload_ids}  # keep existing
-        for cid in to_add:
-            real = models.Component.objects.get(id=cid)
-            replica = models.SampleComponent.objects.create(
-                entry_analysis=None,
-                component=real,
-                name=real.name,
-                unit=real.unit,
-                minimum=real.minimum,
-                maximum=real.maximum,
-                decimal_places=real.decimal_places,
-                rounding=real.rounding,
-                description=real.description,
-                optional=real.optional,
-                calculated=real.calculated,
-                spec_limits=real.spec_limits,
-                custom_function=real.custom_function if real.calculated else None,
+    def _save_sampling_grade_analyses(self, product, analyses_data):
+        for sg in analyses_data:
+            sampling_point = models.SamplingPoint.objects.get(
+                id=sg["sampling_point_id"]
             )
-            replica_map[real.id] = replica
+            grade = models.Grade.objects.get(
+                id=sg["grade_id"]
+            )
 
-        # Update function parameters for all relevant components
-        for real in models.Component.objects.filter(id__in=payload_ids):
-            replica = replica_map[real.id]
-            for fp in real.function_parameters.all():
-                mapped_real = fp.mapped_component
-                mapped_replica = replica_map.get(mapped_real.id) if mapped_real else None
-                if mapped_real and mapped_replica:
-                    models.SampleComponentFunctionParameter.objects.get_or_create(
-                        sample_component=replica,
-                        parameter=fp.parameter,
-                        mapped_sample_component=mapped_replica,
-                    )
-
-        pa.sample_components.set(replica_map.values())
-
-    # ----------------------------
-    # SAVE SampleComponents for CREATE
-    # ----------------------------
-    def _save_product_analyses(self, product, analyses_data):
-        for analysis_item in analyses_data:
-            analysis_id = analysis_item["analysis_id"]
-            component_ids = analysis_item.get("component_ids", [])
-
-            analysis = models.Analysis.objects.get(id=analysis_id)
-
-            pa = models.ProductAnalysis.objects.create(
+            psg = models.ProductSamplingGrade.objects.create(
                 product=product,
-                analysis=analysis
+                sampling_point=sampling_point,
+                grade=grade,
             )
 
-            if component_ids:
-                self._create_sample_component_replicas(pa, component_ids)
+            for analysis_item in sg["analyses"]:
+                self._save_analysis(psg, analysis_item)
+
+    def _save_analysis(self, psg, analysis_item):
+        analysis = models.Analysis.objects.get(
+            id=analysis_item["analysis_id"]
+        )
+
+        pa = models.ProductSamplingGradeAnalysis.objects.create(
+            product_sampling_grade=psg,
+            analysis=analysis
+        )
+
+        component_ids = analysis_item.get("component_ids", [])
+        if component_ids:
+            self._create_sample_component_replicas(pa, component_ids)
 
     # ----------------------------
     # CREATE SampleComponent replicas
     # ----------------------------
     def _create_sample_component_replicas(self, pa, component_ids):
         replica_map = {}
+
         for cid in component_ids:
             real = models.Component.objects.get(id=cid)
             replica = models.SampleComponent.objects.create(
@@ -2023,12 +1991,11 @@ class ProductSerializer(serializers.ModelSerializer):
             )
             replica_map[real.id] = replica
 
-        # Clone function parameters
         for real in models.Component.objects.filter(id__in=component_ids):
             replica = replica_map[real.id]
             for fp in real.function_parameters.all():
                 mapped_real = fp.mapped_component
-                mapped_replica = replica_map.get(mapped_real.id)
+                mapped_replica = replica_map.get(mapped_real.id) if mapped_real else None
                 if mapped_real and mapped_replica:
                     models.SampleComponentFunctionParameter.objects.create(
                         sample_component=replica,
@@ -2039,7 +2006,7 @@ class ProductSerializer(serializers.ModelSerializer):
         pa.sample_components.set(replica_map.values())
 
     # ----------------------------
-    # REPRESENTATION (GET)
+    # GET RESPONSE
     # ----------------------------
     def to_representation(self, instance):
         data = super().to_representation(instance)
@@ -2050,27 +2017,21 @@ class ProductSerializer(serializers.ModelSerializer):
 
         analyses_output = []
 
-        for pa in instance.productanalysis_set.all():
-
-            # Sample component replica IDs
-            sample_component_ids = list(
-                pa.sample_components.values_list("id", flat=True)
-            )
-
-            # Original component IDs (payload)
-            original_component_ids = list(
-                pa.sample_components.values_list("component_id", flat=True)
-            )
-
-            analyses_output.append({
-                "analysis_id": pa.analysis.id,
-                "component_ids": original_component_ids,     # <-- payload component IDs
-                "sample_component_ids": sample_component_ids # <-- replica IDs
-            })
+        for psg in instance.sampling_grades.all():
+            for pa in psg.analyses.all():
+                analyses_output.append({
+                    "sampling_point_id": psg.sampling_point.id,
+                    "sampling_point_name": psg.sampling_point.name,
+                    "grade_id": psg.grade.id,
+                    "grade_name": psg.grade.name,
+                    "analysis_id": pa.analysis.id,
+                    "analysis_name": pa.analysis.name if hasattr(pa.analysis, 'name') else str(pa.analysis),
+                    "component_ids": list(pa.sample_components.values_list("component_id", flat=True)),
+                    "sample_component_ids": list(pa.sample_components.values_list("id", flat=True))
+                })
 
         data["analyses_data"] = analyses_output
         return data
-
 
 
 class PermissionSerializer(serializers.ModelSerializer):

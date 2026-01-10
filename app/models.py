@@ -184,7 +184,7 @@ class ComponentFunctionParameter(BaseModel):
     class Meta:
         unique_together = ("component", "parameter")
 
-# ============================================
+
 
 # ========= Functions =====================
 
@@ -207,8 +207,7 @@ class CustomFunction(BaseModel):
 
     def __str__(self):
         return self.name
-    
-# ==============================================
+
 
 # =============  Instruments ==============
 
@@ -337,6 +336,9 @@ class DynamicFormEntry(BaseModel):
 
     form = models.ForeignKey(SampleForm, on_delete=models.CASCADE)
     data = models.JSONField()
+    secondary_id = models.CharField(
+        max_length=50, blank=True, db_index=True
+    )
 
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="initiated")  # ✅ add this
 
@@ -350,8 +352,19 @@ class DynamicFormEntry(BaseModel):
     created_at = models.DateTimeField(auto_now_add=True)
     analyses = models.ManyToManyField("Analysis", through="DynamicFormEntryAnalysis", related_name="entries", blank=True)
 
+    def save(self, *args, **kwargs):
+        is_new = self.pk is None
+        super().save(*args, **kwargs)
+
+        # pk milne ke baad secondary_id generate karo
+        if is_new and not self.secondary_id:
+            timestamp = self.created_at.strftime("%Y%m%d%H%M%S")
+            self.secondary_id = f"{timestamp}-{self.id}"
+            super().save(update_fields=["secondary_id"])
+
     def __str__(self):
         return f"Entry {self.id} - {self.form.sample_name} ({self.status})"
+
 
 def attachment_upload_path(instance, filename):
     return f"uploads/sample/{filename}"
@@ -531,28 +544,90 @@ class DynamicRequestAttachment(models.Model):
         return f"{self.field.field_name} - {self.file.name}"
 
 
+
 class Product(BaseModel):
     name = models.CharField(max_length=255)
     version = models.PositiveIntegerField(default=1)
-    user_groups = models.ManyToManyField(UserGroup, blank=True, null=True)
     description = models.TextField(blank=True)
 
-    analyses = models.ManyToManyField('Analysis', through='ProductAnalysis')
+    user_groups = models.ManyToManyField(
+        UserGroup,
+        blank=True,
+        related_name="products"
+    )
+    def __str__(self):
+        return self.name
+
+
+class SamplingPoint(BaseModel):
+    name = models.CharField(max_length=255)
 
     def __str__(self):
         return self.name
 
 
-class ProductAnalysis(BaseModel):
-    product = models.ForeignKey(Product, on_delete=models.CASCADE)
-    analysis = models.ForeignKey(Analysis, on_delete=models.CASCADE)
-    sample_components = models.ManyToManyField(
-        "SampleComponent", blank=True
-    )
-
+class Grade(BaseModel):
+    name = models.CharField(max_length=255)
 
     def __str__(self):
-        return f"{self.product.name} - {self.analysis.name}"
+        return self.name
+
+
+class ProductSamplingGrade(BaseModel):
+    product = models.ForeignKey(
+        Product,
+        on_delete=models.CASCADE,
+        related_name="sampling_grades"
+    )
+    sampling_point = models.ForeignKey(
+        SamplingPoint,
+        on_delete=models.CASCADE
+    )
+    grade = models.ForeignKey(
+        Grade,
+        on_delete=models.CASCADE
+    )
+
+    class Meta:
+        unique_together = ("product", "sampling_point", "grade")
+
+    def __str__(self):
+        return f"{self.product} | {self.sampling_point} | {self.grade}"
+
+
+class ProductSamplingGradeAnalysis(BaseModel):
+    product_sampling_grade = models.ForeignKey(
+        ProductSamplingGrade,
+        on_delete=models.CASCADE,
+        related_name="analyses"
+    )
+    analysis = models.ForeignKey(
+        Analysis,
+        on_delete=models.CASCADE
+    )
+
+    sample_components = models.ManyToManyField(
+        SampleComponent,
+        blank=True,
+        related_name="product_sampling_grade_analyses"
+    )
+
+    class Meta:
+        unique_together = ("product_sampling_grade", "analysis")
+
+    def __str__(self):
+        return f"{self.product_sampling_grade} → {self.analysis}"
+
+# class ProductAnalysis(BaseModel):
+#     product = models.ForeignKey(Product, on_delete=models.CASCADE)
+#     analysis = models.ForeignKey(Analysis, on_delete=models.CASCADE)
+#     sample_components = models.ManyToManyField(
+#         "SampleComponent", blank=True
+#     )
+
+
+#     def __str__(self):
+#         return f"{self.product.name} - {self.analysis.name}"
 
 
 PERMISSION_CHOICES = [
@@ -561,7 +636,6 @@ PERMISSION_CHOICES = [
     ("update", "Update"),
     ("delete", "Delete"),
 ]
-
 
 class Role(models.Model):
     name = models.CharField(max_length=100, unique=True)

@@ -1524,6 +1524,17 @@ class DynamicRequestFormEntryViewSet(TrackUserMixin,viewsets.ModelViewSet):
         return Response(data, status=status.HTTP_200_OK)
 
 
+
+class SamplingPointViewSet(viewsets.ModelViewSet):
+    queryset = models.SamplingPoint.objects.all()
+    serializer_class = SamplingPointSerializer
+    permission_classes = [IsAuthenticated]
+
+class GradeViewSet(viewsets.ModelViewSet):
+    queryset = models.Grade.objects.all()
+    serializer_class = GradeSerializer
+    permission_classes = [IsAuthenticated]
+
 class ProductViewSet(TrackUserMixin,viewsets.ModelViewSet):
     queryset = models.Product.objects.all()
     serializer_class = ProductSerializer
@@ -2475,8 +2486,9 @@ class RenderReportView(APIView):
 
 class RenderRequestReportView(APIView):
     """
-    Render stored template for DynamicRequestEntry (Request Form Entry).
-    Returns rendered HTML and downloadable PDF file.
+    GET /api/render-request-report/?template_id=&request_entry_id=&download=true
+    → Executes SQL with request_entry_id
+    → Renders SQL result in Jinja2 HTML + CSS → PDF
     """
 
     def get(self, request):
@@ -2490,71 +2502,57 @@ class RenderRequestReportView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
+        # 1️⃣ Get template
         try:
-            report_template = models.ReportTemplate.objects.get(id=template_id)
-        except models.ReportTemplate.DoesNotExist:
+            template_obj = models.QueryReportTemplate.objects.get(id=template_id)
+        except models.QueryReportTemplate.DoesNotExist:
             return Response({"error": "Template not found"}, status=status.HTTP_404_NOT_FOUND)
 
+        # 2️⃣ Check Request Entry exists
         try:
-            entry = (
-                models.DynamicRequestEntry.objects
-                .select_related("request_form", "analyst", "logged_by")
-                .prefetch_related(
-                    "analyses",
-                    "analyses__components",
-                    "request_form__sample_form",
-                    "request_form__user_groups",
-                )
-                .get(id=request_entry_id)
-            )
+            entry = models.DynamicRequestEntry.objects.get(id=request_entry_id)
         except models.DynamicRequestEntry.DoesNotExist:
-            return Response({"error": "Request entry not found"}, status=status.HTTP_404_NOT_FOUND)
+            return Response(
+                {"error": f"DynamicRequestEntry {request_entry_id} not found"},
+                status=status.HTTP_404_NOT_FOUND
+            )
 
-        # Build context
-        context_data = {}
-        for field in report_template.fields:
-            label = field.get("label", "")
-            path = field.get("path", "")
-            safe_key = slugify(label).replace("-", "_").replace(".", "_")
-            value = get_nested_value(entry, path)
-            context_data[safe_key] = value
+        # 3️⃣ Execute SQL
+        try:
+            params = {"request_entry_id": int(request_entry_id)}
+            result = self.execute_query(template_obj.sql_query, params)
+            if not result:
+                return Response({"error": "No data returned from SQL"}, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            return Response(
+                {"error": f"SQL execution failed: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
-        # Render HTML
-        html_template = Template(report_template.html_content)
-        rendered_html = html_template.render(Context(context_data))
-        if report_template.css_content:
-            rendered_html = f"<style>{report_template.css_content}</style>\n{rendered_html}"
+        # 4️⃣ Context (IMPORTANT)
+        context_data = {
+            "rows": result,
+            "request": entry,
+            **result[0]
+        }
 
-        # Generate PDF with reduced margins
+        # 5️⃣ Render HTML
+        jinja_template = JinjaTemplate(template_obj.html_content)
+        rendered_html = jinja_template.render(context_data)
+
+        # 6️⃣ CSS
+        default_css = """
+        @page { size: A4; margin: 10mm; }
+        body { font-family: Arial, sans-serif; font-size: 12px; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { border: 1px solid #000; padding: 6px; text-align: center; }
+        th { background-color: #f2f2f2; }
+        """
+        combined_css = f"{default_css}\n{template_obj.css_content or ''}"
+
+        # 7️⃣ PDF
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_pdf:
             temp_path = temp_pdf.name
-
-        custom_css = """
-        @page {
-            size: A4;
-            margin: 10mm;
-        }
-        body {
-            margin: 0;
-            padding: 5px;
-            box-sizing: border-box;
-        }
-        table {
-            width: 100%;
-            border-collapse: collapse;
-        }
-        th, td {
-            border: 1px solid #000;
-            padding: 6px;
-            text-align: center;
-            font-size: 12px;
-        }
-        th {
-            background-color: #f2f2f2;
-        }
-        """
-
-        combined_css = f"{custom_css}\n{report_template.css_content or ''}"
 
         HTML(string=rendered_html, base_url=request.build_absolute_uri("/")).write_pdf(
             target=temp_path,
@@ -2565,18 +2563,28 @@ class RenderRequestReportView(APIView):
             pdf_data = f.read()
         os.remove(temp_path)
 
-        # ✅ Handle download flag
-        if download:
-            response = HttpResponse(pdf_data, content_type="application/pdf")
-            response["Content-Disposition"] = f'attachment; filename="request_report_{request_entry_id}.pdf"'
-            return response
+        # 8️⃣ Response
+        response = HttpResponse(pdf_data, content_type="application/pdf")
+        filename = f"request_report_{request_entry_id}.pdf"
+        response["Content-Disposition"] = (
+            f'attachment; filename="{filename}"'
+            if download else f'inline; filename="{filename}"'
+        )
+        return response
 
-        return HttpResponse(pdf_data, content_type="application/pdf")
-    
+    # ---------------------------
+    # SQL Executor
+    # ---------------------------
+    def execute_query(self, sql_query, params):
+        with connection.cursor() as cursor:
+            cursor.execute(sql_query, params)
+            columns = [col[0] for col in cursor.description]
+            return [dict(zip(columns, row)) for row in cursor.fetchall()]
 
-class ReportTemplateViewSet(viewsets.ModelViewSet):
-    queryset = models.ReportTemplate.objects.all().order_by('-created_at')
-    serializer_class = ReportTemplateSerializer
+
+# class ReportTemplateViewSet(viewsets.ModelViewSet):
+#     queryset = models.ReportTemplate.objects.all().order_by('-created_at')
+#     serializer_class = ReportTemplateSerializer
 
 
 class QueryReportTemplateViewSet(viewsets.ModelViewSet):
