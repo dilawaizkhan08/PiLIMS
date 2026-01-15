@@ -1583,53 +1583,129 @@ class CustomJSONEncoder(json.JSONEncoder):
 
 
 class DynamicTableDataView(APIView):
-    """
-    POST request example:
-    {
-        "table_name": "app_user",
-        "fields": ["id", "email", "role"],  # optional
-        "computed_fields": {                # optional
-            "full_name": {
-                "type": "concat",
-                "fields": ["first_name", "last_name"]
-            },
-            "total_score": {
-                "type": "sum",
-                "fields": ["score1", "score2"]
-            }
-        }
-    }
-    """
-    permission_classes = []  # add permissions later if needed
+    permission_classes = []
 
     def post(self, request, *args, **kwargs):
         table_name = request.data.get("table_name")
-        requested_fields = request.data.get("fields", None)
+        requested_fields = request.data.get("fields")
         computed_fields = request.data.get("computed_fields", {})
+        product_id = request.data.get("product_id")
 
         if not table_name:
-            return Response({"error": "table_name is required"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"error": "table_name is required"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
-        # ---------------- Get model ---------------- #
+        # =========================================================
+        # 🔴 SPECIAL CASE: app_grade & app_samplingpoint
+        # =========================================================
+        if table_name in ["app_grade", "app_samplingpoint"]:
+
+            if not product_id:
+                return Response(
+                    {"error": "product_id is required for this table"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            try:
+                product = models.Product.objects.get(id=product_id)
+            except models.Product.DoesNotExist:
+                return Response(
+                    {"error": "Product not found"},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+
+            psg_qs = models.ProductSamplingGrade.objects.filter(
+                product_id=product_id
+            )
+
+            data = []
+
+            # ---------- GRADES ----------
+            if table_name == "app_grade":
+                rows = (
+                    psg_qs
+                    .select_related("grade")
+                    .values(
+                        "grade__id",
+                        "grade__name"
+                    )
+                    .distinct()
+                )
+
+                for r in rows:
+                    data.append({
+                        "id": r["grade__id"],
+                        "name": r["grade__name"],
+                        "product": {
+                            "id": product.id,
+                            "name": product.name,
+                            "version": product.version,
+                        }
+                    })
+
+            # ---------- SAMPLING POINTS ----------
+            elif table_name == "app_samplingpoint":
+                rows = (
+                    psg_qs
+                    .select_related("sampling_point")
+                    .values(
+                        "sampling_point__id",
+                        "sampling_point__name"
+                    )
+                    .distinct()
+                )
+
+                for r in rows:
+                    data.append({
+                        "id": r["sampling_point__id"],
+                        "name": r["sampling_point__name"],
+                        "product": {
+                            "id": product.id,
+                            "name": product.name,
+                            "version": product.version,
+                        }
+                    })
+
+            return Response({
+                "table": table_name,
+                "count": len(data),
+                "data": data
+            }, status=status.HTTP_200_OK)
+
+        # =========================================================
+        # 🟢 DEFAULT / GENERIC DYNAMIC HANDLER
+        # =========================================================
         try:
-            if "_" in table_name:
-                app_label, model_snake = table_name.split("_", 1)
-                model_name = inflection.camelize(model_snake)
-            else:
-                return Response({"error": f"Invalid table_name format: {table_name}"}, status=status.HTTP_400_BAD_REQUEST)
+            if "_" not in table_name:
+                return Response(
+                    {"error": f"Invalid table_name format: {table_name}"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
 
+            app_label, model_snake = table_name.split("_", 1)
+            model_name = inflection.camelize(model_snake)
             model = apps.get_model(app_label, model_name)
+
         except LookupError:
-            return Response({"error": f"Model '{table_name}' not found"}, status=status.HTTP_404_NOT_FOUND)
+            return Response(
+                {"error": f"Model '{table_name}' not found"},
+                status=status.HTTP_404_NOT_FOUND
+            )
 
         objects = model.objects.all()
         data = []
 
-        # ---------------- Build Data ---------------- #
+        all_field_names = [
+            f.name for f in model._meta.get_fields()
+            if not f.auto_created or f.concrete
+        ]
+
+        fields_to_use = requested_fields or all_field_names
+
         for obj in objects:
             row = {}
-            all_field_names = [f.name for f in model._meta.get_fields() if not f.auto_created or f.concrete]
-            fields_to_use = requested_fields or all_field_names
 
             for field_name in fields_to_use:
                 try:
@@ -1638,48 +1714,46 @@ class DynamicTableDataView(APIView):
 
                     # ManyToMany
                     if field.many_to_many:
-                        value = [str(r) for r in value.all()]
+                        value = [str(v) for v in value.all()]
 
                     # ForeignKey / OneToOne
                     elif field.one_to_one or field.many_to_one:
                         if value:
-                            if hasattr(value, "name"):
-                                value = value.name
-                            elif hasattr(value, "username"):
-                                value = value.username
-                            elif hasattr(value, "email"):
-                                value = value.email
+                            for attr in ["name", "username", "email"]:
+                                if hasattr(value, attr):
+                                    value = getattr(value, attr)
+                                    break
                             else:
                                 value = str(value)
                         else:
                             value = None
 
-                    # File / Image fields
+                    # File / Image
                     elif isinstance(field, (models.FileField, models.ImageField)):
-                        value = value.url if value and hasattr(value, "url") else None
+                        value = value.url if value else None
 
-                    # Normal field
-                    else:
-                        value = value if value not in [None, ""] else None
-
-                    row[field_name] = value
+                    row[field_name] = value if value not in ["", None] else None
 
                 except Exception:
-                    # if it's not a real model field (e.g. @property)
                     val = getattr(obj, field_name, None)
                     row[field_name] = str(val) if val is not None else None
 
-            # ---------------- Computed Fields ---------------- #
+            # -------- Computed Fields --------
             for new_field, operation in computed_fields.items():
                 try:
                     if operation["type"] == "sum":
-                        row[new_field] = sum([(getattr(obj, f, 0) or 0) for f in operation["fields"]])
+                        row[new_field] = sum(
+                            (getattr(obj, f, 0) or 0)
+                            for f in operation["fields"]
+                        )
                     elif operation["type"] == "concat":
-                        row[new_field] = " ".join([str(getattr(obj, f, "") or "") for f in operation["fields"]]).strip()
+                        row[new_field] = " ".join(
+                            str(getattr(obj, f, "") or "")
+                            for f in operation["fields"]
+                        ).strip()
                 except Exception:
                     row[new_field] = None
 
-            # always include ID
             row["id"] = obj.pk
             data.append(row)
 
@@ -2798,8 +2872,15 @@ class AnalyticsAPIView(APIView):
         comp_numeric_avg = float(comp_numeric_avg) if comp_numeric_avg is not None else None
 
         product_analysis_counts = (
-            models.Product.objects.annotate(analysis_count=Count("analyses")).order_by("-analysis_count")[:10]
+            models.Product.objects.annotate(
+                analysis_count=Count(
+                    "sampling_grades__analyses",
+                    distinct=True
+                )
+            )
+            .order_by("-analysis_count")[:10]
         )
+
         product_analysis = [
             {"product": p.name, "analysis_count": p.analysis_count} for p in product_analysis_counts
         ]
