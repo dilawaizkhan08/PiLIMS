@@ -715,12 +715,19 @@ class SampleFormSubmitView(APIView):
                     clean_data[field.field_name] = value
                     try:
                         product = models.Product.objects.get(id=value)
-                        product_analysis_ids = list(
-                            product.analyses.values_list("id", flat=True)
+
+                        product_analysis_ids = (
+                            models.ProductSamplingGradeAnalysis.objects
+                            .filter(product_sampling_grade__product=product)
+                            .values_list("analysis_id", flat=True)
+                            .distinct()
                         )
+
                         auto_analysis_ids.update(product_analysis_ids)
+
                     except models.Product.DoesNotExist:
                         pass
+
                     continue
 
                 # 4️⃣ NORMAL FIELD
