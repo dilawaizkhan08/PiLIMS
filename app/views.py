@@ -74,6 +74,8 @@ from rest_framework import status
 from app import models
 from app.serializers import ComponentResultSerializer
 from app.mixins import TrackUserMixin
+from app.user_limit import check_user_limit
+
 
 
 def get_config(key, default=None):
@@ -87,9 +89,9 @@ class RegisterView(views.APIView):
     def post(self, request, *args, **kwargs):
         serializer = RegisterSerializer(data=request.data)
         if serializer.is_valid():
+            check_user_limit()
             user = serializer.save()
 
-            # Generate auth token
             token, _ = Token.objects.get_or_create(user=user)
             user_data = UserSerializer(user, context={'request': request}).data
 
@@ -178,7 +180,7 @@ class UserViewSet(TrackUserMixin, viewsets.ModelViewSet):
         return User.objects.filter(created_by=self.request.user)
 
     def perform_create(self, serializer):
-        # Set the creator of the new user
+        check_user_limit()
         serializer.save(created_by=self.request.user)
 
     def get_object(self):
@@ -193,6 +195,8 @@ class UserViewSet(TrackUserMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=["post"], url_path="toggle-activation")
     def toggle_activation(self, request, pk=None):
         user = self.get_object()
+        if not user.is_active:
+            check_user_limit()
         user.is_active = not user.is_active
         user.save()
 

@@ -21,7 +21,9 @@ load_dotenv()
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-
+LICENSE_VALID = False        # by default locked
+LICENSE_DATA = None          # no license loaded yet
+LICENSE_ERROR = "License not validated"
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/4.0/howto/deployment/checklist/
@@ -80,7 +82,9 @@ INSTALLED_APPS = [
 ]
 # Project applications
 INSTALLED_APPS += [
-    "app",
+    # "app",
+    "app.apps.AppConfig", 
+
 ]
 # Third party applications
 INSTALLED_APPS += [
@@ -169,12 +173,14 @@ CRISPY_TEMPLATE_PACK = "uni_form"
 MIDDLEWARE = [
     "corsheaders.middleware.CorsMiddleware",
     "django.middleware.security.SecurityMiddleware",
+    "app.middleware.LicenseMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
-    "django.contrib.auth.middleware.AuthenticationMiddleware",  # default auth
+    "django.contrib.auth.middleware.AuthenticationMiddleware", 
     "app.middleware.CurrentUserMiddleware", 
+
     
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
