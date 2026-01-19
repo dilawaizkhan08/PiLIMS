@@ -18,26 +18,14 @@ from rest_framework.decorators import action
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.filters import SearchFilter
 from django.contrib.auth.models import update_last_login
-from rest_framework.parsers import MultiPartParser, FormParser
-
 from django.contrib.auth import authenticate
 from .models import User
 from .serializers import *
-
 import ast
 from rest_framework import serializers, viewsets
-from rest_framework.decorators import action
-
 from django.shortcuts import get_object_or_404
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from datetime import datetime
-from . import models
+from app import models
 from .serializers import build_dynamic_request_serializer, build_dynamic_serializer
-
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework import status
 from django.apps import apps
 from django.core.serializers import serialize
 import json
@@ -45,36 +33,31 @@ from datetime import datetime, date
 import inflection
 from rest_framework import viewsets, mixins
 from django.db.models import F
-from django.apps import apps
 from app.mixins import TrackUserMixin
 from django.http import HttpResponse
 import csv
 from io import StringIO
 from weasyprint import HTML, CSS
 import tempfile
-import os
-from django.db.models import Count, Sum, Avg, Q
+import os,base64
+from django.db.models import Count, Sum, Avg, Q, F, ExpressionWrapper, DurationField
 from .filters import GenericSearchFilter
 from .utility import create_entry_analyses
-from .serializers import build_dynamic_serializer
-from django.shortcuts import get_object_or_404
-from datetime import datetime
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework import status
-from django.apps import apps
-from django.db import models
-import inflection
 
-from django.shortcuts import get_object_or_404
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework import status
-
-from app import models
 from app.serializers import ComponentResultSerializer
-from app.mixins import TrackUserMixin
 from app.user_limit import check_user_limit
+from django.template import Template, Context
+from django.utils.text import slugify
+from django.db.models.query import QuerySet
+from datetime import timedelta
+from django.db.models.functions import TruncMonth, Now
+import calendar
+from django.db import connection
+from django.utils.decorators import method_decorator
+from django.views.decorators.csrf import csrf_exempt
+from jinja2 import Template as JinjaTemplate
+import logging
+logger = logging.getLogger(__name__)
 
 
 
@@ -2358,15 +2341,6 @@ class HTMLToPDFView(APIView):
 
 
 
-# views_report_templates.py
-from django.template import Template, Context
-from django.utils.text import slugify
-from django.db.models.query import QuerySet
-import tempfile, os, base64
-import logging
-logger = logging.getLogger(__name__)
-
-
 def get_nested_value(obj, attr_path):
     """
     Robust resolver for nested Django ORM paths.
@@ -2667,25 +2641,10 @@ class RenderRequestReportView(APIView):
             return [dict(zip(columns, row)) for row in cursor.fetchall()]
 
 
-# class ReportTemplateViewSet(viewsets.ModelViewSet):
-#     queryset = models.ReportTemplate.objects.all().order_by('-created_at')
-#     serializer_class = ReportTemplateSerializer
-
-
 class QueryReportTemplateViewSet(viewsets.ModelViewSet):
     queryset = models.QueryReportTemplate.objects.all().order_by('-id')
     serializer_class = QueryReportTemplateSerializer
 
-
-# analytics/views.py
-from datetime import timedelta
-from django.utils import timezone
-from django.db.models import Count, Avg, F, ExpressionWrapper, DurationField
-from django.db.models.functions import TruncMonth, Now
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated
-import calendar
 
 STATUS_CHOICES = [
     ("initiated", "Initiated"),
@@ -2935,18 +2894,6 @@ class AnalyticsAPIView(APIView):
         return Response(payload)
 
 
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework import status
-from django.http import HttpResponse
-from django.db import connection
-from django.utils.decorators import method_decorator
-from django.views.decorators.csrf import csrf_exempt
-from jinja2 import Template as JinjaTemplate
-from weasyprint import HTML, CSS
-import tempfile, os, json
-
-
 
 @method_decorator(csrf_exempt, name='dispatch')
 class QueryReportTemplateCreateView(APIView):
@@ -3133,7 +3080,6 @@ class DatabaseStructureView(APIView):
             })
 
         return Response({"tables": tables})
-
 
 
 class AddCommentToRequest(APIView):

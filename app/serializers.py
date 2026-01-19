@@ -4,13 +4,21 @@ from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError
 from rest_framework.authtoken.models import Token
 from app import models
-from django.core.exceptions import ValidationError as DjangoValidationError
 from app import choices
 from django.contrib.auth import password_validation
 from rest_framework.exceptions import ValidationError
 import ast
 import inflection
 from django.core.files.uploadedfile import UploadedFile
+from django.contrib.auth.password_validation import validate_password as dj_validate_password
+import re
+from django.utils import timezone
+import phonenumbers
+from django.apps import apps
+from django.core.files.storage import default_storage
+from django.core.files.base import ContentFile
+import json
+from .choices import ComponentTypes
 
 def get_config(key, default=None):
     from .models import SystemConfiguration
@@ -49,10 +57,8 @@ class LoginSerializer(serializers.Serializer):
             raise serializers.ValidationError("Email and password are required.")
         return data
 
-from django.contrib.auth.password_validation import validate_password as dj_validate_password
-import re
-from django.utils import timezone
-import phonenumbers
+
+
 class UserSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, required=True, validators=[validate_password])
     last_login = serializers.DateTimeField(read_only=True)
@@ -217,8 +223,6 @@ class UserProfileSerializer(serializers.ModelSerializer):
         return value
 
 
-
-
 class ForgotPasswordSerializer(serializers.Serializer):
     email = serializers.EmailField()
 
@@ -231,7 +235,6 @@ class ForgotPasswordSerializer(serializers.Serializer):
 class ResetPasswordSerializer(serializers.Serializer):
     token = serializers.CharField()
     new_password = serializers.CharField(min_length=8)
-
 
 
 class UserGroupSerializer(serializers.ModelSerializer):
@@ -248,7 +251,6 @@ class UserGroupSerializer(serializers.ModelSerializer):
 
     def get_names(self, obj):
         return [user.name for user in obj.users.all()]
-
 
 
 class CustomFunctionSerializer(serializers.ModelSerializer):
@@ -291,7 +293,6 @@ class CustomFunctionSerializer(serializers.ModelSerializer):
             )
 
         return data
-
 
 
 class TestMethodSerializer(serializers.ModelSerializer):
@@ -611,6 +612,7 @@ class NullableDateField(serializers.DateField):
             return None
         return super().to_internal_value(value)
 
+
 class InstrumentSerializer(serializers.ModelSerializer):
     history = InstrumentHistorySerializer(many=True, required=False)
 
@@ -791,6 +793,7 @@ class InventorySerializer(serializers.ModelSerializer):
         data['user_groups_ids'] = list(instance.user_groups.values_list('id', flat=True))
         return data
 
+
 class UnitSerializer(serializers.ModelSerializer):
     # Show user group names in response
     user_group_names = serializers.SerializerMethodField(read_only=True)
@@ -834,15 +837,6 @@ class UnitSerializer(serializers.ModelSerializer):
         if user_groups is not None:
             instance.user_groups.set(user_groups)
         return instance
-
-
-# class CustomerSerializer(serializers.ModelSerializer):
-#     class Meta:
-#         model = models.Customer
-#         fields = ['id', 'name']
-
-
-
 
 
 class ValueSerializer(serializers.ModelSerializer):
@@ -928,12 +922,6 @@ class ListSerializer(serializers.ModelSerializer):
                     val_obj.delete()
 
         return instance
-
-
-
-from django.apps import apps
-
-
 
 
 class SampleFieldSerializer(serializers.ModelSerializer):
@@ -1048,13 +1036,6 @@ class EntryAnalysisSerializer(serializers.Serializer):
         child=serializers.IntegerField(), required=False
     )
 
-
-
-from django.core.files.storage import default_storage
-from django.core.files.base import ContentFile
-from rest_framework import serializers
-from . import models
-import json
 
 
 class DynamicFormEntrySerializer(serializers.ModelSerializer):
@@ -1862,10 +1843,6 @@ class ProductSamplingGradeSerializer(serializers.Serializer):
     analyses = ProductSamplingGradeAnalysisSerializer(many=True)
 
 
-# ----------------------------------
-# MAIN PRODUCT SERIALIZER
-# ----------------------------------
-
 class ProductSerializer(serializers.ModelSerializer):
     user_groups = UserGroupSerializer(many=True, read_only=True)
 
@@ -2094,9 +2071,7 @@ class AnalysisSchemaSerializer(serializers.ModelSerializer):
         fields = ["id", "name", "components"]
 
 
-from rest_framework import serializers
-from . import models
-from .choices import ComponentTypes
+
 
 class ComponentResultSerializer(serializers.ModelSerializer):
     sample_component_name = serializers.CharField(source="sample_component.name", read_only=True)
