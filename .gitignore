@@ -5,3 +5,4 @@ __pycache__/
 *.log
 envPhone/*
 docker-compose.yml
+app/public_key.pem
