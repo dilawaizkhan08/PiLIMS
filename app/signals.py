@@ -13,6 +13,12 @@ def set_current_user(user):
 def get_current_user():
     return getattr(_user, "value", None)
 
+def activity_table_exists():
+    try:
+        return "app_activity" in connection.introspection.table_names()
+    except Exception:
+        return False
+
 def model_to_dict(instance):
     """Serialize model instance into dict suitable for JSONField."""
     data = {}
@@ -65,6 +71,8 @@ def store_old_data(sender, instance, **kwargs):
 def log_create_update(sender, instance, created, **kwargs):
     if sender.__name__ in IGNORED:
         return
+    if not activity_table_exists():  # <-- add this line
+        return
 
     try:
         user = get_current_user()
@@ -105,6 +113,8 @@ def log_create_update(sender, instance, created, **kwargs):
 @receiver(post_delete)
 def log_delete(sender, instance, **kwargs):
     if sender.__name__ in IGNORED:
+        return
+    if not activity_table_exists():  # <-- add this line
         return
 
     try:
