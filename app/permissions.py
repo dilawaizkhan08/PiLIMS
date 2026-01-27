@@ -32,6 +32,9 @@ class HasModulePermission(BasePermission):
         user = request.user
         if not user.is_authenticated:
             return False
+        
+        if request.user.is_superuser:
+            return True
 
         # 1️⃣ Identify model
         model = None
