@@ -2959,6 +2959,11 @@ class QueryReportTemplateCreateView(APIView):
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
+import qrcode
+import base64
+from io import BytesIO
+
+
 class QueryReportRenderView(APIView):
     """
     GET /api/reports/render/?template_id=&sample_id=&download=true
@@ -3005,6 +3010,23 @@ class QueryReportRenderView(APIView):
             **result[0]        # allow direct usage of column names in template
         }
 
+        # 4️⃣a Generate QR code for this sample
+        qr_url =  f"{settings.FRONTEND_BASE_URL}/sample-details/{sample_id}"
+        qr = qrcode.QRCode(box_size=3, border=1)
+        qr.add_data(qr_url)
+        qr.make(fit=True)
+        img = qr.make_image(fill_color="black", back_color="white")
+
+        # Convert QR to base64
+        buffer = BytesIO()
+        img.save(buffer, format="PNG")
+        qr_base64 = base64.b64encode(buffer.getvalue()).decode()
+        buffer.close()
+
+        # Add QR to context
+        context_data["qr_code"] = f"data:image/png;base64,{qr_base64}"
+        context_data["sample_url"] = qr_url  # optional
+
         # 5️⃣ Render HTML with Jinja2
         jinja_template = JinjaTemplate(template_obj.html_content)
         rendered_html = jinja_template.render(context_data)
@@ -3016,8 +3038,14 @@ class QueryReportRenderView(APIView):
         table { width: 100%; border-collapse: collapse; }
         th, td { border: 1px solid #000; padding: 6px; text-align: left; font-size: 12px; }
         th { background-color: #f2f2f2; }
+        /* QR code at top right */
+        .qr-code { position: absolute; top: 10px; right: 10px; width: 80px; height: 80px; }
         """
         combined_css = f"{default_css}\n{template_obj.css_content or ''}"
+
+        # 5️⃣a Inject QR code at top-right in HTML if template allows
+        qr_html = f'<img class="qr-code" src="{context_data["qr_code"]}" alt="Sample QR">'
+        rendered_html = qr_html + rendered_html  # prepend QR at top-right
 
         # 7️⃣ Generate PDF
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_pdf:
@@ -3053,7 +3081,6 @@ class QueryReportRenderView(APIView):
             columns = [col[0] for col in cursor.description]
             rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
         return rows
-
 
 class DatabaseStructureView(APIView):
     def get(self, request):
