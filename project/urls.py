@@ -23,7 +23,6 @@ urlpatterns = [
 if settings.DEBUG:
     urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
     urlpatterns += static(settings.STATIC_URL, document_root=settings.STATIC_ROOT)
-    urlpatterns += static(settings.FEED_URL, document_root=settings.FEED_ROOT)
 urlpatterns += [
     path("<path:unknown_path>", View404),
 ]
