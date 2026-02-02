@@ -334,7 +334,7 @@ class DynamicFormEntry(BaseModel):
         ("authorized", "Authorized"),
         ("rejected", "Rejected"),
         ("cancelled", "Cancelled"),
-        ("restored", "Restored"),]
+        ("reactivate", "Reactivate"),]
 
     form = models.ForeignKey(SampleForm, on_delete=models.CASCADE)
     data = models.JSONField()

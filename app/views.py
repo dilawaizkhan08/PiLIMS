@@ -858,6 +858,16 @@ class DynamicSampleFormEntryViewSet(TrackUserMixin,viewsets.ModelViewSet):
                 continue
 
             # -----------------------------
+            # Reactivate validation
+            # -----------------------------
+            if new_status == "reactivate":
+                if entry.status not in ["authorized", "rejected"]:
+                    return Response({
+                        "error": f"Entry {entry.id} can only be reactivated if it is 'authorized' or 'rejected'."
+                    }, status=400)
+
+
+            # -----------------------------
             # Unhold → restore previous status
             # -----------------------------
             if new_status == "unhold":
