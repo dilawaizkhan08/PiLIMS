@@ -778,27 +778,21 @@ class DynamicSampleFormEntryViewSet(TrackUserMixin,viewsets.ModelViewSet):
     def update_status(self, request):
         new_status = request.data.get("status")
         ids = request.data.get("ids", [])
-        analyst_id = request.data.get("analyst_id")
+        analyst_id = request.data.get("analyst_id")  # for assign_analyst
 
         if not new_status or not ids:
-            return Response({"error": "Both 'status' and 'ids' are required"}, status=400)
+            return Response({"error": "status and ids are required"}, status=400)
+
+        valid_statuses = dict(models.DynamicFormEntry.STATUS_CHOICES)
+        if new_status not in valid_statuses and new_status != "unhold":
+            return Response({"error": "Invalid status"}, status=400)
 
         entries = models.DynamicFormEntry.objects.filter(id__in=ids)
-        valid_statuses = dict(models.DynamicFormEntry.STATUS_CHOICES)
-        user = request.user  # logged-in user
+        user = request.user
 
-        # ------------------------------------
-        #  COMPLETED IS LOCKED FOREVER
-        # ------------------------------------
-        for entry in entries:
-            if entry.status == "completed":
-                return Response({
-                    "error": f"Entry {entry.id} is already 'completed' and cannot be updated further."
-                }, status=400)
-
-        # ------------------------------------
-        #  ASSIGN ANALYST LOGIC
-        # ------------------------------------
+        # -----------------------------
+        # Handle assign_analyst separately
+        # -----------------------------
         if new_status == "assign_analyst":
             if not analyst_id:
                 return Response({"error": "analyst_id is required when assigning analyst"}, status=400)
@@ -808,15 +802,12 @@ class DynamicSampleFormEntryViewSet(TrackUserMixin,viewsets.ModelViewSet):
             except models.User.DoesNotExist:
                 return Response({"error": f"Analyst with id {analyst_id} not found"}, status=404)
 
-            # Only allowed when entry status = received
             for entry in entries:
                 if entry.status != "received":
                     return Response({
                         "error": f"Entry {entry.id} must be 'received' before assigning analyst."
                     }, status=400)
 
-            # Log status change for each entry
-            for entry in entries:
                 models.StatusHistory.objects.create(
                     entry=entry,
                     old_status=entry.status,
@@ -825,43 +816,93 @@ class DynamicSampleFormEntryViewSet(TrackUserMixin,viewsets.ModelViewSet):
                 )
 
             entries.update(analyst=analyst)
-
             return Response({
                 "message": f"Analyst {analyst.id} assigned to entries (status unchanged)",
                 "updated_ids": ids
             })
 
-        # ------------------------------------
-        #  NORMAL STATUS UPDATE
-        # ------------------------------------
-        if new_status not in valid_statuses:
-            return Response({"error": "Invalid status"}, status=400)
-
-        # Business rules
+        # -----------------------------
+        # Normal status updates (including hold/unhold)
+        # -----------------------------
         for entry in entries:
-            if entry.status == "initiated" and new_status != "received":
+
+            # ❌ Completed is locked except authorize/reject
+            if entry.status == "completed" and new_status not in ["authorized", "rejected", "hold"]:
                 return Response({
-                    "error": f"Entry {entry.id} is 'initiated' and can only be updated to 'received'."
+                    "error": f"Entry {entry.id} is completed and cannot be changed."
                 }, status=400)
 
-        # Save status histor
-        for entry in entries:
+            # ❌ Authorize / Reject only if completed
+            if new_status in ["authorized", "rejected"] and entry.status != "completed":
+                return Response({
+                    "error": f"Entry {entry.id} must be completed before {new_status}."
+                }, status=400)
+
+            # -----------------------------
+            # On Hold
+            # -----------------------------
+            if new_status == "hold":
+                if entry.status == "hold":
+                    return Response({
+                        "error": f"Entry {entry.id} is already on hold."
+                    }, status=400)
+
+                models.StatusHistory.objects.create(
+                    entry=entry,
+                    old_status=entry.status,
+                    new_status="hold",
+                    updated_by=user
+                )
+                entry.status = "hold"
+                entry.save(update_fields=["status"])
+                continue
+
+            # -----------------------------
+            # Unhold → restore previous status
+            # -----------------------------
+            if new_status == "unhold":
+                if entry.status != "hold":
+                    return Response({
+                        "error": f"Entry {entry.id} is not on hold."
+                    }, status=400)
+
+                last_status = (
+                    models.StatusHistory.objects
+                    .filter(entry=entry, new_status="hold")
+                    .order_by("-id")
+                    .first()
+                )
+
+                restored_status = last_status.old_status if last_status else "in_progress"
+
+                models.StatusHistory.objects.create(
+                    entry=entry,
+                    old_status="hold",
+                    new_status=restored_status,
+                    updated_by=user
+                )
+                entry.status = restored_status
+                entry.save(update_fields=["status"])
+                continue
+
+            # -----------------------------
+            # Normal status update
+            # -----------------------------
             models.StatusHistory.objects.create(
                 entry=entry,
                 old_status=entry.status,
                 new_status=new_status,
                 updated_by=user
             )
-
-        # Update status (bulk update)
-        updated_count = entries.update(status=new_status)
-
+            entry.status = new_status
+            entry.save(update_fields=["status"])
 
         return Response({
-            "message": f"Status updated to '{new_status}' for {updated_count} entries",
+            "message": f"Status updated to {new_status}",
             "updated_ids": ids
         })
-    
+
+
 
     @action(detail=False, methods=["get"], url_path="stats")
     def get_stats(self, request):
@@ -1805,11 +1846,19 @@ class EntryAnalysesSchemaView(APIView):
 
 class AnalysisResultSubmitView(TrackUserMixin, APIView):
     """
-    Submit results for an analysis, automatically calculating dependent fields.
+    Submit results for an analysis, automatically calculating dependent fields
+    and updating entry status based on completion and spec limits.
     """
 
     def post(self, request, entry_id):
         entry = get_object_or_404(models.DynamicFormEntry, pk=entry_id)
+
+        if entry.status == "hold":
+            return Response(
+                {"error": "Entry is on hold. Results cannot be submitted."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
 
         analyses_data = request.data.get("analyses", [])
         all_saved_results = []
@@ -1827,7 +1876,6 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
         # Loop each analysis
         # ---------------------------
         for analysis_item in analyses_data:
-
             analysis_id = analysis_item.get("analysis_id")
             if not analysis_id:
                 all_errors.append("Missing analysis_id in one of the analyses.")
@@ -1962,18 +2010,49 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
             all_errors.extend(errors)
 
         # ---------------------------
-        # Update Entry Status (global)
+        # Update Entry Status based on all analyses and specs
         # ---------------------------
-        has_any_result = models.ComponentResult.objects.filter(entry=entry).exists()
+        def update_entry_status(entry):
+            entry_analyses = models.DynamicFormEntryAnalysis.objects.filter(entry=entry)
 
-        if has_any_result:
-            if entry.status not in ["completed", "cancelled"]:
+            any_result_entered = False
+            all_analyses_completed = True
+
+            for entry_analysis in entry_analyses:
+                analysis_completed = True  # 👈 per-analysis flag
+
+                components = entry_analysis.sample_components.all()
+
+                for sc in components:
+                    result = models.ComponentResult.objects.filter(
+                        entry=entry,
+                        sample_component=sc
+                    ).first()
+
+                    if not result or result.numeric_value is None:
+                        analysis_completed = False
+                    else:
+                        any_result_entered = True
+
+                # 👇 agar aik bhi analysis incomplete hai → overall incomplete
+                if not analysis_completed:
+                    all_analyses_completed = False
+
+            # ---------------------------
+            # FINAL STATUS DECISION
+            # ---------------------------
+            if all_analyses_completed and any_result_entered:
+                entry.status = "completed"
+            elif any_result_entered:
                 entry.status = "in_progress"
-                entry.save(update_fields=["status"])
-        else:
-            if entry.status != "received":
+            else:
                 entry.status = "received"
-                entry.save(update_fields=["status"])
+
+            entry.save(update_fields=["status"])
+            return entry.status
+
+
+        final_status = update_entry_status(entry)
 
         # ---------------------------
         # Build Response
@@ -1983,7 +2062,7 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
         response = {
             "message": "Results saved successfully" if not all_errors else "Saved with errors",
             "entry_id": entry.id,
-            "status": entry.status,
+            "status": final_status,
             "comment": entry.comment,
             "results": serializer.data,
         }

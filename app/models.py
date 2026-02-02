@@ -329,6 +329,8 @@ class DynamicFormEntry(BaseModel):
         ("in_progress", "In Progress"), 
         ("completed", "Completed"),
         ("assign_analyst", "Assign Analyst"), 
+        ("hold", "Hold"),
+        ("unhold", "Un Hold"),
         ("authorized", "Authorized"),
         ("rejected", "Rejected"),
         ("cancelled", "Cancelled"),
