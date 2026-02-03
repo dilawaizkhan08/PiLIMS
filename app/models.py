@@ -413,6 +413,7 @@ class SampleComponent(models.Model):
     )
 
     # ===== OVERRIDABLE FIELDS =====
+    type = models.CharField(max_length=50, choices=choices.ComponentTypes.choices, null=True, blank=True)
     name = models.CharField(max_length=255, blank=True, null=True)
     unit = models.ForeignKey("Unit", on_delete=models.SET_NULL, null=True, blank=True)
 

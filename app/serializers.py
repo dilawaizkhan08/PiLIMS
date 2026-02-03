@@ -1299,6 +1299,8 @@ class SampleComponentSerializer(serializers.ModelSerializer):
     )
     component_name = serializers.CharField(source="component.name", read_only=True)
 
+    type = serializers.ChoiceField(choices=choices.ComponentTypes.choices,required=False,allow_null=True)
+
     function_id = serializers.PrimaryKeyRelatedField(
         queryset=models.CustomFunction.objects.all(),
         source="custom_function",
@@ -1324,6 +1326,7 @@ class SampleComponentSerializer(serializers.ModelSerializer):
             "component_id",
             "component_name",
             "name",
+            "type",
             "unit_id",
             "unit",
             "minimum",
@@ -1342,7 +1345,9 @@ class SampleComponentSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         comp_obj = attrs.get("component") or getattr(self.instance, "component", None)
-        comp_type = getattr(comp_obj, "type", None)
+
+        sample_type = attrs.get("type") or getattr(self.instance, "type", None)
+        comp_type = sample_type or getattr(comp_obj, "type", None)
 
         if comp_type == choices.ComponentTypes.LIST:
             list_obj = getattr(comp_obj, "listname", None)
