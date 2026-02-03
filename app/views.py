@@ -783,6 +783,36 @@ class DynamicSampleFormEntryViewSet(TrackUserMixin,viewsets.ModelViewSet):
         if not new_status or not ids:
             return Response({"error": "status and ids are required"}, status=400)
 
+        # -----------------------------
+        # Map status → permission action
+        # -----------------------------
+        status_permission_map = {
+            "received": "receive",
+            "in_progress": "result_entry",
+            "completed": "result_entry",
+            "assign_analyst": "update",
+            "authorized": "authorize",
+            "rejected": "authorize",
+            "hold": "cancel_restore",
+            "unhold": "cancel_restore",
+            "reactivate": "reactivate",
+        }
+
+        required_permission = status_permission_map.get(new_status)
+        module_name = models.DynamicFormEntry._meta.db_table
+
+        if required_permission:
+            has_permission = False
+            for role in request.user.roles.all():
+                if role.permissions.filter(module=module_name, action=required_permission).exists():
+                    has_permission = True
+                    break
+            if not has_permission and not request.user.is_superuser:
+                return Response(
+                    {"error": f"You do not have permission to set status '{new_status}'."},
+                    status=403
+                )
+
         valid_statuses = dict(models.DynamicFormEntry.STATUS_CHOICES)
         if new_status not in valid_statuses and new_status != "unhold":
             return Response({"error": "Invalid status"}, status=400)
@@ -1480,7 +1510,37 @@ class DynamicRequestFormEntryViewSet(TrackUserMixin,viewsets.ModelViewSet):
             )
 
         # ---------------------------
-        # 2️⃣ Validate status is valid
+        # 2️⃣ Map status → permission action (As per your pattern)
+        # ---------------------------
+        status_permission_map = {
+            "received": "receive",
+            "authorized": "authorize",
+            "rejected": "authorize",
+            "cancelled": "cancel_restore",
+            "restored": "cancel_restore",
+        }
+
+        required_permission = status_permission_map.get(new_status)
+        module_name = models.DynamicRequestEntry._meta.db_table
+
+        # ---------------------------
+        # 3️⃣ Check Permissions
+        # ---------------------------
+        if required_permission:
+            has_permission = False
+            for role in request.user.roles.all():
+                if role.permissions.filter(module=module_name, action=required_permission).exists():
+                    has_permission = True
+                    break
+            
+            if not has_permission and not request.user.is_superuser:
+                return Response(
+                    {"error": f"You do not have permission to set status '{new_status}'."},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+
+        # ---------------------------
+        # 4️⃣ Validate status is valid
         # ---------------------------
         valid_statuses = dict(models.DynamicRequestEntry.STATUS_CHOICES)
         if new_status not in valid_statuses:
@@ -1490,7 +1550,7 @@ class DynamicRequestFormEntryViewSet(TrackUserMixin,viewsets.ModelViewSet):
             )
 
         # ---------------------------
-        # 3️⃣ Allowed manual transitions
+        # 5️⃣ Allowed manual transitions
         # ---------------------------
         allowed_manual = ["received", "authorized", "rejected", "cancelled", "restored"]
 
@@ -1501,15 +1561,11 @@ class DynamicRequestFormEntryViewSet(TrackUserMixin,viewsets.ModelViewSet):
             )
 
         # ---------------------------
-        # 4️⃣ Fetch entries
+        # 6️⃣ Fetch entries & Validate transition rules
         # ---------------------------
         entries = models.DynamicRequestEntry.objects.filter(id__in=ids)
 
-        # ---------------------------
-        # 5️⃣ Validate transition rules
-        # ---------------------------
         for entry in entries:
-
             # Rule 1: initiated can ONLY go to received
             if entry.status == "initiated" and new_status != "received":
                 return Response(
@@ -1517,21 +1573,22 @@ class DynamicRequestFormEntryViewSet(TrackUserMixin,viewsets.ModelViewSet):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-            # Rule 2: If already received → allow all allowed_manual transitions (no block needed)
-
         # ---------------------------
-        # 6️⃣ Perform bulk update
+        # 7️⃣ Perform update (Iterative to keep History if needed)
         # ---------------------------
-        updated_count = entries.update(status=new_status)
+        # Agar aapko history track karni hai jaisa upar wale code mein tha:
+        for entry in entries:
+            # Optional: StatusHistory log yahan add karein agar model available hai
+            entry.status = new_status
+            entry.save(update_fields=["status"])
 
         return Response(
             {
-                "message": f"Status updated to '{new_status}' for {updated_count} request(s)",
+                "message": f"Status updated to '{new_status}' for {entries.count()} request(s)",
                 "updated_ids": ids,
             },
             status=status.HTTP_200_OK,
         )
-
         
     @action(detail=False, methods=["get"], url_path="stats")
     def get_stats(self, request):
@@ -1859,9 +1916,27 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
     Submit results for an analysis, automatically calculating dependent fields
     and updating entry status based on completion and spec limits.
     """
+    permission_classes = [IsAuthenticated, HasModulePermission]
 
     def post(self, request, entry_id):
         entry = get_object_or_404(models.DynamicFormEntry, pk=entry_id)
+
+        # -----------------------------
+        # Check if user has 'result_entry' permission
+        # -----------------------------
+        module_name = models.DynamicFormEntry._meta.db_table
+        has_permission = False
+
+        for role in request.user.roles.all():
+            if role.permissions.filter(module=module_name, action="result_entry").exists():
+                has_permission = True
+                break
+
+        if not has_permission:
+            return Response(
+                {"error": "You do not have permission to enter results for this module."},
+                status=403
+            )
 
         if entry.status == "hold":
             return Response(

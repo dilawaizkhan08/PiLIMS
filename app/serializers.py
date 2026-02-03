@@ -1234,22 +1234,25 @@ class DynamicFormEntrySerializer(serializers.ModelSerializer):
     #   Representation
     # -------------------------
     def to_representation(self, instance):
+        request = self.context.get("request")
         data = super().to_representation(instance)
 
-        # Format uploaded files
         formatted_data = {}
-        for key, value in instance.data.items():
-            if isinstance(value, str) and value.startswith("uploads/sample/"):
-                request = self.context.get("request")
-                formatted_data[key] = request.build_absolute_uri(value) if request else value
-            else:
-                formatted_data[key] = value
+        if instance.data:
+            for key, value in instance.data.items():
+                if isinstance(value, str) and value.startswith("uploads/sample/"):
+                    formatted_data[key] = request.build_absolute_uri(value) if request else value
+                else:
+                    formatted_data[key] = value
         data["data"] = formatted_data
 
-        # Include analyses + sample components
         entry_analyses = models.DynamicFormEntryAnalysis.objects.filter(
             entry=instance
-        ).prefetch_related("components", "sample_components__component")
+        ).prefetch_related(
+            "components", 
+            "sample_components__component",
+            "analysis__attachments"
+        )
 
         analyses_data = []
         for ea in entry_analyses:
@@ -1269,17 +1272,25 @@ class DynamicFormEntrySerializer(serializers.ModelSerializer):
                     "optional": sc.optional,
                     "calculated": sc.calculated,
                 })
+
+            attachments_data = []
+            if ea.analysis:
+                for attachment in ea.analysis.attachments.all():
+                    attachments_data.append({
+                        "id": attachment.id,
+                        "file": request.build_absolute_uri(attachment.file.url) if request else attachment.file.url,
+                        "name": attachment.file.name.split('/')[-1]
+                    })
+
             analyses_data.append({
-                "analysis_id": ea.analysis.id,
-                "analysis_name": ea.analysis.name,
+                "analysis_id": ea.analysis.id if ea.analysis else None,
+                "analysis_name": ea.analysis.name if ea.analysis else None,
+                "attachments": attachments_data,
                 "components": components_data
             })
 
-
         data["analyses_data"] = analyses_data
         return data
-
-
 
 class SampleComponentSerializer(serializers.ModelSerializer):
     # Optional overrides for related objects

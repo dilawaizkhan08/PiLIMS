@@ -24,16 +24,30 @@ class IsAdminUser(BasePermission):
 
 class HasModulePermission(BasePermission):
     """
-    Check if user has required CRUD permission on a given module (DB table).
+    Check if user has required CRUD permission on a given module (DB table)
+    or permission to perform a specific status update.
     Works for both APIView and ViewSet.
     """
+
+    # Map dynamic statuses → permission actions
+    STATUS_PERMISSION_MAP = {
+        "received": "receive",
+        "in_progress": "result_entry",
+        "completed": "result_entry",
+        "authorized": "authorize",
+        "rejected": "authorize",
+        "hold": "cancel_restore",
+        "unhold": "cancel_restore",
+        "reactivate": "reactivate",
+        "assign_analyst": "result_entry",
+    }
 
     def has_permission(self, request, view):
         user = request.user
         if not user.is_authenticated:
             return False
-        
-        if request.user.is_superuser:
+
+        if user.is_superuser:
             return True
 
         # 1️⃣ Identify model
@@ -67,7 +81,7 @@ class HasModulePermission(BasePermission):
 
         action = getattr(view, "action", None)
 
-        # ✅ Handle custom GET endpoints like /stats/
+        # Handle custom GET endpoints like /stats/
         if action and action.startswith("get_"):
             action = "view"
 
@@ -82,16 +96,30 @@ class HasModulePermission(BasePermission):
             elif request.method == "DELETE":
                 action = "delete"
 
-        action = action_map.get(action, action)  # keep fallback if we remapped above
+        # Map action to CRUD fallback
+        action = action_map.get(action, action)
 
         if not action:
             return False
 
-        # 3️⃣ Check user roles and permissions
+        # 3️⃣ Check user roles and permissions for CRUD
         for role in user.roles.all():
             if role.permissions.filter(module=module_name, action=action).exists():
                 return True
 
-        return False
+        # 4️⃣ Special handling: check dynamic status permissions
+        # Example: in DynamicSampleFormEntryViewSet, update_status action
+        if hasattr(view, "request") and action == "update" and request.method == "POST":
+            status_to_set = request.data.get("status")
+            if status_to_set:
+                required_perm = self.STATUS_PERMISSION_MAP.get(status_to_set)
+                if required_perm:
+                    for role in user.roles.all():
+                        if role.permissions.filter(module=module_name, action=required_perm).exists():
+                            return True
+                    # Deny if user lacks permission for this status
+                    return False
 
+        # 5️⃣ Deny by default
+        return False
 

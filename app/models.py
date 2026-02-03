@@ -638,6 +638,11 @@ PERMISSION_CHOICES = [
     ("view", "View"),
     ("update", "Update"),
     ("delete", "Delete"),
+    ("receive", "Receive"),
+    ("result_entry", "Result Entry"),
+    ("authorize", "Authorize"),
+    ("cancel_restore", "Cancel/Restore"),
+    ("reactivate", "Reactivate"),
 ]
 
 class Role(models.Model):
@@ -651,7 +656,7 @@ class Role(models.Model):
 class Permission(models.Model):
     role = models.ForeignKey(Role, on_delete=models.CASCADE, related_name="permissions")
     module = models.CharField(max_length=200)  # dynamic module name
-    action = models.CharField(max_length=10, choices=PERMISSION_CHOICES)
+    action = models.CharField(max_length=100, choices=PERMISSION_CHOICES)
 
     class Meta:
         unique_together = ("role", "module", "action")
