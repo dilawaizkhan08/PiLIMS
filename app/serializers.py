@@ -490,15 +490,20 @@ class AnalysisSerializer(serializers.ModelSerializer):
         queryset=models.UserGroup.objects.all(),
         write_only=True,
         source="user_groups",
-        required=False
+        required=True
     )
+
     user_groups = UserGroupSerializer(many=True, read_only=True)
+    version = serializers.IntegerField(required=False, allow_null=True)
 
     test_method_id = serializers.PrimaryKeyRelatedField(
         queryset=models.TestMethod.objects.all(),
         source="test_method",
-        write_only=True
+        write_only=True,
+        required=False,
+        allow_null=True
     )
+
     test_method = TestMethodSerializer(read_only=True)
 
     class Meta:
@@ -1852,11 +1857,10 @@ class ProductSamplingGradeAnalysisSerializer(serializers.Serializer):
         required=False
     )
 
-
 class ProductSamplingGradeSerializer(serializers.Serializer):
-    sampling_point_id = serializers.IntegerField()
-    grade_id = serializers.IntegerField()
-    analyses = ProductSamplingGradeAnalysisSerializer(many=True)
+    sampling_point_id = serializers.IntegerField(required=False, allow_null=True)
+    grade_id = serializers.IntegerField(required=False, allow_null=True)
+    analyses = ProductSamplingGradeAnalysisSerializer(many=True, required=False)
 
 
 class ProductSerializer(serializers.ModelSerializer):
@@ -1929,12 +1933,11 @@ class ProductSerializer(serializers.ModelSerializer):
     # ----------------------------
     def _save_sampling_grade_analyses(self, product, analyses_data):
         for sg in analyses_data:
-            sampling_point = models.SamplingPoint.objects.get(
-                id=sg["sampling_point_id"]
-            )
-            grade = models.Grade.objects.get(
-                id=sg["grade_id"]
-            )
+            sampling_point_id = sg.get("sampling_point_id")
+            grade_id = sg.get("grade_id")
+
+            sampling_point = models.SamplingPoint.objects.get(id=sampling_point_id) if sampling_point_id else None
+            grade = models.Grade.objects.get(id=grade_id) if grade_id else None
 
             psg = models.ProductSamplingGrade.objects.create(
                 product=product,
@@ -1942,7 +1945,7 @@ class ProductSerializer(serializers.ModelSerializer):
                 grade=grade,
             )
 
-            for analysis_item in sg["analyses"]:
+            for analysis_item in sg.get("analyses", []):
                 self._save_analysis(psg, analysis_item)
 
     def _save_analysis(self, psg, analysis_item):

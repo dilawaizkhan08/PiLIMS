@@ -1925,12 +1925,16 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
         # Check if user has 'result_entry' permission
         # -----------------------------
         module_name = models.DynamicFormEntry._meta.db_table
-        has_permission = False
 
-        for role in request.user.roles.all():
-            if role.permissions.filter(module=module_name, action="result_entry").exists():
-                has_permission = True
-                break
+        if request.user.is_superuser:
+            has_permission = True
+        else:
+            has_permission = False
+
+            for role in request.user.roles.all():
+                if role.permissions.filter(module=module_name, action="result_entry").exists():
+                    has_permission = True
+                    break
 
         if not has_permission:
             return Response(

@@ -115,13 +115,13 @@ class List(BaseModel):
 class Analysis(BaseModel):
     name = models.CharField(max_length=255)
     alias_name = models.CharField(max_length=255, null=True, blank=True)
-    version = models.PositiveIntegerField(default=1)
+    version = models.PositiveIntegerField(default=1, null=True, blank=True)
 
     user_groups = models.ManyToManyField(UserGroup, null=True, blank=True)
     type =  models.CharField(max_length=255, null=True, blank=True)
-    test_method = models.ForeignKey(TestMethod, on_delete=models.SET_NULL, null=True)
+    test_method = models.ForeignKey(TestMethod, on_delete=models.SET_NULL, null=True, blank=True)
     price = models.FloatField(null=True, blank=True)
-    description = models.TextField(blank=True)
+    description = models.TextField(null=True, blank=True)
 
     def __str__(self):
         return self.name
@@ -584,11 +584,15 @@ class ProductSamplingGrade(BaseModel):
     )
     sampling_point = models.ForeignKey(
         SamplingPoint,
-        on_delete=models.CASCADE
+        on_delete=models.CASCADE,
+        null=True, 
+        blank=True
     )
     grade = models.ForeignKey(
         Grade,
-        on_delete=models.CASCADE
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True
     )
 
     class Meta:
