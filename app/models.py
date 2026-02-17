@@ -246,6 +246,9 @@ class Inventory(BaseModel):
     unit = models.ForeignKey('Unit', on_delete=models.SET_NULL, null=True)
     total_quantity = models.IntegerField(default=0)
     description = models.TextField(blank=True, null=True)
+    supplier_name = models.CharField(max_length=255, null=True, blank=True)
+    batch_no = models.CharField(max_length=255, null=True, blank=True)
+
 
     def __str__(self):
         return self.name

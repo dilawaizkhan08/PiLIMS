@@ -733,7 +733,9 @@ class InventorySerializer(serializers.ModelSerializer):
             'user_groups',        # ✅ GET → [{id, name}]
             'user_groups_ids',    # ✅ POST/PUT → [1,2]
             'location', 'unit', 'unit_name', 'total_quantity',
-            'description', 'stocks'
+            'description', 'stocks',
+            'supplier_name',
+            'batch_no',
         ]
 
     def get_unit_name(self, obj):
@@ -2016,15 +2018,18 @@ class ProductSerializer(serializers.ModelSerializer):
         for psg in instance.sampling_grades.all():
             for pa in psg.analyses.all():
                 analyses_output.append({
-                    "sampling_point_id": psg.sampling_point.id,
-                    "sampling_point_name": psg.sampling_point.name,
-                    "grade_id": psg.grade.id,
-                    "grade_name": psg.grade.name,
+                    "sampling_point_id": psg.sampling_point.id if psg.sampling_point else None,
+                    "sampling_point_name": psg.sampling_point.name if psg.sampling_point else None,
+
+                    "grade_id": psg.grade.id if psg.grade else None,
+                    "grade_name": psg.grade.name if psg.grade else None,
+
                     "analysis_id": pa.analysis.id,
                     "analysis_name": pa.analysis.name if hasattr(pa.analysis, 'name') else str(pa.analysis),
                     "component_ids": list(pa.sample_components.values_list("component_id", flat=True)),
                     "sample_component_ids": list(pa.sample_components.values_list("id", flat=True))
                 })
+
 
         data["analyses_data"] = analyses_output
         return data
