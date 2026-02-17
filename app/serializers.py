@@ -63,10 +63,14 @@ class UserSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, required=True, validators=[validate_password])
     last_login = serializers.DateTimeField(read_only=True)
 
+    roles = serializers.StringRelatedField(many=True, read_only=True)
+    user_groups = serializers.StringRelatedField(many=True, read_only=True)
+
     class Meta:
         model = models.User
         fields = '__all__'
-        read_only_fields = ["groups", "user_permissions"]
+        read_only_fields = ["groups", "user_permissions", "roles", "user_groups"]
+
 
     def create(self, validated_data):
         request = self.context.get('request')

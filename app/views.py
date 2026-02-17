@@ -153,7 +153,7 @@ class LoginView(views.APIView):
 
 class UserViewSet(TrackUserMixin, viewsets.ModelViewSet):
     serializer_class = UserSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated,HasModulePermission]
     filter_backends = [SearchFilter, DjangoFilterBackend, GenericSearchFilter]
     search_fields = ['email', 'name']
     filterset_fields = ['is_active', 'role']
@@ -312,7 +312,7 @@ class ResetPasswordView(APIView):
 class AnalysisAttachmentViewSet(TrackUserMixin,viewsets.ModelViewSet):
     queryset = models.AnalysisAttachment.objects.all()
     serializer_class = AnalysisAttachmentSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, HasModulePermission]
 
     def create(self, request, *args, **kwargs):
         files = request.FILES.getlist("files")   # multiple files expected
@@ -1630,12 +1630,12 @@ class DynamicRequestFormEntryViewSet(TrackUserMixin,viewsets.ModelViewSet):
 class SamplingPointViewSet(viewsets.ModelViewSet):
     queryset = models.SamplingPoint.objects.all()
     serializer_class = SamplingPointSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, HasModulePermission]
 
 class GradeViewSet(viewsets.ModelViewSet):
     queryset = models.Grade.objects.all()
     serializer_class = GradeSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, HasModulePermission]
 
 class ProductViewSet(TrackUserMixin,viewsets.ModelViewSet):
     queryset = models.Product.objects.all()
@@ -1911,6 +1911,7 @@ class EntryAnalysesSchemaView(APIView):
         return Response({"entry_id": entry.id, "comment": entry.comment, "analyses": analyses_data})
 
 
+
 class AnalysisResultSubmitView(TrackUserMixin, APIView):
     """
     Submit results for an analysis, automatically calculating dependent fields
@@ -1925,21 +1926,15 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
         # Check if user has 'result_entry' permission
         # -----------------------------
         module_name = models.DynamicFormEntry._meta.db_table
-
-        if request.user.is_superuser:
-            has_permission = True
-        else:
-            has_permission = False
-
-            for role in request.user.roles.all():
-                if role.permissions.filter(module=module_name, action="result_entry").exists():
-                    has_permission = True
-                    break
+        has_permission = request.user.is_superuser or any(
+            role.permissions.filter(module=module_name, action="result_entry").exists()
+            for role in request.user.roles.all()
+        )
 
         if not has_permission:
             return Response(
                 {"error": "You do not have permission to enter results for this module."},
-                status=403
+                status=status.HTTP_403_FORBIDDEN
             )
 
         if entry.status == "hold":
@@ -1947,7 +1942,6 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
                 {"error": "Entry is on hold. Results cannot be submitted."},
                 status=status.HTTP_400_BAD_REQUEST
             )
-
 
         analyses_data = request.data.get("analyses", [])
         all_saved_results = []
@@ -1980,9 +1974,7 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
             saved_results = []
             errors = []
 
-            # ---------------------------
             # 1️⃣ Save user-entered results
-            # ---------------------------
             for res in results_data:
                 sc_id = res.get("component_id")
                 if not sc_id:
@@ -2027,9 +2019,7 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
                     )
                     saved_results.append(new_result)
 
-            # ---------------------------
             # 2️⃣ Auto-calculate calculated components
-            # ---------------------------
             calculated_components = entry_analysis.sample_components.filter(
                 calculated=True,
                 custom_function__isnull=False
@@ -2044,7 +2034,6 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
                         (r for r in saved_results if r.sample_component_id == param.mapped_sample_component.id),
                         None
                     )
-
                     if not mapped_result:
                         mapped_result = models.ComponentResult.objects.filter(
                             entry=entry,
@@ -2094,57 +2083,87 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
                     )
                     saved_results.append(new_calc_result)
 
-            # Add to global lists
             all_saved_results.extend(saved_results)
             all_errors.extend(errors)
 
         # ---------------------------
-        # Update Entry Status based on all analyses and specs
+        # Update overall entry status
         # ---------------------------
-        def update_entry_status(entry):
-            entry_analyses = models.DynamicFormEntryAnalysis.objects.filter(entry=entry)
+        def update_entry_status(entry_obj):
+            entry_analyses_obj = models.DynamicFormEntryAnalysis.objects.filter(entry=entry_obj)
 
             any_result_entered = False
             all_analyses_completed = True
 
-            for entry_analysis in entry_analyses:
-                analysis_completed = True  # 👈 per-analysis flag
+            for ea in entry_analyses_obj:
+                analysis_completed = True
+                components = ea.sample_components.all()
 
-                components = entry_analysis.sample_components.all()
+                for sc in components:
+                    result = models.ComponentResult.objects.filter(
+                        entry=entry_obj,
+                        sample_component=sc
+                    ).first()
+                    if not result or result.value in [None, ""]:
+                        analysis_completed = False
+                    else:
+                        any_result_entered = True
 
+                if not analysis_completed:
+                    all_analyses_completed = False
+
+            if all_analyses_completed and any_result_entered:
+                entry_obj.status = "completed"
+            elif any_result_entered:
+                entry_obj.status = "in_progress"
+            else:
+                entry_obj.status = "received"
+
+            entry_obj.save(update_fields=["status"])
+            return entry_obj.status
+
+        final_status = update_entry_status(entry)
+
+        # ---------------------------
+        # Analysis-level status
+        # ---------------------------
+        analysis_status_list = []
+        entry_analyses = models.DynamicFormEntryAnalysis.objects.filter(entry=entry)
+
+        for ea in entry_analyses:
+            components = ea.sample_components.all()
+
+            if not components.exists():
+                status_ = "initiated"
+            else:
+                any_result_entered = False
+                all_authorized = True
                 for sc in components:
                     result = models.ComponentResult.objects.filter(
                         entry=entry,
                         sample_component=sc
                     ).first()
-
-                    if not result or result.numeric_value is None:
-                        analysis_completed = False
+                    if not result or result.value in [None, ""]:
+                        all_authorized = False
                     else:
                         any_result_entered = True
+                        if not result.authorization_flag:
+                            all_authorized = False
 
-                # 👇 agar aik bhi analysis incomplete hai → overall incomplete
-                if not analysis_completed:
-                    all_analyses_completed = False
+                if not any_result_entered:
+                    status_ = "initiated"
+                elif all_authorized:
+                    status_ = "authorized"
+                else:
+                    status_ = "completed"
 
-            # ---------------------------
-            # FINAL STATUS DECISION
-            # ---------------------------
-            if all_analyses_completed and any_result_entered:
-                entry.status = "completed"
-            elif any_result_entered:
-                entry.status = "in_progress"
-            else:
-                entry.status = "received"
-
-            entry.save(update_fields=["status"])
-            return entry.status
-
-
-        final_status = update_entry_status(entry)
+            analysis_status_list.append({
+                "analysis_id": ea.analysis_id,
+                "status": status_
+            })
 
         # ---------------------------
-        # Build Response
+        # Build response
         # ---------------------------
         serializer = ComponentResultSerializer(all_saved_results, many=True)
 
@@ -2154,6 +2173,7 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
             "status": final_status,
             "comment": entry.comment,
             "results": serializer.data,
+            "analysis_status": analysis_status_list
         }
 
         if all_errors:
@@ -2174,16 +2194,50 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
 
         serializer = ComponentResultSerializer(results, many=True)
 
+        # ---------------------------
+        # Analysis-level status
+        # ---------------------------
+        entry_analysis = get_object_or_404(
+            models.DynamicFormEntryAnalysis,
+            entry=entry,
+            analysis_id=analysis_id
+        )
+        components = entry_analysis.sample_components.all()
+
+        if not components.exists():
+            analysis_status = "initiated"
+        else:
+            any_result_entered = False
+            all_authorized = True
+            for sc in components:
+                result = models.ComponentResult.objects.filter(
+                    entry=entry,
+                    sample_component=sc
+                ).first()
+                if not result or result.value in [None, ""]:
+                    all_authorized = False
+                else:
+                    any_result_entered = True
+                    if not result.authorization_flag:
+                        all_authorized = False
+
+            if not any_result_entered:
+                analysis_status = "initiated"
+            elif all_authorized:
+                analysis_status = "authorized"
+            else:
+                analysis_status = "completed"
+
         return Response({
             "message": "Results fetched successfully",
             "entry_id": entry.id,
             "analysis_id": analysis_id,
             "results": serializer.data,
+            "analysis_status": analysis_status
         }, status=status.HTTP_200_OK)
 
     # ---------------------------
     # Update individual result remarks/authorization
-    # ---------------------------
     def patch(self, request, entry_id, analysis_id):
         entry = get_object_or_404(models.DynamicFormEntry, pk=entry_id)
 
@@ -2214,8 +2268,7 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
             result.remarks = remarks
 
         if auth_flag is not None:
-            if not result.remarks:
-                return Response({"error": "Add remarks before enabling authorization."}, status=status.HTTP_400_BAD_REQUEST)
+            # User can authorize even without remarks
             result.authorization_flag = bool(auth_flag)
 
         if auth_remark is not None:
@@ -2226,11 +2279,42 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
         result.save()
         serializer = ComponentResultSerializer(result)
 
+        # ---------------------------
+        # Update analysis-level status after patch
+        entry_analysis = get_object_or_404(
+            models.DynamicFormEntryAnalysis,
+            entry=entry,
+            analysis_id=analysis_id
+        )
+        components = entry_analysis.sample_components.all()
+
+        if not components.exists():
+            analysis_status = "initiated"
+        else:
+            any_result_entered = False
+            all_authorized = True
+            for sc in components:
+                r = models.ComponentResult.objects.filter(entry=entry, sample_component=sc).first()
+                if not r or r.value in [None, ""]:
+                    all_authorized = False
+                else:
+                    any_result_entered = True
+                    if not r.authorization_flag:
+                        all_authorized = False
+
+            if not any_result_entered:
+                analysis_status = "initiated"
+            elif all_authorized:
+                analysis_status = "authorized"
+            else:
+                analysis_status = "completed"
+
         return Response({
             "message": f"Result updated successfully for component {sc.name}",
             "entry_id": entry.id,
             "analysis_id": analysis_id,
             "result": serializer.data,
+            "analysis_status": analysis_status
         }, status=status.HTTP_200_OK)
 
 
