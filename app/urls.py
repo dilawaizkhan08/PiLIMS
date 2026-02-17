@@ -84,5 +84,6 @@ urlpatterns = [
     path("reports/render/", views.QueryReportRenderView.as_view(), name="reportrender"),
     
     path("db-structure/", views.DatabaseStructureView.as_view(), name="db-structure"),
+    path('samples/pdf/', views.DynamicFormEntryPDFView.as_view(), name='sample_pdf'),
 
 ]

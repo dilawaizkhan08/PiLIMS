@@ -3377,3 +3377,179 @@ class AddCommentToRequest(APIView):
 
         return Response({"message": "Comment added successfully"}, status=status.HTTP_200_OK)
 
+
+
+class DynamicFormEntryPDFView(APIView):
+    """
+    GET /api/samples/pdf/?sample_id=&download=true
+    """
+
+    def get(self, request):
+
+        sample_id = request.query_params.get("sample_id")
+        download = request.query_params.get("download")
+
+        if not sample_id:
+            return Response({"error": "sample_id required"}, status=400)
+
+        entry = get_object_or_404(models.DynamicFormEntry, id=sample_id)
+
+        # ---------------- QR CODE ----------------
+
+        qr_url = f"{settings.FRONTEND_BASE_URL}/sample-details/{entry.id}"
+
+        qr = qrcode.QRCode(box_size=3, border=1)
+        qr.add_data(qr_url)
+        qr.make(fit=True)
+
+        img = qr.make_image(fill_color="black", back_color="white")
+
+        buffer = BytesIO()
+        img.save(buffer, format="PNG")
+        qr_base64 = base64.b64encode(buffer.getvalue()).decode()
+        buffer.close()
+
+        # ---------------- HTML TEMPLATE ----------------
+
+        html_content = f"""
+<html>
+<head>
+<style>
+@page {{ size:A4; margin:15mm; }}
+
+body {{
+    font-family: Arial;
+    font-size:12px;
+    color:#333;
+}}
+
+.header {{
+    display:flex;
+    justify-content:space-between;
+    border-bottom:2px solid #ddd;
+    padding-bottom:10px;
+    margin-bottom:15px;
+}}
+
+.left h2 {{
+    margin:0;
+    font-size:18px;
+}}
+
+.meta {{
+    margin-top:8px;
+    display:grid;
+    grid-template-columns:auto auto;
+    gap:6px 25px;
+}}
+
+.label {{ color:#777; }}
+.value {{ font-weight:600; }}
+
+.qr {{ width:90px; }}
+
+.section {{ margin-top:15px; }}
+
+.section-title {{
+    font-weight:bold;
+    font-size:14px;
+    margin-bottom:8px;
+}}
+
+.data-grid {{
+    display:grid;
+    grid-template-columns:repeat(2,1fr);
+    gap:10px;
+}}
+
+.card {{
+    background:#f7f8fa;
+    padding:8px 10px;
+    border-radius:6px;
+}}
+
+.card span {{
+    display:block;
+}}
+
+.footer {{
+    margin-top:20px;
+    font-size:10px;
+    color:#888;
+    text-align:center;
+}}
+</style>
+</head>
+
+<body>
+
+<div class="header">
+
+<div class="left">
+<h2>{entry.form.sample_name}</h2>
+
+<div class="meta">
+<span class="label">Sample ID</span><span class="value">{entry.id}</span>
+<span class="label">Secondary ID</span><span class="value">{entry.secondary_id}</span>
+<span class="label">Status</span><span class="value">{entry.status}</span>
+<span class="label">Created</span><span class="value">{entry.created_at.strftime("%d %b %Y %H:%M")}</span>
+</div>
+
+</div>
+
+<img class="qr" src="data:image/png;base64,{qr_base64}">
+
+</div>
+
+<div class="section">
+<div class="section-title">Sample Information</div>
+
+<div class="data-grid">
+"""
+
+        # ---------- JSON DATA ----------
+
+        for k, v in entry.data.items():
+            html_content += f"""
+            <div class="card">
+                <span class="label">{k}</span>
+                <span class="value">{v}</span>
+            </div>
+            """
+
+        html_content += """
+</div>
+</div>
+
+<div class="footer">
+Generated electronically • No signature required
+</div>
+
+</body>
+</html>
+"""
+
+        # ---------------- PDF GENERATE ----------------
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp:
+            temp_path = temp.name
+
+        HTML(string=html_content).write_pdf(temp_path)
+
+        with open(temp_path, "rb") as f:
+            pdf = f.read()
+
+        os.remove(temp_path)
+
+        response = HttpResponse(pdf, content_type="application/pdf")
+
+        filename = f"sample_{entry.id}.pdf"
+        response["Content-Disposition"] = (
+            f'attachment; filename="{filename}"'
+            if download else
+            f'inline; filename="{filename}"'
+        )
+
+        return response
+
+
