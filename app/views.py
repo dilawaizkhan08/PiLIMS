@@ -56,6 +56,7 @@ from django.db import connection
 from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import csrf_exempt
 from jinja2 import Template as JinjaTemplate
+from .pagination import CustomPageNumberPagination
 import logging
 logger = logging.getLogger(__name__)
 
@@ -157,6 +158,7 @@ class UserViewSet(TrackUserMixin, viewsets.ModelViewSet):
     filter_backends = [SearchFilter, DjangoFilterBackend, GenericSearchFilter]
     search_fields = ['email', 'name']
     filterset_fields = ['is_active', 'role']
+    pagination_class = CustomPageNumberPagination
 
     def get_queryset(self):
         # Only return users created by the logged-in user
@@ -239,6 +241,7 @@ class UserProfileUpdateView(generics.RetrieveUpdateAPIView):
     serializer_class = UserProfileSerializer
     permission_classes = [IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser, JSONParser]
+    pagination_class = CustomPageNumberPagination
 
     def get_object(self):
         return self.request.user
@@ -336,6 +339,7 @@ class AnalysisViewSet(TrackUserMixin, viewsets.ModelViewSet):
     serializer_class = AnalysisSerializer
     permission_classes = [IsAuthenticated, HasModulePermission]
     filter_backends = [GenericSearchFilter]
+    pagination_class = CustomPageNumberPagination
 
     def get_queryset(self):
         user = self.request.user
@@ -355,6 +359,7 @@ class CustomFunctionViewSet(TrackUserMixin,viewsets.ModelViewSet):
     serializer_class = CustomFunctionSerializer
     permission_classes = [IsAuthenticated]
     filter_backends = [GenericSearchFilter]
+    pagination_class = CustomPageNumberPagination
 
     # ========= 1) VALIDATE ENDPOINT ==========
     @action(detail=False, methods=["post"], url_path="validate")
@@ -379,6 +384,8 @@ class InstrumentViewSet(TrackUserMixin,viewsets.ModelViewSet):
     serializer_class = InstrumentSerializer
     permission_classes = [IsAuthenticated,HasModulePermission]
     filter_backends = [GenericSearchFilter]
+    pagination_class = CustomPageNumberPagination
+
 
     def get_queryset(self):
         user = self.request.user
@@ -405,6 +412,7 @@ class InventoryViewSet(TrackUserMixin, viewsets.ModelViewSet):
     serializer_class = InventorySerializer
     permission_classes = [IsAuthenticated, HasModulePermission]
     filter_backends = [GenericSearchFilter]
+    pagination_class = CustomPageNumberPagination
 
     def get_queryset(self):
         user = self.request.user
@@ -431,6 +439,7 @@ class UnitViewSet(TrackUserMixin, viewsets.ModelViewSet):
     serializer_class = UnitSerializer
     permission_classes = [IsAuthenticated, HasModulePermission]
     filter_backends = [GenericSearchFilter]
+    pagination_class = CustomPageNumberPagination
 
     def get_queryset(self):
         user = self.request.user
@@ -450,6 +459,7 @@ class CustomerViewSet(TrackUserMixin,viewsets.ModelViewSet):
     serializer_class = CustomerSerializer
     permission_classes = [IsAuthenticated,HasModulePermission] 
     filter_backends = [GenericSearchFilter]
+    pagination_class = CustomPageNumberPagination
 
     
     @action(detail=False, methods=["get"], url_path="stats")
@@ -492,6 +502,7 @@ class ListViewSet(TrackUserMixin, viewsets.ModelViewSet):
     serializer_class = ListSerializer
     permission_classes = [IsAuthenticated, HasModulePermission]
     filter_backends = [GenericSearchFilter]
+    pagination_class = CustomPageNumberPagination
 
     def get_queryset(self):
         user = self.request.user
@@ -518,6 +529,7 @@ class UserGroupViewSet(TrackUserMixin,viewsets.ModelViewSet):
     serializer_class = UserGroupSerializer
     permission_classes = [IsAuthenticated,HasModulePermission]
     filter_backends = [GenericSearchFilter]
+    pagination_class = CustomPageNumberPagination
 
 
 class TestMethodViewSet(TrackUserMixin, viewsets.ModelViewSet):
@@ -525,6 +537,7 @@ class TestMethodViewSet(TrackUserMixin, viewsets.ModelViewSet):
     serializer_class = TestMethodSerializer
     permission_classes = [IsAuthenticated,HasModulePermission]
     filter_backends = [GenericSearchFilter]
+    pagination_class = CustomPageNumberPagination
 
     def get_queryset(self):
         user = self.request.user
@@ -551,6 +564,7 @@ class SampleFormViewSet(TrackUserMixin, viewsets.ModelViewSet):
     serializer_class = SampleFormSerializer
     permission_classes = [IsAuthenticated, HasModulePermission]
     filter_backends = [GenericSearchFilter]
+    pagination_class = CustomPageNumberPagination
 
     def get_queryset(self):
         user = self.request.user
@@ -772,6 +786,7 @@ class DynamicSampleFormEntryViewSet(TrackUserMixin,viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated,HasModulePermission]
     parser_classes = [MultiPartParser, FormParser, JSONParser]
     filter_backends = [GenericSearchFilter]
+    pagination_class = CustomPageNumberPagination
 
      
     @action(detail=False, methods=["post"])
@@ -1058,6 +1073,7 @@ class RequestFormViewSet(TrackUserMixin,viewsets.ModelViewSet):
     serializer_class = RequestFormSerializer
     permission_classes = [IsAuthenticated,HasModulePermission]
     filter_backends = [GenericSearchFilter]
+    pagination_class = CustomPageNumberPagination
 
     def get_queryset(self):
         user = self.request.user
@@ -1343,6 +1359,7 @@ class DynamicRequestFormEntryViewSet(TrackUserMixin,viewsets.ModelViewSet):
     serializer_class = DynamicRequestEntrySerializer
     permission_classes = [IsAuthenticated, HasModulePermission]
     filter_backends = [GenericSearchFilter]
+    pagination_class = CustomPageNumberPagination
 
     def partial_update(self, request, pk=None):
         entry = self.get_object()
@@ -1642,6 +1659,7 @@ class ProductViewSet(TrackUserMixin,viewsets.ModelViewSet):
     serializer_class = ProductSerializer
     permission_classes = [IsAuthenticated,HasModulePermission]
     filter_backends = [GenericSearchFilter]
+    pagination_class = CustomPageNumberPagination
 
 
     def get_queryset(self):
@@ -1661,6 +1679,7 @@ class RoleViewSet(TrackUserMixin,viewsets.ModelViewSet):
     queryset = models.Role.objects.all()
     serializer_class = RoleSerializer
     filter_backends = [GenericSearchFilter]
+    pagination_class = CustomPageNumberPagination
 
 
 class ModuleViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
@@ -1868,7 +1887,8 @@ class DynamicTableDataView(APIView):
 
 class EntryAnalysesSchemaView(APIView):
     """
-    Returns analyses and their components for a given entry.
+    Returns analyses and their components for a given entry,
+    including analysis-level status.
     """
     def get(self, request, entry_id):
         entry = get_object_or_404(models.DynamicFormEntry, pk=entry_id)
@@ -1885,8 +1905,13 @@ class EntryAnalysesSchemaView(APIView):
             comps = []
             for sc in ea.sample_components.all():
                 comp = sc.component
-
                 choices = sc.spec_limits if comp.type.lower() == "list" else None
+
+                # Optionally include result for each component if it exists
+                result = models.ComponentResult.objects.filter(
+                    entry=entry,
+                    sample_component=sc
+                ).first()
 
                 comps.append({
                     "id": sc.id,  # Sample Component ID
@@ -1900,16 +1925,51 @@ class EntryAnalysesSchemaView(APIView):
                     "choices": choices,
                     "specifications": sc.spec_limits,
                     "calculated": comp.calculated,
+                    "value": result.value if result else None,
+                    "numeric_value": result.numeric_value if result else None,
+                    "authorization_flag": result.authorization_flag if result else None,
+                    "remarks": result.remarks if result else None,
+                    "authorization_remark": result.authorization_remark if result else None,
                 })
+
+            # ---------------------------
+            # Compute analysis-level status
+            # ---------------------------
+            components = ea.sample_components.all()
+
+            if not components.exists():
+                analysis_status = "initiated"
+            else:
+                any_result_entered = False
+                all_authorized = True
+                for sc in components:
+                    r = models.ComponentResult.objects.filter(entry=entry, sample_component=sc).first()
+                    if not r or r.value in [None, ""]:
+                        all_authorized = False
+                    else:
+                        any_result_entered = True
+                        if not r.authorization_flag:
+                            all_authorized = False
+
+                if not any_result_entered:
+                    analysis_status = "initiated"
+                elif all_authorized:
+                    analysis_status = "authorized"
+                else:
+                    analysis_status = "completed"
 
             analyses_data.append({
                 "analysis_id": ea.analysis.id,
                 "analysis_name": ea.analysis.name,
-                "components": comps
+                "components": comps,
+                "analysis_status": analysis_status  # ✅ Added
             })
 
-        return Response({"entry_id": entry.id, "comment": entry.comment, "analyses": analyses_data})
-
+        return Response({
+            "entry_id": entry.id,
+            "comment": entry.comment,
+            "analyses": analyses_data
+        })
 
 
 class AnalysisResultSubmitView(TrackUserMixin, APIView):
@@ -2488,6 +2548,7 @@ class ActivityViewSet(viewsets.ModelViewSet):
     queryset = models.Activity.objects.all().order_by("-created_at")
     serializer_class = ActivitySerializer
     permission_classes = [IsAuthenticated]
+    pagination_class = CustomPageNumberPagination
 
     @action(detail=False, methods=["get"], url_path="export-csv")
     def export_to_csv(self, request):
@@ -3255,51 +3316,59 @@ class QueryReportRenderView(APIView):
         except Exception as e:
             return Response({"error": f"SQL execution failed: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        # 4️⃣ Prepare context for Jinja2
+        # 4️⃣ Parse JSON field from SQL result
+        if "data" in result[0]:
+            try:
+                parsed_data = json.loads(result[0]["data"])
+            except Exception:
+                parsed_data = {}
+        else:
+            parsed_data = {}
+
+        # 5️⃣ Prepare context for Jinja2
         context_data = {
-            "rows": result,    # full SQL result
-            "entry": entry,    # direct DynamicFormEntry instance (if needed)
-            **result[0]        # allow direct usage of column names in template
+            "rows": result,           # analysis rows
+            "entry": entry,           # DynamicFormEntry instance
+            "data": parsed_data,      # parsed JSON fields
+            "secondary_id": entry.secondary_id,
+            "created_at": entry.created_at
         }
 
-        # 4️⃣a Generate QR code for this sample
-        qr_url =  f"{settings.FRONTEND_BASE_URL}/sample-details/{sample_id}"
+        # 5️⃣a Generate QR code for this sample
+        qr_url = f"{settings.FRONTEND_BASE_URL}/sample-details/{sample_id}"
         qr = qrcode.QRCode(box_size=3, border=1)
         qr.add_data(qr_url)
         qr.make(fit=True)
         img = qr.make_image(fill_color="black", back_color="white")
 
-        # Convert QR to base64
         buffer = BytesIO()
         img.save(buffer, format="PNG")
         qr_base64 = base64.b64encode(buffer.getvalue()).decode()
         buffer.close()
 
-        # Add QR to context
         context_data["qr_code"] = f"data:image/png;base64,{qr_base64}"
-        context_data["sample_url"] = qr_url  # optional
+        context_data["sample_url"] = qr_url
 
-        # 5️⃣ Render HTML with Jinja2
+        # 6️⃣ Render HTML with Jinja2
         jinja_template = JinjaTemplate(template_obj.html_content)
         rendered_html = jinja_template.render(context_data)
 
-        # 6️⃣ Add CSS
+        # 7️⃣ Add CSS
         default_css = """
         @page { size: A4; margin: 10mm; }
         body { font-family: Arial, sans-serif; margin: 10px; }
         table { width: 100%; border-collapse: collapse; }
         th, td { border: 1px solid #000; padding: 6px; text-align: left; font-size: 12px; }
         th { background-color: #f2f2f2; }
-        /* QR code at top right */
         .qr-code { position: absolute; top: 10px; right: 10px; width: 80px; height: 80px; }
         """
         combined_css = f"{default_css}\n{template_obj.css_content or ''}"
 
-        # 5️⃣a Inject QR code at top-right in HTML if template allows
+        # 7️⃣a Inject QR code at top-right
         qr_html = f'<img class="qr-code" src="{context_data["qr_code"]}" alt="Sample QR">'
-        rendered_html = qr_html + rendered_html  # prepend QR at top-right
+        rendered_html = qr_html + rendered_html
 
-        # 7️⃣ Generate PDF
+        # 8️⃣ Generate PDF
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_pdf:
             temp_path = temp_pdf.name
 
@@ -3312,7 +3381,7 @@ class QueryReportRenderView(APIView):
             pdf_data = f.read()
         os.remove(temp_path)
 
-        # 8️⃣ Return response (inline or download)
+        # 9️⃣ Return response
         response = HttpResponse(pdf_data, content_type="application/pdf")
         filename = f"report_entry_{sample_id}.pdf"
         response["Content-Disposition"] = (
@@ -3379,13 +3448,12 @@ class AddCommentToRequest(APIView):
 
 
 
-class DynamicFormEntryPDFView(APIView):
+class DynamicFormEntryCompactTicketPDFView(APIView):
     """
-    GET /api/samples/pdf/?sample_id=&download=true
+    GET /api/samples/compact-ticket-pdf/?sample_id=&download=true
     """
 
     def get(self, request):
-
         sample_id = request.query_params.get("sample_id")
         download = request.query_params.get("download")
 
@@ -3395,146 +3463,78 @@ class DynamicFormEntryPDFView(APIView):
         entry = get_object_or_404(models.DynamicFormEntry, id=sample_id)
 
         # ---------------- QR CODE ----------------
-
         qr_url = f"{settings.FRONTEND_BASE_URL}/sample-details/{entry.id}"
-
         qr = qrcode.QRCode(box_size=3, border=1)
         qr.add_data(qr_url)
         qr.make(fit=True)
-
         img = qr.make_image(fill_color="black", back_color="white")
-
         buffer = BytesIO()
         img.save(buffer, format="PNG")
         qr_base64 = base64.b64encode(buffer.getvalue()).decode()
         buffer.close()
 
-        # ---------------- HTML TEMPLATE ----------------
-
+        # ---------------- HTML ----------------
         html_content = f"""
 <html>
 <head>
 <style>
-@page {{ size:A4; margin:15mm; }}
-
-body {{
-    font-family: Arial;
-    font-size:12px;
-    color:#333;
-}}
-
-.header {{
-    display:flex;
-    justify-content:space-between;
-    border-bottom:2px solid #ddd;
-    padding-bottom:10px;
-    margin-bottom:15px;
-}}
-
-.left h2 {{
-    margin:0;
-    font-size:18px;
-}}
-
-.meta {{
-    margin-top:8px;
-    display:grid;
-    grid-template-columns:auto auto;
-    gap:6px 25px;
-}}
-
-.label {{ color:#777; }}
-.value {{ font-weight:600; }}
-
-.qr {{ width:90px; }}
-
-.section {{ margin-top:15px; }}
-
-.section-title {{
-    font-weight:bold;
-    font-size:14px;
-    margin-bottom:8px;
-}}
-
-.data-grid {{
-    display:grid;
-    grid-template-columns:repeat(2,1fr);
-    gap:10px;
-}}
-
-.card {{
-    background:#f7f8fa;
-    padding:8px 10px;
-    border-radius:6px;
-}}
-
-.card span {{
-    display:block;
-}}
-
-.footer {{
-    margin-top:20px;
-    font-size:10px;
-    color:#888;
-    text-align:center;
-}}
+  @page {{
+      size: 80mm 50mm;  /* Sticky note size */
+      margin: 0;
+  }}
+  body {{
+      font-family: Arial;
+      font-size:8px;
+      margin:0;
+      padding:0;
+  }}
+  .container {{
+      display:flex;
+      align-items:flex-start;
+      gap:3mm;
+      padding:2mm;
+  }}
+  .qr {{
+      flex:none;
+  }}
+  .details {{
+      flex:1;
+      line-height:1.1;
+  }}
 </style>
 </head>
-
 <body>
-
-<div class="header">
-
-<div class="left">
-<h2>{entry.form.sample_name}</h2>
-
-<div class="meta">
-<span class="label">Sample ID</span><span class="value">{entry.id}</span>
-<span class="label">Secondary ID</span><span class="value">{entry.secondary_id}</span>
-<span class="label">Status</span><span class="value">{entry.status}</span>
-<span class="label">Created</span><span class="value">{entry.created_at.strftime("%d %b %Y %H:%M")}</span>
-</div>
-
-</div>
-
-<img class="qr" src="data:image/png;base64,{qr_base64}">
-
-</div>
-
-<div class="section">
-<div class="section-title">Sample Information</div>
-
-<div class="data-grid">
+<div class="container">
+  <div class="qr">
+    <img src="data:image/png;base64,{qr_base64}" width="70" height="70">
+  </div>
+  <div class="details">
+    <strong style="font-size:10px;">{entry.form.sample_name}</strong><br/>
+    <span>Sample ID: {entry.id}</span><br/>
+    <span>Secondary ID: {entry.secondary_id}</span><br/>
+    <span>Status: {entry.status}</span><br/>
+    <span>Created: {entry.created_at.strftime("%d %b %Y %H:%M")}</span><br/>
 """
 
-        # ---------- JSON DATA ----------
-
+        # Add JSON fields dynamically
         for k, v in entry.data.items():
-            html_content += f"""
-            <div class="card">
-                <span class="label">{k}</span>
-                <span class="value">{v}</span>
-            </div>
-            """
+            html_content += f"<span>{k}: {v}</span><br/>"
 
         html_content += """
+  </div>
 </div>
-</div>
-
-<div class="footer">
-Generated electronically • No signature required
-</div>
-
 </body>
 </html>
 """
 
         # ---------------- PDF GENERATE ----------------
-
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp:
             temp_path = temp.name
 
-        HTML(string=html_content).write_pdf(temp_path)
+        HTML(string=html_content).write_pdf(
+            temp_path,
+            stylesheets=[CSS(string="@page { size: 80mm 50mm; margin:0; }")]
+        )
 
         with open(temp_path, "rb") as f:
             pdf = f.read()
@@ -3542,14 +3542,12 @@ Generated electronically • No signature required
         os.remove(temp_path)
 
         response = HttpResponse(pdf, content_type="application/pdf")
-
-        filename = f"sample_{entry.id}.pdf"
+        filename = f"sample_{entry.id}_ticket.pdf"
         response["Content-Disposition"] = (
-            f'attachment; filename="{filename}"'
-            if download else
-            f'inline; filename="{filename}"'
+            f'attachment; filename="{filename}"' if download else f'inline; filename="{filename}"'
         )
 
         return response
+    
 
 
