@@ -2150,38 +2150,45 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
         # Update overall entry status
         # ---------------------------
         def update_entry_status(entry_obj):
-            entry_analyses_obj = models.DynamicFormEntryAnalysis.objects.filter(entry=entry_obj)
+            entry_analyses = models.DynamicFormEntryAnalysis.objects.filter(entry=entry_obj)
 
-            any_result_entered = False
-            all_analyses_completed = True
+            total_components = 0
+            filled_components = 0
+            all_authorized = True
 
-            for ea in entry_analyses_obj:
-                analysis_completed = True
-                components = ea.sample_components.all()
+            for ea in entry_analyses:
+                sample_components = ea.sample_components.all()
+                total_components += sample_components.count()
 
-                for sc in components:
+                for sc in sample_components:
                     result = models.ComponentResult.objects.filter(
                         entry=entry_obj,
                         sample_component=sc
                     ).first()
-                    if not result or result.value in [None, ""]:
-                        analysis_completed = False
+
+                    # Check if filled
+                    if result and (result.value not in [None, ""] or result.numeric_value is not None):
+                        filled_components += 1
+                        if not result.authorization_flag:
+                            all_authorized = False
                     else:
-                        any_result_entered = True
+                        all_authorized = False
 
-                if not analysis_completed:
-                    all_analyses_completed = False
-
-            if all_analyses_completed and any_result_entered:
-                entry_obj.status = "completed"
-            elif any_result_entered:
-                entry_obj.status = "in_progress"
-            else:
+            # ✅ Final Decision Logic
+            if total_components == 0 or filled_components == 0:
                 entry_obj.status = "received"
+
+            elif filled_components < total_components:
+                entry_obj.status = "in_progress"
+
+            elif filled_components == total_components and all_authorized:
+                entry_obj.status = "completed"
+
+            else:
+                entry_obj.status = "in_progress"
 
             entry_obj.save(update_fields=["status"])
             return entry_obj.status
-
         final_status = update_entry_status(entry)
 
         # ---------------------------
