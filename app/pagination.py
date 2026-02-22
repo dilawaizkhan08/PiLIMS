@@ -8,7 +8,19 @@ class CustomPageNumberPagination(PageNumberPagination):
     max_page_size = 1000
     page_query_param = "page"
 
+    def paginate_queryset(self, queryset, request, view=None):
+        if request.query_params.get("all") == "true":
+            self.page = None
+            return None
+        return super().paginate_queryset(queryset, request, view)
+
     def get_paginated_response(self, data):
+        if self.page is None:
+            return Response({
+                "total_records": len(data),
+                "results": data,
+            })
+
         return Response({
             "total_records": self.page.paginator.count,
             "total_pages": self.page.paginator.num_pages,
