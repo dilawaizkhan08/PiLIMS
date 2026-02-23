@@ -390,15 +390,36 @@ class DynamicFormAttachment(models.Model):
         return f"{self.field.field_name} - {self.file.name}"
 
 
+from django.db import models
+from django.utils import timezone
+
 class StatusHistory(models.Model):
     entry = models.ForeignKey("DynamicFormEntry", on_delete=models.CASCADE, related_name="status_history")
     old_status = models.CharField(max_length=20, null=True, blank=True)
     new_status = models.CharField(max_length=20)
-    updated_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True)
+    updated_by = models.ForeignKey("User", on_delete=models.SET_NULL, null=True)
     updated_at = models.DateTimeField(auto_now_add=True)
+    tat = models.FloatField(null=True, blank=True, help_text="TAT in seconds")
 
-    def __str__(self):
-        return f"{self.entry.id}: {self.old_status} → {self.new_status} by {self.updated_by}"
+    def save(self, *args, **kwargs):
+        # Track if this is a new record
+        is_new = self.pk is None
+
+        # First save to get updated_at set
+        super().save(*args, **kwargs)
+
+        # Only calculate TAT for new records
+        if is_new:
+            # Get the last previous status for the same entry
+            last_status = StatusHistory.objects.filter(entry=self.entry).exclude(pk=self.pk).order_by('-updated_at').first()
+            if last_status:
+                delta = self.updated_at - last_status.updated_at
+                self.tat = delta.total_seconds()  # store seconds
+                super().save(update_fields=["tat"])
+            else:
+                # First status record → no previous TAT
+                self.tat = 0
+                super().save(update_fields=["tat"])
 
 
 class SampleComponent(models.Model):
