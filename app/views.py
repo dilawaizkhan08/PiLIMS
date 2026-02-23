@@ -3460,7 +3460,7 @@ class DynamicFormEntryCompactTicketPDFView(APIView):
 <head>
 <style>
   @page {{
-      size: 80mm 50mm;  /* Sticky note size */
+      size: 100mm 37.5mm;  /* width:height = 4:1.5 */
       margin: 0;
   }}
   body {{
@@ -3470,17 +3470,18 @@ class DynamicFormEntryCompactTicketPDFView(APIView):
       padding:0;
   }}
   .container {{
-      display:flex;
-      align-items:flex-start;
-      gap:3mm;
-      padding:2mm;
+      display: flex;
+      flex-direction: row;  /* horizontal layout */
+      align-items: flex-start;
+      gap: 3mm;
+      padding: 2mm;
   }}
   .qr {{
-      flex:none;
+      flex: none;
   }}
   .details {{
-      flex:1;
-      line-height:1.1;
+      flex: 1;
+      line-height: 1.1;
   }}
 </style>
 </head>
@@ -3491,10 +3492,7 @@ class DynamicFormEntryCompactTicketPDFView(APIView):
   </div>
   <div class="details">
     <strong style="font-size:10px;">{entry.form.sample_name}</strong><br/>
-    <span>Sample ID: {entry.id}</span><br/>
     <span>Secondary ID: {entry.secondary_id}</span><br/>
-    <span>Status: {entry.status}</span><br/>
-    <span>Created: {entry.created_at.strftime("%d %b %Y %H:%M")}</span><br/>
 """
 
         # Add JSON fields dynamically
@@ -3514,7 +3512,7 @@ class DynamicFormEntryCompactTicketPDFView(APIView):
 
         HTML(string=html_content).write_pdf(
             temp_path,
-            stylesheets=[CSS(string="@page { size: 80mm 50mm; margin:0; }")]
+            stylesheets=[CSS(string="@page { size: 100mm 37.5mm; margin:0; }")]
         )
 
         with open(temp_path, "rb") as f:
@@ -3528,7 +3526,7 @@ class DynamicFormEntryCompactTicketPDFView(APIView):
             f'attachment; filename="{filename}"' if download else f'inline; filename="{filename}"'
         )
 
-        return response
-    
+        return response 
+
 
 

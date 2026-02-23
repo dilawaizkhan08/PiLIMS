@@ -363,8 +363,9 @@ class DynamicFormEntry(BaseModel):
 
         # pk milne ke baad secondary_id generate karo
         if is_new and not self.secondary_id:
-            timestamp = self.created_at.strftime("%Y%m%d%H%M%S")
-            self.secondary_id = f"{timestamp}-{self.id}"
+            # Format date as YYYYMMDD
+            created_date_str = self.created_at.strftime("%Y%m%d")
+            self.secondary_id = f"S-{created_date_str}-{self.id}"
             super().save(update_fields=["secondary_id"])
 
     def __str__(self):
