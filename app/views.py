@@ -42,7 +42,7 @@ import tempfile
 import os,base64
 from django.db.models import Count, Sum, Avg, Q, F, ExpressionWrapper, DurationField
 from .filters import GenericSearchFilter
-from .utility import create_entry_analyses
+from .utility import create_entry_analyses,update_status_with_history
 
 from app.serializers import ComponentResultSerializer
 from app.user_limit import check_user_limit
@@ -780,15 +780,17 @@ class SampleFormSubmitView(APIView):
         }, status=status.HTTP_201_CREATED)
 
 
-class DynamicSampleFormEntryViewSet(TrackUserMixin,viewsets.ModelViewSet):
+class DynamicSampleFormEntryViewSet(viewsets.ModelViewSet):
     queryset = models.DynamicFormEntry.objects.all().order_by("-created_at")
     serializer_class = DynamicFormEntrySerializer
-    permission_classes = [IsAuthenticated,HasModulePermission]
+    permission_classes = [IsAuthenticated, HasModulePermission]
     parser_classes = [MultiPartParser, FormParser, JSONParser]
     filter_backends = [GenericSearchFilter]
     pagination_class = CustomPageNumberPagination
 
-     
+    # -----------------------------
+    # Update Status Endpoint
+    # -----------------------------
     @action(detail=False, methods=["post"])
     def update_status(self, request):
         new_status = request.data.get("status")
@@ -829,7 +831,7 @@ class DynamicSampleFormEntryViewSet(TrackUserMixin,viewsets.ModelViewSet):
                 )
 
         valid_statuses = dict(models.DynamicFormEntry.STATUS_CHOICES)
-        if new_status not in valid_statuses and new_status != "unhold":
+        if new_status not in valid_statuses and new_status not in ["unhold", "assign_analyst"]:
             return Response({"error": "Invalid status"}, status=400)
 
         entries = models.DynamicFormEntry.objects.filter(id__in=ids)
@@ -853,13 +855,7 @@ class DynamicSampleFormEntryViewSet(TrackUserMixin,viewsets.ModelViewSet):
                         "error": f"Entry {entry.id} must be 'received' before assigning analyst."
                     }, status=400)
 
-                models.StatusHistory.objects.create(
-                    entry=entry,
-                    old_status=entry.status,
-                    new_status="assign_analyst",
-                    updated_by=user
-                )
-
+            # Only assign analyst (status unchanged → no history needed)
             entries.update(analyst=analyst)
             return Response({
                 "message": f"Analyst {analyst.id} assigned to entries (status unchanged)",
@@ -871,7 +867,7 @@ class DynamicSampleFormEntryViewSet(TrackUserMixin,viewsets.ModelViewSet):
         # -----------------------------
         for entry in entries:
 
-            # ❌ Completed is locked except authorize/reject
+            # ❌ Completed is locked except authorize/reject/hold
             if entry.status == "completed" and new_status not in ["authorized", "rejected", "hold"]:
                 return Response({
                     "error": f"Entry {entry.id} is completed and cannot be changed."
@@ -891,15 +887,7 @@ class DynamicSampleFormEntryViewSet(TrackUserMixin,viewsets.ModelViewSet):
                     return Response({
                         "error": f"Entry {entry.id} is already on hold."
                     }, status=400)
-
-                models.StatusHistory.objects.create(
-                    entry=entry,
-                    old_status=entry.status,
-                    new_status="hold",
-                    updated_by=user
-                )
-                entry.status = "hold"
-                entry.save(update_fields=["status"])
+                update_status_with_history(entry, "hold", user)
                 continue
 
             # -----------------------------
@@ -910,7 +898,8 @@ class DynamicSampleFormEntryViewSet(TrackUserMixin,viewsets.ModelViewSet):
                     return Response({
                         "error": f"Entry {entry.id} can only be reactivated if it is 'authorized' or 'rejected'."
                     }, status=400)
-
+                update_status_with_history(entry, "in_progress", user)  # reactivate → reset to in_progress
+                continue
 
             # -----------------------------
             # Unhold → restore previous status
@@ -927,38 +916,20 @@ class DynamicSampleFormEntryViewSet(TrackUserMixin,viewsets.ModelViewSet):
                     .order_by("-id")
                     .first()
                 )
-
                 restored_status = last_status.old_status if last_status else "in_progress"
-
-                models.StatusHistory.objects.create(
-                    entry=entry,
-                    old_status="hold",
-                    new_status=restored_status,
-                    updated_by=user
-                )
-                entry.status = restored_status
-                entry.save(update_fields=["status"])
+                update_status_with_history(entry, restored_status, user)
                 continue
 
             # -----------------------------
             # Normal status update
             # -----------------------------
-            models.StatusHistory.objects.create(
-                entry=entry,
-                old_status=entry.status,
-                new_status=new_status,
-                updated_by=user
-            )
-            entry.status = new_status
-            entry.save(update_fields=["status"])
+            update_status_with_history(entry, new_status, user)
 
         return Response({
             "message": f"Status updated to {new_status}",
             "updated_ids": ids
         })
-
-
-
+    
     @action(detail=False, methods=["get"], url_path="stats")
     def get_stats(self, request):
         """Return total and status-wise counts for sample entries"""
@@ -993,6 +964,7 @@ class DynamicSampleFormEntryViewSet(TrackUserMixin,viewsets.ModelViewSet):
         }
 
         return Response(data, status=status.HTTP_200_OK)
+
 
 
 class DynamicRequestAttachmentViewSet(TrackUserMixin,viewsets.ModelViewSet):
@@ -2149,7 +2121,8 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
         # ---------------------------
         # Update overall entry status
         # ---------------------------
-        def update_entry_status(entry_obj):
+
+        def update_entry_status(entry_obj, user):
             entry_analyses = models.DynamicFormEntryAnalysis.objects.filter(entry=entry_obj)
 
             total_components = 0
@@ -2176,20 +2149,21 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
 
             # ✅ Final Decision Logic
             if total_components == 0 or filled_components == 0:
-                entry_obj.status = "received"
-
+                final_status = "received"
             elif filled_components < total_components:
-                entry_obj.status = "in_progress"
-
+                final_status = "in_progress"
             elif filled_components == total_components and all_authorized:
-                entry_obj.status = "completed"
-
+                final_status = "completed"
             else:
-                entry_obj.status = "in_progress"
+                final_status = "in_progress"
 
-            entry_obj.save(update_fields=["status"])
-            return entry_obj.status
-        final_status = update_entry_status(entry)
+            # Use helper to update status and create history
+            update_status_with_history(entry_obj, final_status, user)
+
+            return final_status
+
+
+        final_status = update_entry_status(entry, request.user)
 
         # ---------------------------
         # Analysis-level status

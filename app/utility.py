@@ -5,6 +5,7 @@ from rest_framework.response import Response
 from rest_framework import status
 from smtplib import SMTPException
 import logging
+from app import models
 
 
 
@@ -16,23 +17,6 @@ def paginate_queryset(request, view, queryset, serializer_class):
         return view.get_paginated_response(serializer.data)
     serializer = serializer_class(queryset, many=True, context={"request": request})
     return Response(serializer.data)
-
-# send_mail generic function
-def send_email(subject, message, recipient_list):
-    def background_send_email():
-        try:
-            send_mail(
-                subject,
-                message,
-                settings.EMAIL_HOST_USER,
-                recipient_list,
-                fail_silently=False
-            )
-        except SMTPException as e:
-            logger.error(f"SMTPException: Failed to send email to {recipient_list}: {e}") # we have not set up logging settings so it will log only on console
-        except Exception as e:
-            logger.error(f"Unexpected error while sending email to {recipient_list}: {e}")
-    scheduler.add_job(background_send_email)
 
 
 def create_entry_analyses(entry, analysis_ids):
@@ -88,3 +72,21 @@ def create_entry_analyses(entry, analysis_ids):
                         parameter=param.parameter,
                         mapped_sample_component=mapped_sc
                     )
+
+
+def update_status_with_history(entry, new_status, user):
+    """
+    Centralized status update with history creation.
+    Only creates history if status actually changes.
+    """
+    if entry.status != new_status:
+        old_status = entry.status
+        entry.status = new_status
+        entry.save(update_fields=["status"])
+
+        models.StatusHistory.objects.create(
+            entry=entry,
+            old_status=old_status,
+            new_status=new_status,
+            updated_by=user
+        )
