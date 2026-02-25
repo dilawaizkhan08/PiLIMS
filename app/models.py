@@ -756,7 +756,8 @@ class ReportTemplate(models.Model):
 
 class QueryReportTemplate(BaseModel):
     name = models.CharField(max_length=255)
-    html_content = models.TextField()   # Raw HTML with {{ placeholders }}
+    raw_html_content = models.TextField()
+    jinja_html_content = models.TextField(blank=True, null=True)
     css_content = models.TextField(blank=True, null=True)
     fields = models.JSONField(default=list) 
 

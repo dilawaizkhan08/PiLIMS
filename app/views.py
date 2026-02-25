@@ -3236,7 +3236,8 @@ class QueryReportTemplateCreateView(APIView):
             # 2️⃣ Save template only if SQL OK
             template = models.QueryReportTemplate.objects.create(
                 name=payload.get("name"),
-                html_content=payload.get("html_content", ""),
+                raw_html_content=payload.get("raw_html_content"),
+                jinja_html_content=payload.get("jinja_html_content"),
                 css_content=payload.get("css_content", ""),
                 sql_query=sql_query,
                 fields=payload.get("fields", []),
@@ -3331,7 +3332,7 @@ class QueryReportRenderView(APIView):
         context_data["sample_url"] = qr_url
 
         # 6️⃣ Render HTML with Jinja2
-        jinja_template = JinjaTemplate(template_obj.html_content)
+        jinja_template = JinjaTemplate(template_obj.jinja_html_content)
         rendered_html = jinja_template.render(context_data)
 
         # 7️⃣ Add CSS
