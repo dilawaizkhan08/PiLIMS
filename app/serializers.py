@@ -2169,8 +2169,18 @@ class ReportTemplateSerializer(serializers.ModelSerializer):
 class QueryReportTemplateSerializer(serializers.ModelSerializer):
     class Meta:
         model = models.QueryReportTemplate
-        fields = ["id","name","html_content","css_content","sql_query","parameters","output_format", "created_at", "updated_at"]
-
+        fields = [
+            "id",
+            "name",
+            "raw_html_content",
+            "jinja_html_content",
+            "css_content",
+            "sql_query",
+            "parameters",
+            "output_format",
+            "created_at",
+            "updated_at",
+        ]
 
 class AddCommentSerializer(serializers.Serializer):
     comment = serializers.CharField(required=True)
