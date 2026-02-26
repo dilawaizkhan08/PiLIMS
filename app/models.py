@@ -334,7 +334,7 @@ class DynamicFormEntry(BaseModel):
         ("assign_analyst", "Assign Analyst"), 
         ("hold", "Hold"),
         ("unhold", "Un Hold"),
-        ("authorized", "Authorized"),
+        ("release", "Realease"),
         ("rejected", "Rejected"),
         ("cancelled", "Cancelled"),
         ("reactivate", "Reactivate"),]
@@ -541,7 +541,7 @@ class DynamicRequestEntry(BaseModel):
     STATUS_CHOICES = [
         ("initiated", "Initiated"),
         ("received", "Received"),
-        ("authorized", "Authorized"),
+        ("release", "Realease"),
         ("rejected", "Rejected"),
         ("cancelled", "Cancelled"),
         ("restored", "Restored"),
@@ -684,7 +684,7 @@ PERMISSION_CHOICES = [
     ("delete", "Delete"),
     ("receive", "Receive"),
     ("result_entry", "Result Entry"),
-    ("authorize", "Authorize"),
+    ("release", "Realease"),
     ("cancel_restore", "Cancel/Restore"),
     ("reactivate", "Reactivate"),
 ]

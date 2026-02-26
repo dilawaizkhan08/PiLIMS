@@ -57,6 +57,10 @@ from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import csrf_exempt
 from jinja2 import Template as JinjaTemplate
 from .pagination import CustomPageNumberPagination
+from datetime import datetime, timedelta
+import qrcode
+import base64
+from io import BytesIO
 import logging
 logger = logging.getLogger(__name__)
 
@@ -808,8 +812,8 @@ class DynamicSampleFormEntryViewSet(viewsets.ModelViewSet):
             "in_progress": "result_entry",
             "completed": "result_entry",
             "assign_analyst": "update",
-            "authorized": "authorize",
-            "rejected": "authorize",
+            "release" : "release",
+            "rejected": "release",
             "hold": "cancel_restore",
             "unhold": "cancel_restore",
             "reactivate": "reactivate",
@@ -868,13 +872,13 @@ class DynamicSampleFormEntryViewSet(viewsets.ModelViewSet):
         for entry in entries:
 
             # ❌ Completed is locked except authorize/reject/hold
-            if entry.status == "completed" and new_status not in ["authorized", "rejected", "hold"]:
+            if entry.status == "completed" and new_status not in ["release", "rejected", "hold"]:
                 return Response({
                     "error": f"Entry {entry.id} is completed and cannot be changed."
                 }, status=400)
 
             # ❌ Authorize / Reject only if completed
-            if new_status in ["authorized", "rejected"] and entry.status != "completed":
+            if new_status in ["release", "rejected"] and entry.status != "completed":
                 return Response({
                     "error": f"Entry {entry.id} must be completed before {new_status}."
                 }, status=400)
@@ -894,9 +898,9 @@ class DynamicSampleFormEntryViewSet(viewsets.ModelViewSet):
             # Reactivate validation
             # -----------------------------
             if new_status == "reactivate":
-                if entry.status not in ["authorized", "rejected"]:
+                if entry.status not in ["release", "rejected"]:
                     return Response({
-                        "error": f"Entry {entry.id} can only be reactivated if it is 'authorized' or 'rejected'."
+                        "error": f"Entry {entry.id} can only be reactivated if it is 'release' or 'rejected'."
                     }, status=400)
                 update_status_with_history(entry, "in_progress", user)  # reactivate → reset to in_progress
                 continue
@@ -1503,8 +1507,8 @@ class DynamicRequestFormEntryViewSet(TrackUserMixin,viewsets.ModelViewSet):
         # ---------------------------
         status_permission_map = {
             "received": "receive",
-            "authorized": "authorize",
-            "rejected": "authorize",
+            "release": "release",
+            "rejected": "release",
             "cancelled": "cancel_restore",
             "restored": "cancel_restore",
         }
@@ -1588,7 +1592,7 @@ class DynamicRequestFormEntryViewSet(TrackUserMixin,viewsets.ModelViewSet):
 
         initiated = queryset.filter(status="initiated").count()
         received = queryset.filter(status="received").count()
-        authorized = queryset.filter(status="authorized").count()
+        authorized = queryset.filter(status="release").count()
 
         def percentage(count):
             return round((count / total_requests) * 100, 2)
@@ -1613,8 +1617,6 @@ class DynamicRequestFormEntryViewSet(TrackUserMixin,viewsets.ModelViewSet):
         }
 
         return Response(data, status=status.HTTP_200_OK)
-
-
 
 class SamplingPointViewSet(viewsets.ModelViewSet):
     queryset = models.SamplingPoint.objects.all()
@@ -2939,10 +2941,6 @@ class QueryReportTemplateViewSet(viewsets.ModelViewSet):
     queryset = models.QueryReportTemplate.objects.all().order_by('-id')
     serializer_class = QueryReportTemplateSerializer
 
-from datetime import datetime, timedelta
-
-
-
 
 STATUS_CHOICES = [
     ("initiated", "Initiated"),
@@ -2950,7 +2948,7 @@ STATUS_CHOICES = [
     ("in_progress", "In Progress"),
     ("completed", "Completed"),
     ("assign_analyst", "Assign Analyst"),
-    ("authorized", "Authorized"),
+    ("release", "release"),
     ("rejected", "Rejected"),
     ("cancelled", "Cancelled"),
     ("restored", "Restored"),
@@ -3117,6 +3115,7 @@ class AnalyticsAPIView(APIView):
         }
 
         return Response(payload)
+
 @method_decorator(csrf_exempt, name='dispatch')
 class QueryReportTemplateCreateView(APIView):
 
@@ -3180,11 +3179,6 @@ class QueryReportTemplateCreateView(APIView):
 
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-
-import qrcode
-import base64
-from io import BytesIO
 
 
 class QueryReportRenderView(APIView):
@@ -3355,8 +3349,6 @@ class AddCommentToRequest(APIView):
         entry.save()
 
         return Response({"message": "Comment added successfully"}, status=status.HTTP_200_OK)
-
-
 
 class DynamicFormEntryCompactTicketPDFView(APIView):
     """
