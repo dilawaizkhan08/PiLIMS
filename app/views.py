@@ -3450,4 +3450,173 @@ class DynamicFormEntryCompactTicketPDFView(APIView):
         return response 
 
 
+from .models import DynamicFormEntry, Product 
 
+class DynamicFormEntryQCReportPDFView(APIView):
+    def get_template_config(self, status):
+        configs = {
+            "initiated": {"title": "Sample Label Template", "doc_no": "BC-GRC-IMS-SOP-25-F-01", "color": "transparent"},
+            "release": {"title": "Released Label Template", "doc_no": "BC-GRC-IMS-SOP-25-F-02", "color": "#28a745"}, 
+            "rejected": {"title": "Rejected Label Template", "doc_no": "BC-GRC-IMS-SOP-25-F-03", "color": "#dc3545"}, 
+            "hold": {"title": "Hold Label Template", "doc_no": "BC-GRC-IMS-SOP-25-F-04", "color": "#ffc107"}, 
+            "in_progress": {"title": "Sampled Label Template", "doc_no": "BC-GRC-IMS-SOP-25-F-07", "color": "transparent"},
+        }
+        return configs.get(status, {"title": "Sample Label Template", "doc_no": "BC-GRC-IMS-SOP-25-F-05", "color": "transparent"})
+
+    def get(self, request):
+        sample_id = request.query_params.get("sample_id")
+        status_param = request.query_params.get("status")
+        
+        if not sample_id:
+            return Response({"error": "sample_id required"}, status=400)
+
+        entry = get_object_or_404(DynamicFormEntry, id=sample_id)
+        current_status = status_param if status_param else entry.status
+        config = self.get_template_config(current_status)
+        data = entry.data
+
+        # URLs for Logos
+        badael_logo_url = "https://media.licdn.com/dms/image/v2/D4D0BAQFUUVon6pRWBg/company-logo_200_200/company-logo_200_200/0/1726468408029/badaelco_logo?e=2147483647&v=beta&t=NkWnD-j3U4_uL2BK-IKTjHMINxnaOmCWwMLSkhCHRkg"
+        pif_logo_url = "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcS8ufvCrOWQsqXNOzpcgs77H-G588886PIcXA&s"
+
+        # Product Name Logic
+        product_id = data.get("Product")
+        product_display_name = "---"
+        if product_id:
+            try:
+                product_obj = Product.objects.get(id=product_id)
+                product_display_name = product_obj.name
+            except (Product.DoesNotExist, ValueError):
+                product_display_name = entry.form.sample_name
+
+        current_date = timezone.now().strftime("%Y-%m-%d") 
+        mfg_date = data.get("Manufacturing Date", "---").split('T')[0]
+        exp_date = data.get("Expiry Date", "---").split('T')[0]
+
+        html_content = f"""
+        <html>
+        <head>
+        <style>
+            @page {{ size: A4; margin: 0; }}
+            body {{ font-family: 'Arial', sans-serif; margin: 0; padding: 40px; color: #000; }}
+            
+            .header-container {{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }}
+            .logo-pif {{ height: 50px; width: auto; }}
+            .logo-badael {{ height: 60px; width: auto; }}
+            
+            .sub-header {{ display: flex; justify-content: space-between; margin-top: 15px; font-size: 10px; border-top: 1px solid #eee; padding-top: 10px; }}
+            .doc-info-table {{ text-align: left; font-size: 10px; line-height: 1.4; }}
+            .doc-no-red {{ color: #FF0000; font-weight: bold; }}
+
+            .main-title-text {{ margin-top: 25px; font-weight: bold; font-size: 15px; text-transform: uppercase; }}
+
+            /* Compact Square Box */
+            .label-outer-box {{
+                border: 2px solid #5599FF;
+                border-radius: 35px;
+                margin: 40px auto; 
+                padding: 30px 40px;
+                width: 60%;
+                min-height: 350px;
+                background-color: {config['color']}; 
+                color: #000; 
+                display: flex;
+                flex-direction: column;
+                justify-content: space-between;
+            }}
+            .label-title {{ text-align: center; font-size: 18px; font-weight: bold; text-decoration: underline; margin-bottom: 25px; }}
+            
+            .data-row {{ margin-bottom: 15px; display: flex; font-size: 13px; align-items: baseline; }}
+            .data-label {{ font-weight: bold; width: 130px; }}
+            .data-value {{ flex-grow: 1; padding-left: 8px; border-bottom: 1px solid #000; min-height: 18px; }}
+
+            .bottom-footer {{
+                position: absolute;
+                bottom: 30px;
+                left: 40px;
+                right: 40px;
+                display: flex;
+                justify-content: space-between;
+                font-size: 9px;
+                font-weight: bold;
+            }}
+        </style>
+        </head>
+        <body>
+            <div class="header-container">
+                <img src="{pif_logo_url}" class="logo-pif">
+                <img src="{badael_logo_url}" class="logo-badael">
+            </div>
+
+            <div class="sub-header">
+                <div style="font-weight: bold;">
+                    Badael Company – Governance, Risk & Compliance (GRC)<br>
+                    {config['title']}
+                </div>
+                <div class="doc-info-table">
+                    Document No. <span class="doc-no-red">{config['doc_no']}</span><br>
+                    Version No. <span style="color: #FF0000;">1.0</span><br>
+                    Effective Date: {current_date}<br>
+                    Next Review Date: 
+                </div>
+            </div>
+
+            <div class="main-title-text">{config['title']}</div>
+
+            <div class="label-outer-box">
+                <div>
+                    <div class="label-title">{config['title'].replace(' Template', '')}</div>
+                    
+                    <div class="data-row">
+                        <span class="data-label">Product name:</span>
+                        <span class="data-value">{product_display_name}</span>
+                    </div>
+                    <div class="data-row">
+                        <span class="data-label">Batch number:</span>
+                        <span class="data-value">{data.get("Batch Number", "---")}</span>
+                    </div>
+                    <div class="data-row">
+                        <span class="data-label">Mfg. Date:</span>
+                        <span class="data-value">{mfg_date}</span>
+                    </div>
+                    <div class="data-row">
+                        <span class="data-label">Exp. Date:</span>
+                        <span class="data-value">{exp_date}</span>
+                    </div>
+                    <div class="data-row">
+                        <span class="data-label">Quantity:</span>
+                        <span class="data-value">{data.get("Quantity", "---")}</span>
+                    </div>
+
+                    <div class="data-row" style="margin-top: 35px;">
+                        <span class="data-label" style="width: 100px;">Sign by/date:</span>
+                        <span class="data-value"></span>
+                    </div>
+                </div>
+                
+                <div style="text-align: right; font-weight: bold; font-size: 10px;">
+                    {config['doc_no']}
+                </div>
+            </div>
+
+            <div class="bottom-footer">
+                <div>Related Procedure: BC-GRC-IMS-SOP-25</div>
+                <div>Badael Confidential – For Internal Use Only</div>
+            </div>
+        </body>
+        </html>
+        """
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp:
+            temp_path = temp.name
+
+        HTML(string=html_content).write_pdf(temp_path)
+
+        with open(temp_path, "rb") as f:
+            pdf = f.read()
+        os.remove(temp_path)
+
+        response = HttpResponse(pdf, content_type="application/pdf")
+        filename = f"QC_Report_{entry.secondary_id}.pdf"
+        response["Content-Disposition"] = f'inline; filename="{filename}"'
+        return response

@@ -85,5 +85,6 @@ urlpatterns = [
     
     path("db-structure/", views.DatabaseStructureView.as_view(), name="db-structure"),
     path('samples/pdf/', views.DynamicFormEntryCompactTicketPDFView.as_view(), name='sample_pdf'),
+    path('samples/qc-label-pdf/', views.DynamicFormEntryQCReportPDFView.as_view(),)
 
 ]
