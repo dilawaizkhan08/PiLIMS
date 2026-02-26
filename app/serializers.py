@@ -1894,6 +1894,7 @@ class ProductSerializer(serializers.ModelSerializer):
             "user_groups",
             "user_groups_ids",
             "analyses_data",
+            "product_type",
         ]
 
     # ----------------------------

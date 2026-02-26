@@ -2939,6 +2939,10 @@ class QueryReportTemplateViewSet(viewsets.ModelViewSet):
     queryset = models.QueryReportTemplate.objects.all().order_by('-id')
     serializer_class = QueryReportTemplateSerializer
 
+from datetime import datetime, timedelta
+
+
+
 
 STATUS_CHOICES = [
     ("initiated", "Initiated"),
@@ -2952,33 +2956,72 @@ STATUS_CHOICES = [
     ("restored", "Restored"),
 ]
 
-
 class AnalyticsAPIView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, *args, **kwargs):
-        # Parse optional filters
+        # ===================== FILTERS =====================
         start_date_str = request.query_params.get("start_date")
         end_date_str = request.query_params.get("end_date")
+        product_type = request.query_params.get("product_type")
+        current_month = request.query_params.get("current_month")
+        current_year = request.query_params.get("current_year")
 
-        # Default: last 90 days
         today = timezone.now().date()
+
+        # Default date range
         if not start_date_str or not end_date_str:
             start_date = today - timedelta(days=90)
             end_date = today
         else:
             try:
-                start_date = timezone.datetime.fromisoformat(start_date_str).date()
-                end_date = timezone.datetime.fromisoformat(end_date_str).date()
+                start_date = datetime.fromisoformat(start_date_str).date()
+                end_date = datetime.fromisoformat(end_date_str).date()
             except ValueError:
                 return Response({"error": "Invalid date format. Use YYYY-MM-DD."}, status=400)
 
-        # Ensure end_date ≥ start_date
+        # Override for current month
+        if current_month == "true":
+            start_date = today.replace(day=1)
+            end_date = today
+
+        # Override for current year
+        if current_year == "true":
+            start_date = today.replace(month=1, day=1)
+            end_date = today
+
         if end_date < start_date:
             return Response({"error": "end_date must be greater than or equal to start_date."}, status=400)
 
-        # Filter by date range (use created_at fields)
-        entry_filter = {"created_at__date__range": (start_date, end_date)}
+        # ===================== ENTRIES FILTER =====================
+        entries_qs = models.DynamicFormEntry.objects.filter(
+            created_at__date__range=(start_date, end_date)
+        )
+
+        # Filter by product type dynamically
+        if product_type:
+            filtered_entries = []
+            for entry in entries_qs:
+                form = entry.form
+                include_entry = False
+                for pf in form.fields.filter(field_property="link_to_table"):
+                    value = entry.data.get(pf.field_name)
+                    if value is not None:
+                        values = value if isinstance(value, list) else [value]
+                        for v in values:
+                            try:
+                                product_id = int(v)
+                                product_obj = models.Product.objects.get(id=product_id)
+                                if product_obj.product_type == product_type:
+                                    include_entry = True
+                                    break
+                            except (ValueError, models.Product.DoesNotExist):
+                                continue
+                    if include_entry:
+                        break
+                if include_entry:
+                    filtered_entries.append(entry.id)
+            entries_qs = entries_qs.filter(id__in=filtered_entries)
 
         # ===================== CARDS =====================
         total_users = models.User.objects.count()
@@ -2986,175 +3029,71 @@ class AnalyticsAPIView(APIView):
         total_analyses = models.Analysis.objects.count()
         total_products = models.Product.objects.count()
 
-        total_entries = models.DynamicFormEntry.objects.filter(**entry_filter).count()
-        completed_entries = models.DynamicFormEntry.objects.filter(status="completed", **entry_filter).count()
-        pending_entries = models.DynamicFormEntry.objects.filter(**entry_filter).exclude(status="completed").count()
+        total_entries = entries_qs.count()
+        completed_entries = entries_qs.filter(status="completed").count()
+        pending_entries = entries_qs.exclude(status="completed").count()
 
         comps = models.Component.objects.values("analysis").annotate(cnt=Count("id"))
-        avg_components_per_analysis = comps.aggregate(avg=Avg("cnt"))["avg"] or 0
-        avg_components_per_analysis = float(avg_components_per_analysis)
+        avg_components_per_analysis = float(comps.aggregate(avg=Avg("cnt"))["avg"] or 0)
 
-        completed_age_agg = models.DynamicFormEntry.objects.filter(status="completed", **entry_filter).annotate(
+        completed_age_agg = entries_qs.filter(status="completed").annotate(
             age=ExpressionWrapper(Now() - F("created_at"), output_field=DurationField())
         ).aggregate(avg_age=Avg("age"))["avg_age"]
 
-        avg_completion_days = (
-            round(completed_age_agg.total_seconds() / 86400, 2) if completed_age_agg else None
-        )
+        avg_completion_days = round(completed_age_agg.total_seconds() / 86400, 2) if completed_age_agg else None
 
         # ===================== CHARTS =====================
-        monthly_entries_qs = (
-            models.DynamicFormEntry.objects.filter(**entry_filter)
-            .annotate(month=TruncMonth("created_at"))
-            .values("month")
-            .annotate(count=Count("id"))
-            .order_by("month")
-        )
+        monthly_entries_qs = entries_qs.annotate(
+            month=TruncMonth("created_at")
+        ).values("month").annotate(count=Count("id")).order_by("month")
 
-        # Convert queryset to dict for faster lookup
         monthly_data = {item["month"].month: item["count"] for item in monthly_entries_qs}
-
-        # Generate list for all 12 months
-        current_year = datetime.now().year
+        current_year_val = today.year
         monthly_entries = [
-            {
-                "month": f"{calendar.month_name[m]} {current_year}",  # e.g., "January 2025"
-                "count": monthly_data.get(m, 0),
-            }
+            {"month": f"{calendar.month_name[m]} {current_year_val}", "count": monthly_data.get(m, 0)}
             for m in range(1, 13)
         ]
 
-        status_distribution_qs = (
-            models.DynamicFormEntry.objects.filter(**entry_filter)
-            .values("status")
-            .annotate(count=Count("id"))
-        )
-
-        # Convert queryset to dictionary
+        status_distribution_qs = entries_qs.values("status").annotate(count=Count("id"))
         actual_status_counts = {item["status"]: item["count"] for item in status_distribution_qs}
+        status_distribution = {display_name: actual_status_counts.get(key, 0) for key, display_name in STATUS_CHOICES}
 
-        # Ensure all statuses are present, fill missing with 0
-        status_distribution = {
-            display_name: actual_status_counts.get(key, 0)
-            for key, display_name in STATUS_CHOICES
-        }
-
-        top_analyses_qs = (
-            models.Analysis.objects.annotate(entries_count=Count("entries", filter=Q(entries__created_at__date__range=(start_date, end_date))))
-            .order_by("-entries_count")[:3]
-        )
+        top_analyses_qs = models.Analysis.objects.annotate(
+            entries_count=Count("entries", filter=Q(entries__id__in=entries_qs.values_list("id", flat=True)))
+        ).order_by("-entries_count")[:3]
         top_analyses = [{"analysis": a.name, "entries": a.entries_count} for a in top_analyses_qs]
 
-        top_components_qs = (
-            models.Component.objects.annotate(
-                result_count=Count(
-                            "sample_overrides__results",
-                            filter=Q(
-                                sample_overrides__results__created_at__date__range=(
-                                    start_date,
-                                    end_date
-                                )
-                            )
-                        )
-
-            )
-            .order_by("-result_count")[:3]
-        )
-        top_components = [
-            {
-                "component": c.name,
-                "analysis": c.analysis.name if c.analysis else None,
-                "result_count": c.result_count,
-            }
-            for c in top_components_qs
-        ]
+        top_components_qs = models.Component.objects.annotate(
+            result_count=Count("sample_overrides__results", filter=Q(sample_overrides__results__id__in=entries_qs.values_list("id", flat=True)))
+        ).order_by("-result_count")[:3]
+        top_components = [{"component": c.name, "analysis": c.analysis.name if c.analysis else None, "result_count": c.result_count} for c in top_components_qs]
 
         # ===================== ALERTS =====================
         thirty_days = today + timedelta(days=30)
-        # ---- Instruments due for calibration ----
-        instruments_due_qs = (
-            models.Instrument.objects.filter(next_calibration_date__lte=thirty_days)
-            .order_by("next_calibration_date")[:10]
-        )
-        instruments_due = [
-            {
-                "id": ins.id,
-                "name": ins.name,
-                "next_calibration_date": ins.next_calibration_date.isoformat() if ins.next_calibration_date else None,
-            }
-            for ins in instruments_due_qs
-        ]
+        instruments_due_qs = models.Instrument.objects.filter(next_calibration_date__lte=thirty_days).order_by("next_calibration_date")[:10]
+        instruments_due = [{"id": ins.id, "name": ins.name, "next_calibration_date": ins.next_calibration_date.isoformat() if ins.next_calibration_date else None} for ins in instruments_due_qs] or [{"id": None, "name": "No instruments due", "next_calibration_date": None}]
 
-        # ✅ Ensure always at least one record shown
-        if not instruments_due:
-            instruments_due = [
-                {"id": None, "name": "No instruments due", "next_calibration_date": None}
-            ]
+        low_stock_qs = models.Inventory.objects.filter(total_quantity__lt=10).annotate(total=F("total_quantity")).order_by("total")[:10]
+        low_stock = [{"id": inv.id, "name": inv.name, "total_quantity": inv.total_quantity, "location": inv.location} for inv in low_stock_qs] or [{"id": None, "name": "No low-stock items", "total_quantity": 0, "location": None}]
 
-        # ---- Low stock alerts ----
-        low_stock_qs = (
-            models.Inventory.objects.filter(total_quantity__lt=10)
-            .annotate(total=F("total_quantity"))
-            .order_by("total")[:10]
-        )
-        low_stock = [
-            {
-                "id": inv.id,
-                "name": inv.name,
-                "total_quantity": inv.total_quantity,
-                "location": inv.location,
-            }
-            for inv in low_stock_qs
-        ]
+        # ===================== LEADERBOARDS =====================
+        top_analysts_qs = models.User.objects.annotate(
+            analyzed_count=Count("analyzed_samples", filter=Q(analyzed_samples__id__in=entries_qs.values_list("id", flat=True)))
+        ).order_by("-analyzed_count")[:10]
+        top_analysts = [{"id": u.id, "name": getattr(u, "name", u.username), "analyzed_count": u.analyzed_count} for u in top_analysts_qs]
 
-        # ✅ Ensure always at least one record shown
-        if not low_stock:
-            low_stock = [
-                {"id": None, "name": "No low-stock items", "total_quantity": 0, "location": None}
-            ]
-
-        # ===================== LEADERBOARD =====================
-        top_analysts_qs = (
-            models.User.objects.annotate(
-                analyzed_count=Count(
-                    "analyzed_samples", filter=Q(analyzed_samples__created_at__date__range=(start_date, end_date))
-                )
-            )
-            .order_by("-analyzed_count")[:10]
-        )
-        top_analysts = [
-            {"id": u.id, "name": getattr(u, "name", u.username), "analyzed_count": u.analyzed_count}
-            for u in top_analysts_qs
-        ]
+        product_analysis_counts = models.Product.objects.annotate(
+            analysis_count=Count("sampling_grades__analyses", distinct=True)
+        ).order_by("-analysis_count")[:10]
+        product_analysis = [{"product": p.name, "analysis_count": p.analysis_count} for p in product_analysis_counts]
 
         # ===================== EXTRAS =====================
-        comp_numeric_avg = (
-            models.ComponentResult.objects.filter(created_at__date__range=(start_date, end_date)).aggregate(avg_numeric=Avg("numeric_value"))[
-                "avg_numeric"
-            ]
-        )
+        comp_numeric_avg = models.ComponentResult.objects.filter(created_at__date__range=(start_date, end_date)).aggregate(avg_numeric=Avg("numeric_value"))["avg_numeric"]
         comp_numeric_avg = float(comp_numeric_avg) if comp_numeric_avg is not None else None
-
-        product_analysis_counts = (
-            models.Product.objects.annotate(
-                analysis_count=Count(
-                    "sampling_grades__analyses",
-                    distinct=True
-                )
-            )
-            .order_by("-analysis_count")[:10]
-        )
-
-        product_analysis = [
-            {"product": p.name, "analysis_count": p.analysis_count} for p in product_analysis_counts
-        ]
 
         # ===================== RESPONSE =====================
         payload = {
-            "filters": {
-                "start_date": start_date.isoformat(),
-                "end_date": end_date.isoformat(),
-            },
+            "filters": {"start_date": start_date.isoformat(), "end_date": end_date.isoformat()},
             "cards": {
                 "total_users": total_users,
                 "active_users": active_users,
@@ -3172,23 +3111,12 @@ class AnalyticsAPIView(APIView):
                 "top_analyses": top_analyses,
                 "top_components": top_components,
             },
-            "alerts": {
-                "instruments_due_30_days": instruments_due,
-                "low_stock_inventories": low_stock,
-            },
-            "leaderboards": {
-                "top_analysts": top_analysts,
-                "product_analysis_counts": product_analysis,
-            },
-            "extras": {
-                "average_component_result_numeric_value": comp_numeric_avg,
-            },
+            "alerts": {"instruments_due_30_days": instruments_due, "low_stock_inventories": low_stock},
+            "leaderboards": {"top_analysts": top_analysts, "product_analysis_counts": product_analysis},
+            "extras": {"average_component_result_numeric_value": comp_numeric_avg},
         }
 
         return Response(payload)
-
-
-
 @method_decorator(csrf_exempt, name='dispatch')
 class QueryReportTemplateCreateView(APIView):
 

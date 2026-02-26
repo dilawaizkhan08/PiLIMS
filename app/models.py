@@ -574,9 +574,24 @@ class DynamicRequestAttachment(models.Model):
 
 
 class Product(BaseModel):
+
+    PRODUCT_TYPE_CHOICES = [
+        ("FINISHED_GOODS", "Finished Goods"),
+        ("BLEND", "Blend"),
+        ("RAW_MATERIALS", "Raw Materials"),
+        ("PACKAGING_MATERIALS", "Packaging Materials"),
+        ("FLAVOUR_MATERIALS", "Flavour Materials"),
+    ]
     name = models.CharField(max_length=255)
     version = models.PositiveIntegerField(default=1)
     description = models.TextField(blank=True)
+
+    product_type = models.CharField(
+        max_length=20,
+        choices=PRODUCT_TYPE_CHOICES,
+        default="FG_SAMPLE"
+    )
+
 
     user_groups = models.ManyToManyField(
         UserGroup,
