@@ -1165,7 +1165,6 @@ class DynamicFormEntrySerializer(serializers.ModelSerializer):
                 analyses_data = []
 
         if analyses_data and isinstance(analyses_data, (list, dict)) and len(analyses_data) > 0:
-            models.DynamicFormEntryAnalysis.objects.filter(entry=instance).delete()
             self._save_entry_analyses(instance, analyses_data)
 
         return instance
@@ -1174,39 +1173,43 @@ class DynamicFormEntrySerializer(serializers.ModelSerializer):
     #   Save Analyses
     # -------------------------
     def _save_entry_analyses(self, entry, analyses_data):
+        """
+        Merge analyses_data into existing DynamicFormEntryAnalyses & SampleComponents.
+        Existing ones are preserved. Only new analyses/components are created.
+        """
         for analysis_item in analyses_data:
             analysis_id = analysis_item["analysis_id"]
             component_ids = analysis_item.get("component_ids", [])
             analysis = models.Analysis.objects.get(id=analysis_id)
 
-            # Ensure a single DynamicFormEntryAnalysis per entry+analysis
-            ea, _ = models.DynamicFormEntryAnalysis.objects.get_or_create(
+            # 1️⃣ Get or create the entry_analysis
+            ea, created = models.DynamicFormEntryAnalysis.objects.get_or_create(
                 entry=entry,
                 analysis=analysis
             )
 
-            # Set components
+            # 2️⃣ Determine which components to add
             if component_ids:
-                components = models.Component.objects.filter(
-                    id__in=component_ids,
-                    analysis=analysis
-                )
+                components = models.Component.objects.filter(id__in=component_ids, analysis=analysis)
             else:
                 components = analysis.components.all()
 
-            ea.components.set(components)
+            # 3️⃣ Add only missing components to ea.components
+            existing_component_ids = set(ea.components.values_list("id", flat=True))
+            new_components = [c for c in components if c.id not in existing_component_ids]
+            if new_components:
+                ea.components.add(*new_components)
 
-            # 🔹 DELETE old SampleComponents for this entry_analysis first
-            models.SampleComponent.objects.filter(entry_analysis=ea).delete()
-
-            # 🔹 RECREATE sample components for this analysis
-            old_to_new_sc_map = {}  # Keep mapping of old component -> new SampleComponent
-
+            # 4️⃣ Handle SampleComponents: create only missing ones
+            existing_sc_map = {sc.component.id: sc for sc in ea.sample_components.all()}
             for comp in components:
+                if comp.id in existing_sc_map:
+                    continue  # already exists, skip
                 sc = models.SampleComponent.objects.create(
                     entry_analysis=ea,
                     component=comp,
                     name=comp.name,
+                    type=comp.type,
                     unit=comp.unit,
                     minimum=comp.minimum,
                     maximum=comp.maximum,
@@ -1218,29 +1221,26 @@ class DynamicFormEntrySerializer(serializers.ModelSerializer):
                     calculated=comp.calculated,
                     custom_function=comp.custom_function if comp.calculated else None,
                 )
-                old_to_new_sc_map[comp.id] = sc
+                existing_sc_map[comp.id] = sc
 
-            # 🔹 Clone function parameters for calculated components
+            # 5️⃣ Handle calculated component function parameters for only newly created SampleComponents
             for comp in components:
                 if not comp.calculated:
                     continue
-
-                # Get the new SampleComponent for this calculated component
-                new_sc = old_to_new_sc_map.get(comp.id)
-                if not new_sc:
-                    continue
-
-                # Clone parameters
+                sc = existing_sc_map[comp.id]
                 for param in comp.function_parameters.all():
-                    # Map the old mapped_component to the new SampleComponent
-                    mapped_sc = old_to_new_sc_map.get(param.mapped_component.id)
-                    if mapped_sc:
+                    mapped_sc = existing_sc_map.get(param.mapped_component.id)
+                    if mapped_sc and not models.SampleComponentFunctionParameter.objects.filter(
+                        sample_component=sc,
+                        parameter=param.parameter,
+                        mapped_sample_component=mapped_sc
+                    ).exists():
                         models.SampleComponentFunctionParameter.objects.create(
-                            sample_component=new_sc,
+                            sample_component=sc,
                             parameter=param.parameter,
                             mapped_sample_component=mapped_sc
                         )
-
+                        
     # -------------------------
     #   Representation
     # -------------------------
@@ -1302,6 +1302,7 @@ class DynamicFormEntrySerializer(serializers.ModelSerializer):
 
         data["analyses_data"] = analyses_data
         return data
+
 
 class SampleComponentSerializer(serializers.ModelSerializer):
     # Optional overrides for related objects
