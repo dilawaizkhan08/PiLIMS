@@ -22,14 +22,12 @@ class IsAdminUser(BasePermission):
     
 
 
-class HasModulePermission(BasePermission):
-    """
-    Check if user has required CRUD permission on a given module (DB table)
-    or permission to perform a specific status update.
-    Works for both APIView and ViewSet.
-    """
+from rest_framework.permissions import BasePermission
+from app import models
 
-    # Map dynamic statuses → permission actions
+
+class HasModulePermission(BasePermission):
+
     STATUS_PERMISSION_MAP = {
         "received": "receive",
         "in_progress": "result_entry",
@@ -43,15 +41,30 @@ class HasModulePermission(BasePermission):
     }
 
     def has_permission(self, request, view):
+
         user = request.user
+
         if not user.is_authenticated:
             return False
 
+        # Superuser bypass
         if user.is_superuser:
             return True
 
-        # 1️⃣ Identify model
+        # 🔹 1. Get Role ID from Header
+        role_id = request.headers.get("X-ROLE-ID")
+
+        if not role_id:
+            return False  # Role must be provided
+
+        try:
+            role = user.roles.get(id=role_id)
+        except models.Role.DoesNotExist:
+            return False  # User does not have this role
+
+        # 🔹 2. Detect model (module name)
         model = None
+
         if hasattr(view, "queryset") and view.queryset is not None:
             model = view.queryset.model
         elif hasattr(view, "get_queryset"):
@@ -63,11 +76,11 @@ class HasModulePermission(BasePermission):
             model = view.serializer_class.Meta.model
 
         if not model:
-            return True  # fallback: allow if no model is attached
+            return True
 
         module_name = model._meta.db_table
 
-        # 2️⃣ Map DRF actions → CRUD
+        # 🔹 3. Map DRF action to CRUD
         action_map = {
             "create": "create",
             "list": "view",
@@ -81,11 +94,6 @@ class HasModulePermission(BasePermission):
 
         action = getattr(view, "action", None)
 
-        # Handle custom GET endpoints like /stats/
-        if action and action.startswith("get_"):
-            action = "view"
-
-        # For APIView (no .action)
         if action is None:
             if request.method == "GET":
                 action = "view"
@@ -96,30 +104,26 @@ class HasModulePermission(BasePermission):
             elif request.method == "DELETE":
                 action = "delete"
 
-        # Map action to CRUD fallback
         action = action_map.get(action, action)
 
         if not action:
             return False
 
-        # 3️⃣ Check user roles and permissions for CRUD
-        for role in user.roles.all():
-            if role.permissions.filter(module=module_name, action=action).exists():
-                return True
+        # 🔹 4. Check CRUD permission
+        if role.permissions.filter(module=module_name, action=action).exists():
+            return True
 
-        # 4️⃣ Special handling: check dynamic status permissions
-        # Example: in DynamicSampleFormEntryViewSet, update_status action
-        if hasattr(view, "request") and action == "update" and request.method == "POST":
+        # 🔹 5. Special Status Handling
+        if action == "update" and request.method == "POST":
             status_to_set = request.data.get("status")
+
             if status_to_set:
                 required_perm = self.STATUS_PERMISSION_MAP.get(status_to_set)
+
                 if required_perm:
-                    for role in user.roles.all():
-                        if role.permissions.filter(module=module_name, action=required_perm).exists():
-                            return True
-                    # Deny if user lacks permission for this status
-                    return False
+                    return role.permissions.filter(
+                        module=module_name,
+                        action=required_perm
+                    ).exists()
 
-        # 5️⃣ Deny by default
         return False
-
