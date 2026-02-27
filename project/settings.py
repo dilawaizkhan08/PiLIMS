@@ -80,6 +80,7 @@ CORS_ALLOW_HEADERS = [
     "user-agent",
     "x-csrftoken",
     "x-requested-with",
+    "x-role-id",
 ]
 
 CORS_ALLOW_METHODS = [
