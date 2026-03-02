@@ -2190,3 +2190,13 @@ class AddCommentSerializer(serializers.Serializer):
     comment = serializers.CharField(required=True)
 
 
+class GeneratedReportSerializer(serializers.ModelSerializer):
+    sample_id = serializers.IntegerField(source="sample.id", read_only=True)
+    template_id = serializers.IntegerField(source="template.id", read_only=True)
+
+    class Meta:
+        model = models.GeneratedReport
+        fields = ["id", "sample_id", "template_id", "pdf_url", "created_at"]
+        read_only_fields = ["id", "sample_id", "template_id", "created_at"]
+
+

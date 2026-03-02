@@ -94,6 +94,9 @@ class HasModulePermission(BasePermission):
 
         action = getattr(view, "action", None)
 
+        if action and action.startswith("get_"):
+            action = "view"
+
         if action is None:
             if request.method == "GET":
                 action = "view"

@@ -3186,6 +3186,7 @@ class QueryReportRenderView(APIView):
     GET /api/reports/render/?template_id=&sample_id=&download=true
     → Executes SQL with sample_id = DynamicFormEntry.id
     → Renders SQL result in Jinja2 HTML + CSS → PDF
+    → Saves PDF URL in GeneratedReport model
     """
 
     def get(self, request):
@@ -3231,10 +3232,10 @@ class QueryReportRenderView(APIView):
 
         # 5️⃣ Prepare context for Jinja2
         context_data = {
-            "rows": result,           # analysis rows
-            "entry": entry,           # DynamicFormEntry instance
-            "data": parsed_data,      # parsed JSON fields
-            "secondary_id": entry.secondary_id,
+            "rows": result,
+            "entry": entry,
+            "data": parsed_data,
+            "sample_text_id": entry.sample_text_id,
             "created_at": entry.created_at
         }
 
@@ -3281,12 +3282,26 @@ class QueryReportRenderView(APIView):
             stylesheets=[CSS(string=combined_css)]
         )
 
+        # 8️⃣a Save PDF to media folder
         with open(temp_path, "rb") as f:
-            pdf_data = f.read()
+            file_content = ContentFile(f.read())
+        pdf_filename = f"report_entry_{sample_id}.pdf"
+        pdf_path = default_storage.save(f"reports/{pdf_filename}", file_content)
+        pdf_url = default_storage.url(pdf_path)
         os.remove(temp_path)
 
+        # 8️⃣b Save GeneratedReport record
+        models.GeneratedReport.objects.create(
+            sample=entry,
+            template=template_obj,
+            pdf_url=pdf_url
+        )
+
         # 9️⃣ Return response
-        response = HttpResponse(pdf_data, content_type="application/pdf")
+        with default_storage.open(pdf_path, "rb") as f:
+            pdf_bytes = f.read()
+
+        response = HttpResponse(pdf_bytes, content_type="application/pdf")
         filename = f"report_entry_{sample_id}.pdf"
         response["Content-Disposition"] = (
             f'attachment; filename="{filename}"' if download else f'inline; filename="{filename}"'
@@ -3413,7 +3428,7 @@ class DynamicFormEntryCompactTicketPDFView(APIView):
   </div>
   <div class="details">
     <strong style="font-size:10px;">{entry.form.sample_name}</strong><br/>
-    <span>Secondary ID: {entry.secondary_id}</span><br/>
+    <span>Secondary ID: {entry.sample_text_id}</span><br/>
 """
 
         # Add JSON fields dynamically
@@ -3617,6 +3632,15 @@ class DynamicFormEntryQCReportPDFView(APIView):
         os.remove(temp_path)
 
         response = HttpResponse(pdf, content_type="application/pdf")
-        filename = f"QC_Report_{entry.secondary_id}.pdf"
+        filename = f"QC_Report_{entry.sample_text_id}.pdf"
         response["Content-Disposition"] = f'inline; filename="{filename}"'
         return response
+
+class GeneratedReportViewSet(viewsets.ModelViewSet):
+    """
+    API endpoint to view or edit generated reports
+    """
+    queryset = models.GeneratedReport.objects.all().order_by("-created_at")
+    serializer_class = GeneratedReportSerializer
+
+

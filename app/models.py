@@ -338,7 +338,7 @@ class DynamicFormEntry(BaseModel):
 
     form = models.ForeignKey(SampleForm, on_delete=models.CASCADE)
     data = models.JSONField()
-    secondary_id = models.CharField(
+    sample_text_id = models.CharField(
         max_length=50, blank=True, db_index=True
     )
 
@@ -358,12 +358,11 @@ class DynamicFormEntry(BaseModel):
         is_new = self.pk is None
         super().save(*args, **kwargs)
 
-        # pk milne ke baad secondary_id generate karo
-        if is_new and not self.secondary_id:
+        if is_new and not self.sample_text_id:
             # Format date as YYYYMMDD
             created_date_str = self.created_at.strftime("%Y%m%d")
-            self.secondary_id = f"S-{created_date_str}-{self.id}"
-            super().save(update_fields=["secondary_id"])
+            self.sample_text_id = f"S-{created_date_str}-{self.id}"
+            super().save(update_fields=["sample_text_id"])
 
     def __str__(self):
         return f"Entry {self.id} - {self.form.sample_name} ({self.status})"
@@ -784,3 +783,23 @@ class QueryReportTemplate(BaseModel):
 
     def __str__(self):
         return self.name
+
+class GeneratedReport(models.Model):
+    sample = models.ForeignKey(
+        'DynamicFormEntry', 
+        on_delete=models.CASCADE, 
+        related_name='generated_reports'
+    )
+    template = models.ForeignKey(
+        'QueryReportTemplate',
+        on_delete=models.CASCADE,
+        related_name='generated_reports'
+    )
+    pdf_url = models.URLField(max_length=500) 
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"Report for sample {self.sample_id}"
+    
+
+
