@@ -741,7 +741,7 @@ class SampleFormSubmitView(APIView):
             # ----------------------------------
             #  MANUAL + AUTO ANALYSES (DB ONLY)
             # ----------------------------------
-            manual_analyses = request.data.getlist("analyses")
+            manual_analyses = request.data.get("analyses", []) 
             manual_ids = {int(x) for x in manual_analyses} if manual_analyses else set()
 
             final_analysis_ids = manual_ids.union(auto_analysis_ids)
@@ -791,6 +791,20 @@ class DynamicSampleFormEntryViewSet(viewsets.ModelViewSet):
     parser_classes = [MultiPartParser, FormParser, JSONParser]
     filter_backends = [GenericSearchFilter]
     pagination_class = CustomPageNumberPagination
+
+
+    def get_queryset(self):
+        user = self.request.user
+
+        # Superadmins & Admins → full access
+        if user.is_superuser or user.role == "Admin":
+            return models.DynamicFormEntry.objects.all().order_by("-created_at")
+
+        # Normal users → only entries linked to their user_groups (from the entry or its form)
+        return models.DynamicFormEntry.objects.filter(
+            models.Q(user_groups__in=user.user_groups.all()) |
+            models.Q(form__user_groups__in=user.user_groups.all())
+        ).distinct().order_by("-created_at")
 
     # -----------------------------
     # Update Status Endpoint
@@ -1628,23 +1642,27 @@ class GradeViewSet(viewsets.ModelViewSet):
     serializer_class = GradeSerializer
     permission_classes = [IsAuthenticated, HasModulePermission]
 
-class ProductViewSet(TrackUserMixin,viewsets.ModelViewSet):
+class ProductViewSet(TrackUserMixin, viewsets.ModelViewSet):
     queryset = models.Product.objects.all()
     serializer_class = ProductSerializer
-    permission_classes = [IsAuthenticated,HasModulePermission]
+    permission_classes = [IsAuthenticated, HasModulePermission]
     filter_backends = [GenericSearchFilter]
     pagination_class = CustomPageNumberPagination
 
-
     def get_queryset(self):
         user = self.request.user
+        queryset = models.Product.objects.all()
 
-        # Superadmins & Admin role → full access
+        product_type = self.request.query_params.get("product_type")
+
+        if product_type:
+            queryset = queryset.filter(product_type=product_type)
+
+        # 🔹 Role based filtering
         if user.is_superuser or user.role == "Admin":
-            return models.Product.objects.all()
+            return queryset
 
-        # Normal users → only those in their assigned user groups
-        return models.Product.objects.filter(
+        return queryset.filter(
             user_groups__in=user.user_groups.all()
         ).distinct()
 

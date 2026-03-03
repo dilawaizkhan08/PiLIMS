@@ -353,16 +353,27 @@ class DynamicFormEntry(BaseModel):
     comment = models.TextField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     analyses = models.ManyToManyField("Analysis", through="DynamicFormEntryAnalysis", related_name="entries", blank=True)
+    user_groups = models.ManyToManyField("UserGroup", blank=True, related_name="sample_entries")
 
     def save(self, *args, **kwargs):
         is_new = self.pk is None
         super().save(*args, **kwargs)
 
+        # -------------------------
+        # Set sample_text_id if new
+        # -------------------------
         if is_new and not self.sample_text_id:
-            # Format date as YYYYMMDD
             created_date_str = self.created_at.strftime("%Y%m%d")
             self.sample_text_id = f"S-{created_date_str}-{self.id}"
             super().save(update_fields=["sample_text_id"])
+
+        # -------------------------
+        # Assign user_groups from the associated SampleForm
+        # -------------------------
+        if is_new and self.form:
+            form_user_groups = self.form.user_groups.all()
+            if form_user_groups.exists():
+                self.user_groups.set(form_user_groups)
 
     def __str__(self):
         return f"Entry {self.id} - {self.form.sample_name} ({self.status})"
