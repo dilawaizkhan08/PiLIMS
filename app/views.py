@@ -3558,119 +3558,110 @@ class DynamicFormEntryQCReportPDFView(APIView):
         exp_date = data.get("Expiry Date", "---").split('T')[0]
 
         html_content = f"""
-        <html>
-        <head>
-        <style>
-            @page {{ size: A4; margin: 0; }}
-            body {{ font-family: 'Arial', sans-serif; margin: 0; padding: 40px; color: #000; }}
-            
-            .header-container {{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }}
-            .logo-pif {{ height: 50px; width: auto; }}
-            .logo-badael {{ height: 60px; width: auto; }}
-            
-            .sub-header {{ display: flex; justify-content: space-between; margin-top: 15px; font-size: 10px; border-top: 1px solid #eee; padding-top: 10px; }}
-            .doc-info-table {{ text-align: left; font-size: 10px; line-height: 1.4; }}
-            .doc-no-red {{ color: #FF0000; font-weight: bold; }}
+            <html>
+            <head>
+            <style>
+                @page {{ size: A4; margin: 0; }}
+                body {{
+                    font-family: 'Arial', sans-serif;
+                    margin: 0;
+                    padding: 0;
+                    height: 100vh;
+                    display: flex;
+                    justify-content: center;  /* horizontal center */
+                    align-items: flex-start;  /* start from top */
+                    background-color: #fff;
+                }}
 
-            .main-title-text {{ margin-top: 25px; font-weight: bold; font-size: 15px; text-transform: uppercase; }}
+                .label-outer-box {{
+                    border: 2px solid #5599FF;
+                    border-radius: 35px;
+                    padding: 30px 40px;
+                    width: 60%;
+                    min-height: 350px;
+                    background-color: {config['color']};
+                    color: #000;
+                    display: flex;
+                    flex-direction: column;
+                    justify-content: space-between;
+                    margin-top: 200px;
+                }}
 
-            /* Compact Square Box */
-            .label-outer-box {{
-                border: 2px solid #5599FF;
-                border-radius: 35px;
-                margin: 40px auto; 
-                padding: 30px 40px;
-                width: 60%;
-                min-height: 350px;
-                background-color: {config['color']}; 
-                color: #000; 
-                display: flex;
-                flex-direction: column;
-                justify-content: space-between;
-            }}
-            .label-title {{ text-align: center; font-size: 18px; font-weight: bold; text-decoration: underline; margin-bottom: 25px; }}
-            
-            .data-row {{ margin-bottom: 15px; display: flex; font-size: 13px; align-items: baseline; }}
-            .data-label {{ font-weight: bold; width: 130px; }}
-            .data-value {{ flex-grow: 1; padding-left: 8px; border-bottom: 1px solid #000; min-height: 18px; }}
+                .label-title {{
+                    text-align: center;
+                    font-size: 18px;
+                    font-weight: bold;
+                    text-decoration: underline;
+                    margin-bottom: 25px;
+                }}
 
-            .bottom-footer {{
-                position: absolute;
-                bottom: 30px;
-                left: 40px;
-                right: 40px;
-                display: flex;
-                justify-content: space-between;
-                font-size: 9px;
-                font-weight: bold;
-            }}
-        </style>
-        </head>
-        <body>
-            <div class="header-container">
-                <img src="{pif_logo_url}" class="logo-pif">
-                <img src="{badael_logo_url}" class="logo-badael">
-            </div>
+                .data-row {{
+                    margin-bottom: 15px;
+                    display: flex;
+                    font-size: 13px;
+                    align-items: baseline;
+                }}
 
-            <div class="sub-header">
-                <div style="font-weight: bold;">
-                    Badael Company – Governance, Risk & Compliance (GRC)<br>
-                    {config['title']}
+                .data-label {{
+                    font-weight: bold;
+                    width: 130px;
+                }}
+
+                .data-value {{
+                    flex-grow: 1;
+                    padding-left: 8px;
+                    border-bottom: 1px solid #000;
+                    min-height: 18px;
+                }}
+            </style>
+            </head>
+
+            <body>
+
+                <div class="label-outer-box">
+                    <div>
+                        <div class="label-title">{config['title'].replace(' Template', '')}</div>
+                        
+                        <div class="data-row">
+                            <span class="data-label">Product name:</span>
+                            <span class="data-value">{product_display_name}</span>
+                        </div>
+
+                        <div class="data-row">
+                            <span class="data-label">Batch number:</span>
+                            <span class="data-value">{data.get("Batch Number", "---")}</span>
+                        </div>
+
+                        <div class="data-row">
+                            <span class="data-label">Mfg. Date:</span>
+                            <span class="data-value">{mfg_date}</span>
+                        </div>
+
+                        <div class="data-row">
+                            <span class="data-label">Exp. Date:</span>
+                            <span class="data-value">{exp_date}</span>
+                        </div>
+
+                        <div class="data-row">
+                            <span class="data-label">Quantity:</span>
+                            <span class="data-value">{data.get("Quantity", "---")}</span>
+                        </div>
+
+                        <div class="data-row" style="margin-top: 35px;">
+                            <span class="data-label" style="width: 100px;">Sign by/date:</span>
+                            <span class="data-value"></span>
+                        </div>
+                    </div>
+
+                    <div style="text-align: right; font-weight: bold; font-size: 10px;">
+                        {config['doc_no']}
+                    </div>
                 </div>
-                <div class="doc-info-table">
-                    Document No. <span class="doc-no-red">{config['doc_no']}</span><br>
-                    Version No. <span style="color: #FF0000;">1.0</span><br>
-                    Effective Date: {current_date}<br>
-                    Next Review Date: 
-                </div>
-            </div>
 
-            <div class="main-title-text">{config['title']}</div>
-
-            <div class="label-outer-box">
-                <div>
-                    <div class="label-title">{config['title'].replace(' Template', '')}</div>
-                    
-                    <div class="data-row">
-                        <span class="data-label">Product name:</span>
-                        <span class="data-value">{product_display_name}</span>
-                    </div>
-                    <div class="data-row">
-                        <span class="data-label">Batch number:</span>
-                        <span class="data-value">{data.get("Batch Number", "---")}</span>
-                    </div>
-                    <div class="data-row">
-                        <span class="data-label">Mfg. Date:</span>
-                        <span class="data-value">{mfg_date}</span>
-                    </div>
-                    <div class="data-row">
-                        <span class="data-label">Exp. Date:</span>
-                        <span class="data-value">{exp_date}</span>
-                    </div>
-                    <div class="data-row">
-                        <span class="data-label">Quantity:</span>
-                        <span class="data-value">{data.get("Quantity", "---")}</span>
-                    </div>
-
-                    <div class="data-row" style="margin-top: 35px;">
-                        <span class="data-label" style="width: 100px;">Sign by/date:</span>
-                        <span class="data-value"></span>
-                    </div>
-                </div>
-                
-                <div style="text-align: right; font-weight: bold; font-size: 10px;">
-                    {config['doc_no']}
-                </div>
-            </div>
-
-            <div class="bottom-footer">
-                <div>Related Procedure: BC-GRC-IMS-SOP-25</div>
-                <div>Badael Confidential – For Internal Use Only</div>
-            </div>
-        </body>
-        </html>
-        """
-
+            </body>
+            </html>
+            """
+        
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp:
             temp_path = temp.name
 
