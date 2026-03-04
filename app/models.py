@@ -246,7 +246,6 @@ class Inventory(BaseModel):
     supplier_name = models.CharField(max_length=255, null=True, blank=True)
     batch_no = models.CharField(max_length=255, null=True, blank=True)
 
-
     def __str__(self):
         return self.name
 
@@ -796,21 +795,30 @@ class QueryReportTemplate(BaseModel):
         return self.name
 
 class GeneratedReport(models.Model):
-    sample = models.ForeignKey(
-        'DynamicFormEntry', 
-        on_delete=models.CASCADE, 
-        related_name='generated_reports'
-    )
-    template = models.ForeignKey(
-        'QueryReportTemplate',
-        on_delete=models.CASCADE,
-        related_name='generated_reports'
-    )
-    pdf_url = models.URLField(max_length=500) 
+    id = models.CharField(primary_key=True, max_length=30, editable=False)
+
+    sample = models.ForeignKey('DynamicFormEntry', on_delete=models.CASCADE, related_name='generated_reports')
+    template = models.ForeignKey('QueryReportTemplate', on_delete=models.CASCADE, related_name='generated_reports')
+    pdf_url = models.URLField(max_length=500)
     created_at = models.DateTimeField(auto_now_add=True)
 
-    def __str__(self):
-        return f"Report for sample {self.sample_id}"
-    
+    def save(self, *args, **kwargs):
+        if not self.id:
+            today = timezone.now().strftime("%Y%m%d")
+            last_report = GeneratedReport.objects.filter(
+                id__startswith=f"R-{today}"
+            ).order_by('id').last()
 
+            if last_report:
+                last_number = int(last_report.id.split("-")[-1])
+                new_number = last_number + 1
+            else:
+                new_number = 1
+
+            self.id = f"R-{today}-{new_number}"
+
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return self.id
 

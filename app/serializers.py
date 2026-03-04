@@ -2274,9 +2274,19 @@ class GeneratedReportSerializer(serializers.ModelSerializer):
     template_id = serializers.IntegerField(source="template.id", read_only=True)
     template_name = serializers.CharField(source="template.name", read_only=True)
 
+    pdf_url = serializers.SerializerMethodField()
+
     class Meta:
         model = models.GeneratedReport
-        fields = ["id", "sample_id","sample_text_id", "template_id", "template_name", "pdf_url", "created_at"]
+        fields = [
+            "id",
+            "sample_id",
+            "sample_text_id",
+            "template_id",
+            "template_name",
+            "pdf_url",
+            "created_at",
+        ]
         read_only_fields = [
             "id",
             "sample_id",
@@ -2286,4 +2296,13 @@ class GeneratedReportSerializer(serializers.ModelSerializer):
             "created_at",
         ]
 
+    def get_pdf_url(self, obj):
+        request = self.context.get("request")
 
+        if not obj.pdf_url:
+            return None
+
+        if request:
+            return request.build_absolute_uri(obj.pdf_url)
+
+        return obj.pdf_url

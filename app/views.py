@@ -1787,6 +1787,37 @@ class DynamicTableDataView(APIView):
                 "data": data
             }, status=status.HTTP_200_OK)
 
+
+        # =========================================================
+        # 🔵 SPECIAL CASE: app_product (optional product_type)
+        # =========================================================
+        if table_name == "app_product":
+
+            product_type = request.data.get("product_type")
+
+            products = models.Product.objects.all()
+
+            # 🔹 Apply filter ONLY if product_type is provided
+            if product_type:
+                products = products.filter(product_type=product_type)
+
+            data = []
+
+            for product in products:
+                data.append({
+                    "id": product.id,
+                    "name": product.name,
+                    "version": product.version,
+                    "description": product.description,
+                    "product_type": product.product_type
+                })
+
+            return Response({
+                "table": table_name,
+                "count": len(data),
+                "data": data
+            }, status=status.HTTP_200_OK)
+
         # =========================================================
         # 🟢 DEFAULT / GENERIC DYNAMIC HANDLER
         # =========================================================
@@ -3660,5 +3691,6 @@ class GeneratedReportViewSet(viewsets.ModelViewSet):
     """
     queryset = models.GeneratedReport.objects.all().order_by("-created_at")
     serializer_class = GeneratedReportSerializer
+    pagination_class = CustomPageNumberPagination
 
 
