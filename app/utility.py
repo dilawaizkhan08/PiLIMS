@@ -74,7 +74,7 @@ def create_entry_analyses(entry, analysis_ids):
                     )
 
 
-def update_status_with_history(entry, new_status, user):
+def update_status_with_history(entry, new_status, user,reason=None):
     """
     Centralized status update with history creation.
     Only creates history if status actually changes.
@@ -88,5 +88,6 @@ def update_status_with_history(entry, new_status, user):
             entry=entry,
             old_status=old_status,
             new_status=new_status,
-            updated_by=user
+            updated_by=user,
+            reason=reason
         )

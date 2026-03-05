@@ -405,6 +405,7 @@ class StatusHistory(models.Model):
     new_status = models.CharField(max_length=20)
     updated_by = models.ForeignKey("User", on_delete=models.SET_NULL, null=True)
     updated_at = models.DateTimeField(auto_now_add=True)
+    reason = models.TextField(blank=True, null=True)
     tat = models.FloatField(null=True, blank=True, help_text="TAT in seconds")
 
     def save(self, *args, **kwargs):
@@ -837,4 +838,15 @@ class GeneratedReport(models.Model):
 
     def __str__(self):
         return self.id
+    
+
+class Investigation(models.Model):
+    sample = models.ForeignKey(DynamicFormEntry, on_delete=models.CASCADE, related_name="investigations")
+    rejected_at = models.DateTimeField(default=timezone.now)
+    rejection_reason = models.TextField()
+    corrective_actions = models.TextField(blank=True, null=True)
+    preventive_actions = models.TextField(blank=True, null=True)
+
+    def __str__(self):
+        return f"Investigation for Sample {self.sample.id}"
 

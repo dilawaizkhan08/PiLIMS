@@ -2306,3 +2306,9 @@ class GeneratedReportSerializer(serializers.ModelSerializer):
             return request.build_absolute_uri(obj.pdf_url)
 
         return obj.pdf_url
+    
+class InvestigationSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = models.Investigation
+        fields = "__all__"
+

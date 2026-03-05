@@ -40,6 +40,7 @@ router.register(r'activities', views.ActivityViewSet, basename='activity')
 router.register(r'report-templates', views.QueryReportTemplateViewSet, basename='reporttemplate')
 router.register(r"sample-components", views.SampleComponentViewSet, basename="sample-components")
 router.register(r"generated-reports", views.GeneratedReportViewSet, basename="generatedreport")
+router.register(r'investigations', views.InvestigationViewSet, basename='investigation')
 
 urlpatterns = [
     path('', include(router.urls)),

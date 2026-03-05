@@ -813,10 +813,21 @@ class DynamicSampleFormEntryViewSet(viewsets.ModelViewSet):
     def update_status(self, request):
         new_status = request.data.get("status")
         ids = request.data.get("ids", [])
-        analyst_id = request.data.get("analyst_id")  # for assign_analyst
+        analyst_id = request.data.get("analyst_id")
+        reason = request.data.get("reason")
+        password = request.data.get("password")
 
         if not new_status or not ids:
             return Response({"error": "status and ids are required"}, status=400)
+
+        # -----------------------------
+        # Require password & reason for release/rejected/hold
+        # -----------------------------
+        if new_status in ["release", "rejected", "hold"]:
+            if not reason or not password:
+                return Response({"error": "reason and password are required for this status"}, status=400)
+            if not request.user.check_password(password):
+                return Response({"error": "Incorrect password"}, status=403)
 
         # -----------------------------
         # Map status → permission action
@@ -826,7 +837,7 @@ class DynamicSampleFormEntryViewSet(viewsets.ModelViewSet):
             "in_progress": "result_entry",
             "completed": "result_entry",
             "assign_analyst": "update",
-            "release" : "release",
+            "release": "release",
             "rejected": "release",
             "hold": "cancel_restore",
             "unhold": "cancel_restore",
@@ -885,15 +896,14 @@ class DynamicSampleFormEntryViewSet(viewsets.ModelViewSet):
         # -----------------------------
         for entry in entries:
 
-            #  Completed is locked except authorize/reject/hold
-            #  Authorize / Reject only if completed OR completed → hold
+            # -----------------------------
+            # Completed → release/rejected validation
+            # -----------------------------
             if new_status in ["release", "rejected"]:
                 allow = False
-
                 if entry.status == "completed":
                     allow = True
                 elif entry.status == "hold":
-                    # Check previous status before hold
                     last_status_before_hold = (
                         models.StatusHistory.objects
                         .filter(entry=entry, new_status="hold")
@@ -917,7 +927,7 @@ class DynamicSampleFormEntryViewSet(viewsets.ModelViewSet):
                     return Response({
                         "error": f"Entry {entry.id} is already on hold."
                     }, status=400)
-                update_status_with_history(entry, "hold", user)
+                update_status_with_history(entry, "hold", user, reason=reason)
                 continue
 
             # -----------------------------
@@ -928,7 +938,7 @@ class DynamicSampleFormEntryViewSet(viewsets.ModelViewSet):
                     return Response({
                         "error": f"Entry {entry.id} can only be reactivated if it is 'release' or 'rejected'."
                     }, status=400)
-                update_status_with_history(entry, "in_progress", user)  # reactivate → reset to in_progress
+                update_status_with_history(entry, "in_progress", user, reason=reason)
                 continue
 
             # -----------------------------
@@ -947,7 +957,22 @@ class DynamicSampleFormEntryViewSet(viewsets.ModelViewSet):
                     .first()
                 )
                 restored_status = last_status.old_status if last_status else "in_progress"
-                update_status_with_history(entry, restored_status, user)
+                update_status_with_history(entry, restored_status, user, reason=reason)
+                continue
+
+            # -----------------------------
+            # Release / Rejected → track history + create investigation if rejected
+            # -----------------------------
+            if new_status in ["release", "rejected"]:
+                update_status_with_history(entry, new_status, user, reason=reason)
+
+                # Create investigation automatically if rejected
+                if new_status == "rejected":
+                    models.Investigation.objects.create(
+                        sample=entry,
+                        rejected_at=timezone.now(),
+                        rejection_reason=reason
+                    )
                 continue
 
             # -----------------------------
@@ -959,6 +984,7 @@ class DynamicSampleFormEntryViewSet(viewsets.ModelViewSet):
             "message": f"Status updated to {new_status}",
             "updated_ids": ids
         })
+
     
     @action(detail=False, methods=["get"], url_path="stats")
     def get_stats(self, request):
@@ -3715,5 +3741,57 @@ class GeneratedReportViewSet(viewsets.ModelViewSet):
     queryset = models.GeneratedReport.objects.all().order_by("-created_at")
     serializer_class = GeneratedReportSerializer
     pagination_class = CustomPageNumberPagination
+
+class InvestigationViewSet(viewsets.ModelViewSet):
+    queryset = models.Investigation.objects.all().order_by("-rejected_at")
+    serializer_class = InvestigationSerializer
+    permission_classes = [IsAuthenticated]
+    pagination_class = CustomPageNumberPagination
+    
+
+    def get_queryset(self):
+        """
+        Optionally filter by sample_id using query param:
+        /api/investigations/?sample_id=1
+        """
+        qs = super().get_queryset()
+        sample_id = self.request.query_params.get("sample_id")
+        if sample_id:
+            qs = qs.filter(sample_id=sample_id)
+        return qs
+    
+    # -----------------------------
+    # Generate Follow-up Sample
+    # -----------------------------
+    @action(detail=True, methods=["post"])
+    def generate_followup_sample(self, request, pk=None):
+        """
+        Create a follow-up sample from this investigation.
+        Copies sample info from original sample, no analyses added.
+        """
+        try:
+            investigation = self.get_object()
+        except models.Investigation.DoesNotExist:
+            return Response({"error": "Investigation not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        original_sample = investigation.sample
+
+        # Create new sample
+        followup_sample = DynamicFormEntry.objects.create(
+            form=original_sample.form,
+            data=original_sample.data,
+            status="initiated",
+            logged_by=request.user
+        )
+
+        # Copy user_groups from original sample
+        followup_sample.user_groups.set(original_sample.user_groups.all())
+        followup_sample.save()
+
+        return Response({
+            "message": "Follow-up sample created successfully",
+            "followup_sample_id": followup_sample.id,
+            "sample_text_id": followup_sample.sample_text_id
+        })
 
 
