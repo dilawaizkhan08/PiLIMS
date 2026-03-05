@@ -3068,7 +3068,7 @@ class AnalyticsAPIView(APIView):
         ).values(
             'month', 'sample__sample_text_id', 'sample__form__sample_name'
         ).annotate(
-            report_count=Count('id')
+            count=Count('id')
         ).order_by('month', 'sample__sample_text_id')
 
         # Initialize monthly_sample_reports
@@ -3082,7 +3082,7 @@ class AnalyticsAPIView(APIView):
         for r in reports_by_month_sample:
             month_name = f"{calendar.month_name[r['month'].month]} {r['month'].year}"
             sample_id = r['sample__sample_text_id']
-            monthly_sample_reports[sample_id][month_name] = r['report_count']
+            monthly_sample_reports[sample_id][month_name] = r['count']
 
         # Convert to chart data
         chart_data = []
@@ -3091,7 +3091,7 @@ class AnalyticsAPIView(APIView):
                 chart_data.append({
                     "month": month_name,
                     "sample": sample_id,
-                    "report_count": count
+                    "count": count
                 })
 
         # ===================== ENTRIES FILTER =====================
