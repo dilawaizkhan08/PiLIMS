@@ -794,6 +794,7 @@ class QueryReportTemplate(BaseModel):
     def __str__(self):
         return self.name
 
+from django.db import transaction
 class GeneratedReport(models.Model):
     id = models.CharField(primary_key=True, max_length=30, editable=False)
 
@@ -804,20 +805,28 @@ class GeneratedReport(models.Model):
 
     def save(self, *args, **kwargs):
         if not self.id:
-            today = timezone.now().strftime("%Y%m%d")
-            last_report = GeneratedReport.objects.filter(
-                id__startswith=f"R-{today}"
-            ).order_by('id').last()
+            with transaction.atomic():
+                today = timezone.now().strftime("%Y%m%d")
 
-            if last_report:
-                last_number = int(last_report.id.split("-")[-1])
-                new_number = last_number + 1
-            else:
-                new_number = 1
+                last_report = (
+                    GeneratedReport.objects
+                    .select_for_update()
+                    .filter(id__startswith=f"R-{today}-")
+                    .order_by('-created_at')
+                    .first()
+                )
 
-            self.id = f"R-{today}-{new_number}"
+                if last_report:
+                    last_number = int(last_report.id.split("-")[-1])
+                    new_number = last_number + 1
+                else:
+                    new_number = 1
 
-        super().save(*args, **kwargs)
+                self.id = f"R-{today}-{new_number}"
+
+                super().save(*args, **kwargs)
+        else:
+            super().save(*args, **kwargs)
 
     def __str__(self):
         return self.id

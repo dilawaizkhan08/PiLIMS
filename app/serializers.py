@@ -1172,13 +1172,6 @@ class DynamicFormEntrySerializer(serializers.ModelSerializer):
             instance.save(update_fields=["analyst", "status"])
             return instance
 
-        # ✅ 2️⃣ Only allow data updates if status is "received"
-        if instance.status != "received":
-            raise serializers.ValidationError(
-                f"Updates allowed only when sample status is 'received' (current: {instance.status})"
-            )
-
-        # ✅ Extract dynamic "data" fields
         if hasattr(request_data, "lists"):
             data_dict = {}
             for key, value in request_data.lists():
@@ -1324,12 +1317,19 @@ class DynamicFormEntrySerializer(serializers.ModelSerializer):
                 # -------------------------
                 if field.field_property == "list" and field.list_ref:
                     try:
-                        value_obj = Value.objects.get(
-                            id=raw_value,
-                            list=field.list_ref
-                        )
-                        formatted_data[field_name] = value_obj.value
-                    except Value.DoesNotExist:
+                        # If raw_value is numeric → treat as Value ID
+                        if isinstance(raw_value, int) or (isinstance(raw_value, str) and raw_value.isdigit()):
+                            value_obj = Value.objects.filter(
+                                id=int(raw_value),
+                                list=field.list_ref
+                            ).first()
+
+                            formatted_data[field_name] = value_obj.value if value_obj else raw_value
+                        else:
+                            # Already a readable value (like "Grab")
+                            formatted_data[field_name] = raw_value
+
+                    except Exception:
                         formatted_data[field_name] = raw_value
 
                 # -------------------------

@@ -885,17 +885,29 @@ class DynamicSampleFormEntryViewSet(viewsets.ModelViewSet):
         # -----------------------------
         for entry in entries:
 
-            # ❌ Completed is locked except authorize/reject/hold
-            if entry.status == "completed" and new_status not in ["release", "rejected", "hold"]:
-                return Response({
-                    "error": f"Entry {entry.id} is completed and cannot be changed."
-                }, status=400)
+            #  Completed is locked except authorize/reject/hold
+            #  Authorize / Reject only if completed OR completed → hold
+            if new_status in ["release", "rejected"]:
+                allow = False
 
-            # ❌ Authorize / Reject only if completed
-            if new_status in ["release", "rejected"] and entry.status != "completed":
-                return Response({
-                    "error": f"Entry {entry.id} must be completed before {new_status}."
-                }, status=400)
+                if entry.status == "completed":
+                    allow = True
+                elif entry.status == "hold":
+                    # Check previous status before hold
+                    last_status_before_hold = (
+                        models.StatusHistory.objects
+                        .filter(entry=entry, new_status="hold")
+                        .order_by("-id")
+                        .first()
+                    )
+                    previous_status = last_status_before_hold.old_status if last_status_before_hold else None
+                    if previous_status == "completed":
+                        allow = True
+
+                if not allow:
+                    return Response({
+                        "error": f"Entry {entry.id} must be completed before {new_status}."
+                    }, status=400)
 
             # -----------------------------
             # On Hold
@@ -1789,20 +1801,26 @@ class DynamicTableDataView(APIView):
 
 
         # =========================================================
-        # 🔵 SPECIAL CASE: app_product (optional product_type)
+        # 🔵 SPECIAL CASE: app_product (product_type_id instead of name)
         # =========================================================
         if table_name == "app_product":
-
-            product_type = request.data.get("product_type")
+            product_type_id = request.data.get("product_type_id")
 
             products = models.Product.objects.all()
 
-            # 🔹 Apply filter ONLY if product_type is provided
-            if product_type:
-                products = products.filter(product_type=product_type)
+            if product_type_id:
+                try:
+                    product_type_value = models.Value.objects.get(id=product_type_id)
+                    # normalize the string
+                    filter_value = product_type_value.value.upper().replace(" ", "_")
+                    products = products.filter(product_type=filter_value)
+                except models.Value.DoesNotExist:
+                    return Response(
+                        {"error": "Product type not found"},
+                        status=status.HTTP_404_NOT_FOUND
+                    )
 
             data = []
-
             for product in products:
                 data.append({
                     "id": product.id,
@@ -1817,7 +1835,7 @@ class DynamicTableDataView(APIView):
                 "count": len(data),
                 "data": data
             }, status=status.HTTP_200_OK)
-
+        
         # =========================================================
         # 🟢 DEFAULT / GENERIC DYNAMIC HANDLER
         # =========================================================
@@ -3040,35 +3058,72 @@ class AnalyticsAPIView(APIView):
         if end_date < start_date:
             return Response({"error": "end_date must be greater than or equal to start_date."}, status=400)
 
+        # ===================== 3D MONTH-SAMPLE REPORT =====================
+        reports_qs = models.GeneratedReport.objects.filter(
+            created_at__date__range=(start_date, end_date)
+        )
+
+        reports_by_month_sample = reports_qs.annotate(
+            month=TruncMonth('created_at')
+        ).values(
+            'month', 'sample__sample_text_id', 'sample__form__sample_name'
+        ).annotate(
+            report_count=Count('id')
+        ).order_by('month', 'sample__sample_text_id')
+
+        # Initialize monthly_sample_reports
+        monthly_sample_reports = {}
+        current_year_val = today.year
+        samples = set([r['sample__sample_text_id'] for r in reports_by_month_sample])
+        for s in samples:
+            monthly_sample_reports[s] = {f"{calendar.month_name[m]} {current_year_val}": 0 for m in range(1, 13)}
+
+        # Fill actual counts
+        for r in reports_by_month_sample:
+            month_name = f"{calendar.month_name[r['month'].month]} {r['month'].year}"
+            sample_id = r['sample__sample_text_id']
+            monthly_sample_reports[sample_id][month_name] = r['report_count']
+
+        # Convert to chart data
+        chart_data = []
+        for sample_id, month_data in monthly_sample_reports.items():
+            for month_name, count in month_data.items():
+                chart_data.append({
+                    "month": month_name,
+                    "sample": sample_id,
+                    "report_count": count
+                })
+
         # ===================== ENTRIES FILTER =====================
         entries_qs = models.DynamicFormEntry.objects.filter(
             created_at__date__range=(start_date, end_date)
         )
 
-        # Filter by product type dynamically
         if product_type:
-            filtered_entries = []
-            for entry in entries_qs:
-                form = entry.form
-                include_entry = False
-                for pf in form.fields.filter(field_property="link_to_table"):
-                    value = entry.data.get(pf.field_name)
-                    if value is not None:
-                        values = value if isinstance(value, list) else [value]
-                        for v in values:
-                            try:
-                                product_id = int(v)
-                                product_obj = models.Product.objects.get(id=product_id)
-                                if product_obj.product_type == product_type:
-                                    include_entry = True
-                                    break
-                            except (ValueError, models.Product.DoesNotExist):
-                                continue
+            product_types = [pt.strip() for pt in product_type.split(",") if pt.strip()]
+            if product_types:
+                filtered_entries = []
+                for entry in entries_qs:
+                    form = entry.form
+                    include_entry = False
+                    for pf in form.fields.filter(field_property="link_to_table"):
+                        value = entry.data.get(pf.field_name)
+                        if value is not None:
+                            values = value if isinstance(value, list) else [value]
+                            for v in values:
+                                try:
+                                    product_id = int(v)
+                                    product_obj = models.Product.objects.get(id=product_id)
+                                    if product_obj.product_type in product_types:
+                                        include_entry = True
+                                        break
+                                except (ValueError, models.Product.DoesNotExist):
+                                    continue
+                        if include_entry:
+                            break
                     if include_entry:
-                        break
-                if include_entry:
-                    filtered_entries.append(entry.id)
-            entries_qs = entries_qs.filter(id__in=filtered_entries)
+                        filtered_entries.append(entry.id)
+                entries_qs = entries_qs.filter(id__in=filtered_entries)
 
         # ===================== CARDS =====================
         total_users = models.User.objects.count()
@@ -3095,7 +3150,6 @@ class AnalyticsAPIView(APIView):
         ).values("month").annotate(count=Count("id")).order_by("month")
 
         monthly_data = {item["month"].month: item["count"] for item in monthly_entries_qs}
-        current_year_val = today.year
         monthly_entries = [
             {"month": f"{calendar.month_name[m]} {current_year_val}", "count": monthly_data.get(m, 0)}
             for m in range(1, 13)
@@ -3157,6 +3211,7 @@ class AnalyticsAPIView(APIView):
                 "status_distribution": status_distribution,
                 "top_analyses": top_analyses,
                 "top_components": top_components,
+                "monthly_sample_reports": chart_data,  # ✅ Safely included here
             },
             "alerts": {"instruments_due_30_days": instruments_due, "low_stock_inventories": low_stock},
             "leaderboards": {"top_analysts": top_analysts, "product_analysis_counts": product_analysis},
@@ -3164,7 +3219,6 @@ class AnalyticsAPIView(APIView):
         }
 
         return Response(payload)
-
 @method_decorator(csrf_exempt, name='dispatch')
 class QueryReportTemplateCreateView(APIView):
 
