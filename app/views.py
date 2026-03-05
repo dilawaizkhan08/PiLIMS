@@ -2166,8 +2166,6 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
                     existing_calc_result.value = str(numeric_value)
                     existing_calc_result.numeric_value = numeric_value
                     existing_calc_result.remarks = "Auto-calculated"
-                    existing_calc_result.authorization_flag = False
-                    existing_calc_result.authorization_remark = None
                     existing_calc_result.created_by = request.user
                     existing_calc_result.save()
                     saved_results.append(existing_calc_result)
@@ -2178,8 +2176,6 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
                         value=str(numeric_value),
                         numeric_value=numeric_value,
                         remarks="Auto-calculated",
-                        authorization_flag=False,
-                        authorization_remark=None,
                         created_by=request.user
                     )
                     saved_results.append(new_calc_result)
@@ -2190,13 +2186,11 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
         # ---------------------------
         # Update overall entry status
         # ---------------------------
-
         def update_entry_status(entry_obj, user):
             entry_analyses = models.DynamicFormEntryAnalysis.objects.filter(entry=entry_obj)
 
             total_components = 0
             filled_components = 0
-            all_authorized = True
 
             for ea in entry_analyses:
                 sample_components = ea.sample_components.all()
@@ -2208,29 +2202,21 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
                         sample_component=sc
                     ).first()
 
-                    # Check if filled
                     if result and (result.value not in [None, ""] or result.numeric_value is not None):
                         filled_components += 1
-                        if not result.authorization_flag:
-                            all_authorized = False
-                    else:
-                        all_authorized = False
 
             # ✅ Final Decision Logic
             if total_components == 0 or filled_components == 0:
                 final_status = "received"
             elif filled_components < total_components:
                 final_status = "in_progress"
-            elif filled_components == total_components and all_authorized:
+            elif filled_components == total_components:
                 final_status = "completed"
             else:
                 final_status = "in_progress"
 
-            # Use helper to update status and create history
             update_status_with_history(entry_obj, final_status, user)
-
             return final_status
-
 
         final_status = update_entry_status(entry, request.user)
 
@@ -2247,23 +2233,16 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
                 status_ = "initiated"
             else:
                 any_result_entered = False
-                all_authorized = True
                 for sc in components:
                     result = models.ComponentResult.objects.filter(
                         entry=entry,
                         sample_component=sc
                     ).first()
-                    if not result or result.value in [None, ""]:
-                        all_authorized = False
-                    else:
+                    if result and (result.value not in [None, ""] or result.numeric_value is not None):
                         any_result_entered = True
-                        if not result.authorization_flag:
-                            all_authorized = False
 
                 if not any_result_entered:
                     status_ = "initiated"
-                elif all_authorized:
-                    status_ = "authorized"
                 else:
                     status_ = "completed"
 
@@ -2290,7 +2269,6 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
             response["errors"] = all_errors
 
         return Response(response, status=status.HTTP_200_OK)
-
     # ---------------------------
     # Get all results
     # ---------------------------

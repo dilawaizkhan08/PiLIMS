@@ -728,6 +728,13 @@ class ComponentResult(models.Model):
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
+    def save(self, *args, **kwargs):
+        if (self.value not in [None, ""]) or (self.numeric_value is not None):
+            self.authorization_flag = True
+            if not self.authorization_remark:
+                self.authorization_remark = "Auto-authorized after result entry"
+        super().save(*args, **kwargs)
+
 
 
 class SystemConfiguration(models.Model):
