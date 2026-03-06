@@ -770,11 +770,16 @@ class StockConsumptionSerializer(serializers.ModelSerializer):
 
 class StockSerializer(serializers.ModelSerializer):
     id = serializers.IntegerField(required=False)  # Allow PATCH with ID
+    consumptions = StockConsumptionSerializer(
+        many=True,
+        read_only=True
+    )
 
     class Meta:
         model = models.Stock
         fields = [
-            'id', 'inventory', 'stock_date', 'expiration_date', 'notes', 'quantity'
+            'id', 'inventory', 'stock_date', 'expiration_date', 'notes', 'quantity',
+            'consumptions' 
         ]
         extra_kwargs = {
             'inventory': {'required': False}

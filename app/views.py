@@ -465,22 +465,6 @@ class StockViewSet(TrackUserMixin,viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated,HasModulePermission]
     filter_backends = [GenericSearchFilter]
 
-class StockConsumptionViewSet(viewsets.ModelViewSet):
-    queryset = models.StockConsumption.objects.select_related(
-        "stock", "stock__inventory"
-    ).all().order_by("-created_at")
-
-    serializer_class = StockConsumptionSerializer
-    permission_classes = [IsAuthenticated]
-
-    def get_queryset(self):
-        queryset = super().get_queryset()
-        stock_id = self.request.query_params.get("stock_id")
-
-        if stock_id:
-            queryset = queryset.filter(stock_id=stock_id)
-
-        return queryset
 
 class UnitViewSet(TrackUserMixin, viewsets.ModelViewSet):
     queryset = models.Unit.objects.all()
