@@ -761,6 +761,12 @@ class InstrumentSerializer(serializers.ModelSerializer):
 
         return instance
 
+class StockConsumptionSerializer(serializers.ModelSerializer):
+
+    class Meta:
+        model = models.StockConsumption
+        fields = ["id", "stock", "consumed_quantity", "notes", "created_at"]
+
 
 class StockSerializer(serializers.ModelSerializer):
     id = serializers.IntegerField(required=False)  # Allow PATCH with ID
@@ -1108,12 +1114,15 @@ class DynamicFormEntrySerializer(serializers.ModelSerializer):
     form_name = serializers.SerializerMethodField()
     form_id = serializers.SerializerMethodField()
     analyst_name = serializers.SerializerMethodField()
+    retaining_sample_location = serializers.CharField(
+        required=False, allow_null=True, allow_blank=True
+    )
 
     class Meta:
         model = models.DynamicFormEntry
         fields = [
             "id", "sample_text_id","comment","form_name", "form_id", "data",
-            "status", "analyses_data", "analyst_id", "analyst_name", "created_at", "logged_by", "logged_by_name"
+            "status", "analyses_data", "analyst_id", "analyst_name", "created_at", "logged_by", "logged_by_name", "retaining_sample_location"
         ]
 
 
@@ -1199,6 +1208,9 @@ class DynamicFormEntrySerializer(serializers.ModelSerializer):
         # ✅ Allow explicit status update (e.g., received → in_progress etc.)
         if "status" in validated_data:
             instance.status = validated_data["status"]
+
+        if "retaining_sample_location" in validated_data:
+            instance.retaining_sample_location = validated_data["retaining_sample_location"]
 
         instance.save()
 

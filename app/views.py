@@ -430,6 +430,34 @@ class InventoryViewSet(TrackUserMixin, viewsets.ModelViewSet):
             user_groups__in=user.user_groups.all()
         ).distinct()
 
+    @action(detail=True, methods=["post"])
+    def consume(self, request, pk=None):
+        """
+        Consume stock from inventory
+        """
+        stock_id = request.data.get("stock_id")
+        quantity = request.data.get("quantity")
+        notes = request.data.get("notes")
+
+        try:
+            stock = models.Stock.objects.get(id=stock_id, inventory_id=pk)
+        except models.Stock.DoesNotExist:
+            return Response({"error": "Stock not found"}, status=404)
+
+        if int(quantity) > stock.quantity:
+            return Response({"error": "Not enough stock"}, status=400)
+
+        consumption = models.StockConsumption.objects.create(
+            stock=stock,
+            consumed_quantity=quantity,
+            notes=notes
+        )
+
+        return Response(
+            {"message": "Stock consumed successfully"},
+            status=status.HTTP_200_OK
+        )
+
 
 class StockViewSet(TrackUserMixin,viewsets.ModelViewSet):
     queryset = models.Stock.objects.all()
@@ -437,6 +465,22 @@ class StockViewSet(TrackUserMixin,viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated,HasModulePermission]
     filter_backends = [GenericSearchFilter]
 
+class StockConsumptionViewSet(viewsets.ModelViewSet):
+    queryset = models.StockConsumption.objects.select_related(
+        "stock", "stock__inventory"
+    ).all().order_by("-created_at")
+
+    serializer_class = StockConsumptionSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        stock_id = self.request.query_params.get("stock_id")
+
+        if stock_id:
+            queryset = queryset.filter(stock_id=stock_id)
+
+        return queryset
 
 class UnitViewSet(TrackUserMixin, viewsets.ModelViewSet):
     queryset = models.Unit.objects.all()
@@ -3025,6 +3069,7 @@ STATUS_CHOICES = [
     ("restored", "Restored"),
 ]
 
+
 class AnalyticsAPIView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -3062,41 +3107,49 @@ class AnalyticsAPIView(APIView):
         if end_date < start_date:
             return Response({"error": "end_date must be greater than or equal to start_date."}, status=400)
 
-        # ===================== 3D MONTH-SAMPLE REPORT =====================
+        # ===================== 3D MONTH-REPORT-TEMPLATE =====================
         reports_qs = models.GeneratedReport.objects.filter(
             created_at__date__range=(start_date, end_date)
         )
 
-        reports_by_month_sample = reports_qs.annotate(
+        # Annotate by month and template
+        reports_by_month_template = reports_qs.annotate(
             month=TruncMonth('created_at')
         ).values(
-            'month', 'sample__sample_text_id', 'sample__form__sample_name'
+            'month', 'template__name'
         ).annotate(
             count=Count('id')
-        ).order_by('month', 'sample__sample_text_id')
+        ).order_by('month', 'template__name')
 
-        # Initialize monthly_sample_reports
-        monthly_sample_reports = {}
+        # Get all templates
+        templates = set([r['template__name'] for r in reports_by_month_template])
         current_year_val = today.year
-        samples = set([r['sample__sample_text_id'] for r in reports_by_month_sample])
-        for s in samples:
-            monthly_sample_reports[s] = {f"{calendar.month_name[m]} {current_year_val}": 0 for m in range(1, 13)}
 
-        # Fill actual counts
-        for r in reports_by_month_sample:
-            month_name = f"{calendar.month_name[r['month'].month]} {r['month'].year}"
-            sample_id = r['sample__sample_text_id']
-            monthly_sample_reports[sample_id][month_name] = r['count']
+        # Initialize month dictionary
+        monthly_report_dict = {f"{calendar.month_name[m]} {current_year_val}": [] for m in range(1, 13)}
 
-        # Convert to chart data
-        chart_data = []
-        for sample_id, month_data in monthly_sample_reports.items():
-            for month_name, count in month_data.items():
-                chart_data.append({
-                    "month": month_name,
-                    "sample": sample_id,
-                    "count": count
+        # Fill counts for each template per month
+        for month_name in monthly_report_dict.keys():
+            for t in templates:
+                monthly_report_dict[month_name].append({
+                    "report_template": t,
+                    "count": 0
                 })
+
+        # Update actual counts from query
+        for r in reports_by_month_template:
+            month_name = f"{calendar.month_name[r['month'].month]} {r['month'].year}"
+            template_name = r['template__name']
+            for d in monthly_report_dict[month_name]:
+                if d['report_template'] == template_name:
+                    d['count'] = r['count']
+                    break
+
+        # Convert to list for FE
+        monthly_report_chart_data = [
+            {"month": month_name, "reports": reports}
+            for month_name, reports in monthly_report_dict.items()
+        ]
 
         # ===================== ENTRIES FILTER =====================
         entries_qs = models.DynamicFormEntry.objects.filter(
@@ -3215,7 +3268,7 @@ class AnalyticsAPIView(APIView):
                 "status_distribution": status_distribution,
                 "top_analyses": top_analyses,
                 "top_components": top_components,
-                "monthly_sample_reports": chart_data,  # ✅ Safely included here
+                "monthly_report_templates": monthly_report_chart_data,  # ✅ Updated chart by report template
             },
             "alerts": {"instruments_due_30_days": instruments_due, "low_stock_inventories": low_stock},
             "leaderboards": {"top_analysts": top_analysts, "product_analysis_counts": product_analysis},
@@ -3223,6 +3276,7 @@ class AnalyticsAPIView(APIView):
         }
 
         return Response(payload)
+
 @method_decorator(csrf_exempt, name='dispatch')
 class QueryReportTemplateCreateView(APIView):
 
@@ -3499,55 +3553,95 @@ class DynamicFormEntryCompactTicketPDFView(APIView):
 
         # ---------------- HTML ----------------
         html_content = f"""
-<html>
-<head>
-<style>
-  @page {{
-      size: 100mm 37.5mm;  /* width:height = 4:1.5 */
-      margin: 0;
-  }}
-  body {{
-      font-family: Arial;
-      font-size:8px;
-      margin:0;
-      padding:0;
-  }}
-  .container {{
-      display: flex;
-      flex-direction: row;  /* horizontal layout */
-      align-items: flex-start;
-      gap: 3mm;
-      padding: 2mm;
-  }}
-  .qr {{
-      flex: none;
-  }}
-  .details {{
-      flex: 1;
-      line-height: 1.1;
-  }}
-</style>
-</head>
-<body>
-<div class="container">
-  <div class="qr">
-    <img src="data:image/png;base64,{qr_base64}" width="70" height="70">
-  </div>
-  <div class="details">
-    <strong style="font-size:10px;">{entry.form.sample_name}</strong><br/>
-    <span>Secondary ID: {entry.sample_text_id}</span><br/>
-"""
+        <html>
+        <head>
+        <style>
+        @page {{
+            size: 100mm 37.5mm;
+            margin: 0;
+        }}
 
-        # Add JSON fields dynamically
+        body {{
+            font-family: Arial;
+            font-size:8px;
+            margin:0;
+            padding:0;
+        }}
+
+        .label {{
+            display:flex;
+            flex-direction:row;
+            gap:3mm;
+            padding:1mm;
+            height:18mm;
+        }}
+
+        .qr {{
+            text-align:center;
+            flex:none;
+        }}
+
+        .details {{
+            flex:1;
+            line-height:1.1;
+        }}
+
+        .label-title {{
+            font-weight:bold;
+            font-size:7px;
+        }}
+        </style>
+        </head>
+
+        <body>
+
+        <!-- LAB SAMPLE LABEL -->
+
+        <div class="label">
+
+        <div class="qr">
+            <img src="data:image/png;base64,{qr_base64}" width="40" height="40"><br>
+            <div class="label-title">Lab Sample Label</div>
+        </div>
+
+        <div class="details">
+            <strong style="font-size:9px;">{entry.form.sample_name}</strong><br/>
+            <span>ID: {entry.sample_text_id}</span><br/>
+        """
+
         for k, v in entry.data.items():
             html_content += f"<span>{k}: {v}</span><br/>"
 
         html_content += """
-  </div>
-</div>
-</body>
-</html>
-"""
+        </div>
+        </div>
+        """
+
+        # ---------------- RETAINING LABEL ----------------
+
+        html_content += f"""
+        <div class="label">
+
+        <div class="qr">
+            <img src="data:image/png;base64,{qr_base64}" width="40" height="40"><br>
+            <div class="label-title">Retaining Label</div>
+        </div>
+
+        <div class="details">
+            <strong style="font-size:9px;">{entry.form.sample_name}</strong><br/>
+            <span>ID: {entry.sample_text_id}</span><br/>
+        """
+
+        for k, v in entry.data.items():
+            html_content += f"<span>{k}: {v}</span><br/>"
+
+        html_content += """
+        </div>
+        </div>
+
+        </body>
+        </html>
+        """
 
         # ---------------- PDF GENERATE ----------------
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp:

@@ -12,6 +12,8 @@ from django.utils.translation import gettext_lazy as _
 from . import choices
 import phonenumbers
 from django.core.exceptions import ValidationError
+from django.db.models import Sum
+from datetime import timedelta
 
 
 class BaseModel(models.Model):
@@ -231,6 +233,28 @@ class InstrumentHistory(BaseModel):
     action_type = models.CharField(max_length=100,choices=choices.ActionType.choices)
     start_date = models.DateField()
 
+    def save(self, *args, **kwargs):
+        super().save(*args, **kwargs)
+
+        instrument = self.instrument
+
+        # Calibration calculation
+        if self.action_type == "Calibration" and instrument.calibration_period:
+            instrument.next_calibration_date = (
+                self.start_date + timedelta(days=instrument.calibration_period)
+            )
+
+        # Prevention calculation
+        if self.action_type == "Prevention" and instrument.prevention_period:
+            instrument.next_prevention_date = (
+                self.start_date + timedelta(days=instrument.prevention_period)
+            )
+
+        instrument.save(update_fields=[
+            "next_calibration_date",
+            "next_prevention_date"
+        ])
+
     def __str__(self):
         return f"{self.instrument.name} - {self.action_type} on {self.start_date}"
     
@@ -262,11 +286,37 @@ class Stock(BaseModel):
 
     def save(self, *args, **kwargs):
         super().save(*args, **kwargs)
-        # Update total quantity in inventory
-        total = sum(stock.quantity for stock in self.inventory.stocks.all())
+
+        total = self.inventory.stocks.aggregate(
+            total=Sum("quantity")
+        )["total"] or 0
+
         self.inventory.total_quantity = total
         self.inventory.save()
 
+
+class StockConsumption(BaseModel):
+    stock = models.ForeignKey(
+        Stock, 
+        on_delete=models.CASCADE, 
+        related_name="consumptions"
+    )
+    consumed_quantity = models.IntegerField()
+    notes = models.TextField(blank=True, null=True)
+
+    def __str__(self):
+        return f"{self.stock.inventory.name} consumed {self.consumed_quantity}"
+
+    def save(self, *args, **kwargs):
+
+        if self.consumed_quantity > self.stock.quantity:
+            raise ValueError("Not enough stock to consume")
+
+        # deduct stock
+        self.stock.quantity -= self.consumed_quantity
+        self.stock.save() 
+
+        super().save(*args, **kwargs)
 
 class Value(BaseModel):
     list = models.ForeignKey(List, related_name='values', on_delete=models.CASCADE)
@@ -353,6 +403,7 @@ class DynamicFormEntry(BaseModel):
     created_at = models.DateTimeField(auto_now_add=True)
     analyses = models.ManyToManyField("Analysis", through="DynamicFormEntryAnalysis", related_name="entries", blank=True)
     user_groups = models.ManyToManyField("UserGroup", blank=True, related_name="sample_entries")
+    retaining_sample_location = models.TextField(null=True, blank=True)
 
     def save(self, *args, **kwargs):
         is_new = self.pk is None
@@ -398,6 +449,7 @@ class DynamicFormAttachment(models.Model):
 
 from django.db import models
 from django.utils import timezone
+
 
 class StatusHistory(models.Model):
     entry = models.ForeignKey("DynamicFormEntry", on_delete=models.CASCADE, related_name="status_history")
