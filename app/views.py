@@ -457,6 +457,25 @@ class UnitViewSet(TrackUserMixin, viewsets.ModelViewSet):
             user_groups__in=user.user_groups.all()
         ).distinct()
 
+class ParameterViewSet(TrackUserMixin, viewsets.ModelViewSet):
+    queryset = models.Parameter.objects.all()
+    serializer_class = ParameterSerializer
+    permission_classes = [IsAuthenticated, HasModulePermission]
+    filter_backends = [GenericSearchFilter]
+    pagination_class = CustomPageNumberPagination
+
+    def get_queryset(self):
+        user = self.request.user
+
+        # Superusers OR admin users see everything
+        if user.is_superuser or user.role == "Admin":
+            return models.Parameter.objects.all()
+
+        # Normal users → filter by user_groups
+        return models.Parameter.objects.filter(
+            user_groups__in=user.user_groups.all()
+        ).distinct()
+
 
 class CustomerViewSet(TrackUserMixin,viewsets.ModelViewSet):
     queryset = models.Customer.objects.all().order_by('-created_at')

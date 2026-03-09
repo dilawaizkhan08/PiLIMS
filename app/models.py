@@ -96,6 +96,15 @@ class Unit(BaseModel):
     def __str__(self):
         return self.name
 
+class Parameter(BaseModel):
+    name = models.CharField(max_length=255)  # Required
+    unit = models.ForeignKey(Unit, on_delete=models.CASCADE, blank=True, null=True, related_name="parameters")
+    user_groups = models.ManyToManyField(UserGroup,blank=True, related_name="parameters")
+    description = models.TextField(blank=True, null=True)  # Optional
+
+    def __str__(self):
+        return self.name
+
 
 class List(BaseModel):
     name = models.CharField(max_length=255)

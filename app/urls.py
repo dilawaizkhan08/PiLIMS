@@ -20,6 +20,7 @@ router.register(r'instrument-history', views.InstrumentHistoryViewSet, basename=
 router.register(r'inventory', views.InventoryViewSet, basename='inventory')
 router.register(r'stock', views.StockViewSet, basename='stock')
 router.register(r'units', views.UnitViewSet, basename='units')
+router.register(r'parameters', views.ParameterViewSet, basename='parameters')
 router.register(r'customer', views.CustomerViewSet, basename='customer')
 router.register(r'lists', views.ListViewSet, basename='lists')
 router.register(r'values', views.ValueViewSet, basename='values')

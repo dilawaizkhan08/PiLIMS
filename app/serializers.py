@@ -901,6 +901,47 @@ class UnitSerializer(serializers.ModelSerializer):
         if user_groups is not None:
             instance.user_groups.set(user_groups)
         return instance
+    
+class ParameterSerializer(serializers.ModelSerializer):
+    # Show user group names in response
+    user_group_names = serializers.SerializerMethodField(read_only=True)
+    unit_name = serializers.CharField(source='unit.name', read_only=True)
+
+
+    # Accept multiple IDs for assignment
+    user_groups = serializers.PrimaryKeyRelatedField(
+        many=True, queryset=models.UserGroup.objects.all()
+    )
+
+    class Meta:
+        model = models.Parameter
+        fields = '__all__'
+
+    def get_user_group_names(self, obj):
+        return [ug.name for ug in obj.user_groups.all()]
+
+    def create(self, validated_data):
+        # Extract and remove M2M field
+        user_groups = validated_data.pop("user_groups", [])
+        # Create instance without M2M
+        parameter = models.Parameter.objects.create(**validated_data)
+        # Assign M2M
+        parameter.user_groups.set(user_groups)
+        return parameter
+
+    def update(self, instance, validated_data):
+        # Handle M2M only if present
+        user_groups = validated_data.pop("user_groups", None)
+
+        # Update normal fields
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+
+        # Update M2M (set only if provided, supports PATCH)
+        if user_groups is not None:
+            instance.user_groups.set(user_groups)
+        return instance
 
 
 class ValueSerializer(serializers.ModelSerializer):
