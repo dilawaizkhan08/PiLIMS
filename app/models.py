@@ -227,10 +227,11 @@ class Instrument(BaseModel):
         return self.name
     
 
+from django.db.models import Max
 
 class InstrumentHistory(BaseModel):
     instrument = models.ForeignKey(Instrument, on_delete=models.CASCADE, related_name='history')
-    action_type = models.CharField(max_length=100,choices=choices.ActionType.choices)
+    action_type = models.CharField(max_length=100, choices=choices.ActionType.choices)
     start_date = models.DateField()
 
     def save(self, *args, **kwargs):
@@ -238,16 +239,32 @@ class InstrumentHistory(BaseModel):
 
         instrument = self.instrument
 
-        # Calibration calculation
-        if self.action_type == "Calibration" and instrument.calibration_period:
+        # -----------------------------
+        # Latest Calibration History
+        # -----------------------------
+        latest_calibration = InstrumentHistory.objects.filter(
+            instrument=instrument,
+            action_type="Calibration",
+            is_deleted=False
+        ).order_by("-start_date").first()
+
+        if latest_calibration and instrument.calibration_period:
             instrument.next_calibration_date = (
-                self.start_date + timedelta(days=instrument.calibration_period)
+                latest_calibration.start_date + timedelta(days=instrument.calibration_period)
             )
 
-        # Prevention calculation
-        if self.action_type == "Prevention" and instrument.prevention_period:
+        # -----------------------------
+        # Latest Prevention History
+        # -----------------------------
+        latest_prevention = InstrumentHistory.objects.filter(
+            instrument=instrument,
+            action_type="Prevention",
+            is_deleted=False
+        ).order_by("-start_date").first()
+
+        if latest_prevention and instrument.prevention_period:
             instrument.next_prevention_date = (
-                self.start_date + timedelta(days=instrument.prevention_period)
+                latest_prevention.start_date + timedelta(days=instrument.prevention_period)
             )
 
         instrument.save(update_fields=[
@@ -258,7 +275,6 @@ class InstrumentHistory(BaseModel):
     def __str__(self):
         return f"{self.instrument.name} - {self.action_type} on {self.start_date}"
     
-
 class Inventory(BaseModel):
     name = models.CharField(max_length=255)
     type =  models.CharField(max_length=255, null=True, blank=True)
@@ -280,6 +296,7 @@ class Stock(BaseModel):
     expiration_date = models.DateField(blank=True, null=True)
     notes = models.TextField(blank=True, null=True)
     quantity = models.IntegerField()
+    batch_no = models.CharField(max_length=255, null=True, blank=True) 
 
     def __str__(self):
         return f"{self.inventory.name} - {self.quantity}"
@@ -404,6 +421,11 @@ class DynamicFormEntry(BaseModel):
     analyses = models.ManyToManyField("Analysis", through="DynamicFormEntryAnalysis", related_name="entries", blank=True)
     user_groups = models.ManyToManyField("UserGroup", blank=True, related_name="sample_entries")
     retaining_sample_location = models.TextField(null=True, blank=True)
+    is_followup = models.BooleanField(default=False)
+    parent_sample = models.ForeignKey(
+        "self", null=True, blank=True, on_delete=models.SET_NULL, related_name="followup_samples"
+    )
+
 
     def save(self, *args, **kwargs):
         is_new = self.pk is None
@@ -414,7 +436,11 @@ class DynamicFormEntry(BaseModel):
         # -------------------------
         if is_new and not self.sample_text_id:
             created_date_str = self.created_at.strftime("%Y%m%d")
-            self.sample_text_id = f"S-{created_date_str}-{self.id}"
+            if self.is_followup and self.parent_sample:
+                # Include parent sample ID in the text ID
+                self.sample_text_id = f"S-{created_date_str}-{self.id}-F{self.parent_sample.id}"
+            else:
+                self.sample_text_id = f"S-{created_date_str}-{self.id}"
             super().save(update_fields=["sample_text_id"])
 
         # -------------------------

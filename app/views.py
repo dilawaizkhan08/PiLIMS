@@ -433,31 +433,69 @@ class InventoryViewSet(TrackUserMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def consume(self, request, pk=None):
         """
-        Consume stock from inventory
+        Consume stock from a specific batch
         """
         stock_id = request.data.get("stock_id")
         quantity = request.data.get("quantity")
-        notes = request.data.get("notes")
+        notes = request.data.get("notes", "")
+
+        if not stock_id or not quantity:
+            return Response({"error": "stock_id and quantity are required"}, status=400)
 
         try:
             stock = models.Stock.objects.get(id=stock_id, inventory_id=pk)
         except models.Stock.DoesNotExist:
-            return Response({"error": "Stock not found"}, status=404)
+            return Response({"error": "Stock (batch) not found"}, status=404)
 
-        if int(quantity) > stock.quantity:
-            return Response({"error": "Not enough stock"}, status=400)
+        quantity = int(quantity)
+        if quantity > stock.quantity:
+            return Response({"error": "Not enough stock in this batch"}, status=400)
 
+        # Create consumption record
         consumption = models.StockConsumption.objects.create(
             stock=stock,
             consumed_quantity=quantity,
             notes=notes
         )
 
+        # Deduct quantity
+        stock.quantity -= quantity
+        stock.save()
+
         return Response(
-            {"message": "Stock consumed successfully"},
+            {
+                "message": "Stock consumed successfully",
+                "inventory_total": stock.inventory.total_quantity,
+                "consumed_from_batch": stock.batch_no,
+                "remaining_in_batch": stock.quantity
+            },
             status=status.HTTP_200_OK
         )
 
+    @action(detail=True, methods=["get"])
+    def stocks(self, request, pk=None):
+        """
+        Get all stocks (batches) for a specific inventory
+        """
+        try:
+            inventory = models.Inventory.objects.get(pk=pk)
+        except models.Inventory.DoesNotExist:
+            return Response({"error": "Inventory not found"}, status=404)
+
+        stocks = inventory.stocks.all()  # Get all related stocks
+        stock_data = StockSerializer(stocks, many=True).data
+
+        # Optional: include consumption history for these stocks
+        consumptions = models.StockConsumption.objects.filter(stock__inventory=inventory).order_by("-created_at")
+        consumption_data = StockConsumptionSerializer(consumptions, many=True).data
+
+        return Response({
+            "inventory_id": inventory.id,
+            "inventory_name": inventory.name,
+            "total_quantity": inventory.total_quantity,
+            "stocks": stock_data,
+            "consumptions": consumption_data
+        }, status=status.HTTP_200_OK)
 
 class StockViewSet(TrackUserMixin,viewsets.ModelViewSet):
     queryset = models.Stock.objects.all()
@@ -2077,6 +2115,8 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
     def post(self, request, entry_id):
         entry = get_object_or_404(models.DynamicFormEntry, pk=entry_id)
 
+        save_and_authorize = request.data.get("save_and_authorize", False)
+
         # -----------------------------
         # Check if user has 'result_entry' permission
         # -----------------------------
@@ -2238,6 +2278,14 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
             all_errors.extend(errors)
 
         # ---------------------------
+        # Auto Authorize (ONLY if requested)
+        # ---------------------------
+        if save_and_authorize:
+            models.ComponentResult.objects.filter(entry=entry).update(
+                authorization_flag=True
+            )
+
+        # ---------------------------
         # Update overall entry status
         # ---------------------------
         def update_entry_status(entry_obj, user):
@@ -2245,6 +2293,7 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
 
             total_components = 0
             filled_components = 0
+            authorized_components = 0
 
             for ea in entry_analyses:
                 sample_components = ea.sample_components.all()
@@ -2259,22 +2308,27 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
                     if result and (result.value not in [None, ""] or result.numeric_value is not None):
                         filled_components += 1
 
-            # ✅ Final Decision Logic
-            if total_components == 0 or filled_components == 0:
+                        if result.authorization_flag:
+                            authorized_components += 1
+
+            if total_components == 0:
                 final_status = "received"
+
             elif filled_components < total_components:
                 final_status = "in_progress"
-            elif filled_components == total_components:
-                final_status = "completed"
-            else:
+
+            elif authorized_components < total_components:
                 final_status = "in_progress"
+
+            else:
+                final_status = "completed"
 
             update_status_with_history(entry_obj, final_status, user)
             return final_status
 
         final_status = update_entry_status(entry, request.user)
 
-        # ---------------------------
+              # ---------------------------
         # Analysis-level status
         # ---------------------------
         analysis_status_list = []
@@ -2308,6 +2362,7 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
         # ---------------------------
         # Build response
         # ---------------------------
+
         serializer = ComponentResultSerializer(all_saved_results, many=True)
 
         response = {
@@ -2323,6 +2378,7 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
             response["errors"] = all_errors
 
         return Response(response, status=status.HTTP_200_OK)
+    
     # ---------------------------
     # Get all results
     # ---------------------------
@@ -3096,6 +3152,13 @@ class AnalyticsAPIView(APIView):
             created_at__date__range=(start_date, end_date)
         )
 
+        # If current_month filter is applied, restrict reports to current month only
+        if current_month == "true":
+            reports_qs = reports_qs.filter(
+                created_at__year=today.year,
+                created_at__month=today.month
+            )
+
         # Annotate by month and template
         reports_by_month_template = reports_qs.annotate(
             month=TruncMonth('created_at')
@@ -3524,12 +3587,21 @@ class DynamicFormEntryCompactTicketPDFView(APIView):
 
         entry = get_object_or_404(models.DynamicFormEntry, id=sample_id)
 
+        # ---------------- SERIALIZED DATA ----------------
+        from .serializers import DynamicFormEntrySerializer
+        serializer = DynamicFormEntrySerializer(entry, context={"request": request})
+        serialized_data = serializer.data
+        formatted_data = serialized_data.get("data", {})
+
         # ---------------- QR CODE ----------------
         qr_url = f"{settings.FRONTEND_BASE_URL}/sample-details/{entry.id}"
+
         qr = qrcode.QRCode(box_size=3, border=1)
         qr.add_data(qr_url)
         qr.make(fit=True)
+
         img = qr.make_image(fill_color="black", back_color="white")
+
         buffer = BytesIO()
         img.save(buffer, format="PNG")
         qr_base64 = base64.b64encode(buffer.getvalue()).decode()
@@ -3593,7 +3665,8 @@ class DynamicFormEntryCompactTicketPDFView(APIView):
             <span>ID: {entry.sample_text_id}</span><br/>
         """
 
-        for k, v in entry.data.items():
+        # ---------------- FORMATTED DATA ----------------
+        for k, v in formatted_data.items():
             html_content += f"<span>{k}: {v}</span><br/>"
 
         html_content += """
@@ -3616,7 +3689,7 @@ class DynamicFormEntryCompactTicketPDFView(APIView):
             <span>ID: {entry.sample_text_id}</span><br/>
         """
 
-        for k, v in entry.data.items():
+        for k, v in formatted_data.items():
             html_content += f"<span>{k}: {v}</span><br/>"
 
         html_content += """
@@ -3642,12 +3715,16 @@ class DynamicFormEntryCompactTicketPDFView(APIView):
         os.remove(temp_path)
 
         response = HttpResponse(pdf, content_type="application/pdf")
+
         filename = f"sample_{entry.id}_ticket.pdf"
+
         response["Content-Disposition"] = (
-            f'attachment; filename="{filename}"' if download else f'inline; filename="{filename}"'
+            f'attachment; filename="{filename}"'
+            if download
+            else f'inline; filename="{filename}"'
         )
 
-        return response 
+        return response
 
 
 from .models import DynamicFormEntry, Product 
@@ -3854,12 +3931,14 @@ class InvestigationViewSet(viewsets.ModelViewSet):
 
         original_sample = investigation.sample
 
-        # Create new sample
+        # Create follow-up sample
         followup_sample = DynamicFormEntry.objects.create(
             form=original_sample.form,
             data=original_sample.data,
             status="initiated",
-            logged_by=request.user
+            logged_by=request.user,
+            is_followup=True,
+            parent_sample=original_sample
         )
 
         # Copy user_groups from original sample
@@ -3869,7 +3948,7 @@ class InvestigationViewSet(viewsets.ModelViewSet):
         return Response({
             "message": "Follow-up sample created successfully",
             "followup_sample_id": followup_sample.id,
-            "sample_text_id": followup_sample.sample_text_id
+            "sample_text_id": followup_sample.sample_text_id,
+            "parent_sample_id": original_sample.id
         })
-
 

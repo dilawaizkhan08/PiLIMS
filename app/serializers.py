@@ -769,7 +769,7 @@ class StockConsumptionSerializer(serializers.ModelSerializer):
 
 
 class StockSerializer(serializers.ModelSerializer):
-    id = serializers.IntegerField(required=False)  # Allow PATCH with ID
+    id = serializers.IntegerField(required=False) 
     consumptions = StockConsumptionSerializer(
         many=True,
         read_only=True
@@ -778,7 +778,7 @@ class StockSerializer(serializers.ModelSerializer):
     class Meta:
         model = models.Stock
         fields = [
-            'id', 'inventory', 'stock_date', 'expiration_date', 'notes', 'quantity',
+            'id', 'inventory', 'stock_date', 'expiration_date', 'notes', 'quantity', 'batch_no',
             'consumptions' 
         ]
         extra_kwargs = {
@@ -1122,13 +1122,20 @@ class DynamicFormEntrySerializer(serializers.ModelSerializer):
     retaining_sample_location = serializers.CharField(
         required=False, allow_null=True, allow_blank=True
     )
+    is_followup = serializers.BooleanField(read_only=True)
+    parent_sample_text_id = serializers.SerializerMethodField()
 
     class Meta:
         model = models.DynamicFormEntry
         fields = [
-            "id", "sample_text_id","comment","form_name", "form_id", "data",
+            "id", "sample_text_id","parent_sample_text_id", "is_followup","comment","form_name", "form_id", "data",
             "status", "analyses_data", "analyst_id", "analyst_name", "created_at", "logged_by", "logged_by_name", "retaining_sample_location"
         ]
+
+    def get_parent_sample_text_id(self, obj):
+        if obj.parent_sample:
+            return obj.parent_sample.sample_text_id
+        return None
 
 
     def get_form_name(self, obj):
