@@ -761,14 +761,25 @@ class InstrumentSerializer(serializers.ModelSerializer):
 
         return instance
 
+class StockConsumptionSerializer(serializers.ModelSerializer):
+
+    class Meta:
+        model = models.StockConsumption
+        fields = ["id", "stock", "consumed_quantity", "notes", "created_at"]
+
 
 class StockSerializer(serializers.ModelSerializer):
-    id = serializers.IntegerField(required=False)  # Allow PATCH with ID
+    id = serializers.IntegerField(required=False) 
+    consumptions = StockConsumptionSerializer(
+        many=True,
+        read_only=True
+    )
 
     class Meta:
         model = models.Stock
         fields = [
-            'id', 'inventory', 'stock_date', 'expiration_date', 'notes', 'quantity'
+            'id', 'inventory', 'stock_date', 'expiration_date', 'notes', 'quantity', 'batch_no',
+            'consumptions' 
         ]
         extra_kwargs = {
             'inventory': {'required': False}
@@ -1149,13 +1160,23 @@ class DynamicFormEntrySerializer(serializers.ModelSerializer):
     form_name = serializers.SerializerMethodField()
     form_id = serializers.SerializerMethodField()
     analyst_name = serializers.SerializerMethodField()
+    retaining_sample_location = serializers.CharField(
+        required=False, allow_null=True, allow_blank=True
+    )
+    is_followup = serializers.BooleanField(read_only=True)
+    parent_sample_text_id = serializers.SerializerMethodField()
 
     class Meta:
         model = models.DynamicFormEntry
         fields = [
-            "id", "comment","form_name", "form_id", "data",
-            "status", "analyses_data", "analyst_id", "analyst_name", "created_at", "logged_by", "logged_by_name"
+            "id", "sample_text_id","parent_sample_text_id", "is_followup","comment","form_name", "form_id", "data",
+            "status", "analyses_data", "analyst_id", "analyst_name", "created_at", "logged_by", "logged_by_name", "retaining_sample_location"
         ]
+
+    def get_parent_sample_text_id(self, obj):
+        if obj.parent_sample:
+            return obj.parent_sample.sample_text_id
+        return None
 
 
     def get_form_name(self, obj):
@@ -1213,13 +1234,6 @@ class DynamicFormEntrySerializer(serializers.ModelSerializer):
             instance.save(update_fields=["analyst", "status"])
             return instance
 
-        # ✅ 2️⃣ Only allow data updates if status is "received"
-        if instance.status != "received":
-            raise serializers.ValidationError(
-                f"Updates allowed only when sample status is 'received' (current: {instance.status})"
-            )
-
-        # ✅ Extract dynamic "data" fields
         if hasattr(request_data, "lists"):
             data_dict = {}
             for key, value in request_data.lists():
@@ -1247,6 +1261,9 @@ class DynamicFormEntrySerializer(serializers.ModelSerializer):
         # ✅ Allow explicit status update (e.g., received → in_progress etc.)
         if "status" in validated_data:
             instance.status = validated_data["status"]
+
+        if "retaining_sample_location" in validated_data:
+            instance.retaining_sample_location = validated_data["retaining_sample_location"]
 
         instance.save()
 
@@ -1339,29 +1356,110 @@ class DynamicFormEntrySerializer(serializers.ModelSerializer):
     #   Representation
     # -------------------------
     def to_representation(self, instance):
+        from django.apps import apps
+        from .models import Value  # adjust if needed
+
         request = self.context.get("request")
         data = super().to_representation(instance)
 
         formatted_data = {}
-        if instance.data:
-            for key, value in instance.data.items():
-                if isinstance(value, str) and value.startswith("uploads/sample/"):
-                    formatted_data[key] = request.build_absolute_uri(value) if request else value
+
+        # ----------------------------------
+        #   HANDLE FORM DYNAMIC FIELDS
+        # ----------------------------------
+        if instance.data and instance.form:
+            form_fields = instance.form.fields.all()
+
+            for field in form_fields:
+                field_name = field.field_name
+                raw_value = instance.data.get(field_name)
+
+                if raw_value is None:
+                    continue
+
+                # -------------------------
+                # LIST TYPE → return value only
+                # -------------------------
+                if field.field_property == "list" and field.list_ref:
+                    try:
+                        # If raw_value is numeric → treat as Value ID
+                        if isinstance(raw_value, int) or (isinstance(raw_value, str) and raw_value.isdigit()):
+                            value_obj = Value.objects.filter(
+                                id=int(raw_value),
+                                list=field.list_ref
+                            ).first()
+
+                            formatted_data[field_name] = value_obj.value if value_obj else raw_value
+                        else:
+                            # Already a readable value (like "Grab")
+                            formatted_data[field_name] = raw_value
+
+                    except Exception:
+                        formatted_data[field_name] = raw_value
+
+                # -------------------------
+                # LINK TO TABLE → return readable value only
+                # -------------------------
+                elif field.field_property == "link_to_table" and field.link_to_table:
+                    try:
+                        from django.apps import apps
+
+                        table_name = field.link_to_table.strip()
+                        model = None
+
+                        # Loop through all models to match db_table
+                        for app_config in apps.get_app_configs():
+                            for m in app_config.get_models():
+                                if m._meta.db_table == table_name:
+                                    model = m
+                                    break
+                            if model:
+                                break
+
+                        if not model:
+                            formatted_data[field_name] = raw_value
+                            continue
+
+                        obj = model.objects.filter(id=raw_value).first()
+
+                        if obj:
+                            formatted_data[field_name] = str(obj)
+                        else:
+                            formatted_data[field_name] = raw_value
+
+                    except Exception:
+                        formatted_data[field_name] = raw_value
+
+                # -------------------------
+                # FILE HANDLING
+                # -------------------------
+                elif isinstance(raw_value, str) and raw_value.startswith("uploads/sample/"):
+                    formatted_data[field_name] = (
+                        request.build_absolute_uri(raw_value)
+                        if request else raw_value
+                    )
+
                 else:
-                    formatted_data[key] = value
+                    formatted_data[field_name] = raw_value
+
         data["data"] = formatted_data
 
+        # ----------------------------------
+        #   ANALYSES DATA (UNCHANGED LOGIC)
+        # ----------------------------------
         entry_analyses = models.DynamicFormEntryAnalysis.objects.filter(
             entry=instance
         ).prefetch_related(
-            "components", 
+            "components",
             "sample_components__component",
             "analysis__attachments"
         )
 
         analyses_data = []
+
         for ea in entry_analyses:
             components_data = []
+
             for sc in ea.sample_components.all():
                 components_data.append({
                     "id": sc.component.id if sc.component else None,
@@ -1379,11 +1477,14 @@ class DynamicFormEntrySerializer(serializers.ModelSerializer):
                 })
 
             attachments_data = []
+
             if ea.analysis:
                 for attachment in ea.analysis.attachments.all():
                     attachments_data.append({
                         "id": attachment.id,
-                        "file": request.build_absolute_uri(attachment.file.url) if request else attachment.file.url,
+                        "file": request.build_absolute_uri(
+                            attachment.file.url
+                        ) if request else attachment.file.url,
                         "name": attachment.file.name.split('/')[-1]
                     })
 
@@ -1395,6 +1496,7 @@ class DynamicFormEntrySerializer(serializers.ModelSerializer):
             })
 
         data["analyses_data"] = analyses_data
+
         return data
 
 
@@ -2233,11 +2335,45 @@ class AddCommentSerializer(serializers.Serializer):
 
 class GeneratedReportSerializer(serializers.ModelSerializer):
     sample_id = serializers.IntegerField(source="sample.id", read_only=True)
+    sample_text_id = serializers.CharField(source="sample.sample_text_id", read_only=True)
     template_id = serializers.IntegerField(source="template.id", read_only=True)
+    template_name = serializers.CharField(source="template.name", read_only=True)
+
+    pdf_url = serializers.SerializerMethodField()
 
     class Meta:
         model = models.GeneratedReport
-        fields = ["id", "sample_id", "template_id", "pdf_url", "created_at"]
-        read_only_fields = ["id", "sample_id", "template_id", "created_at"]
+        fields = [
+            "id",
+            "sample_id",
+            "sample_text_id",
+            "template_id",
+            "template_name",
+            "pdf_url",
+            "created_at",
+        ]
+        read_only_fields = [
+            "id",
+            "sample_id",
+            "sample_text_id",
+            "template_id",
+            "template_name",
+            "created_at",
+        ]
 
+    def get_pdf_url(self, obj):
+        request = self.context.get("request")
+
+        if not obj.pdf_url:
+            return None
+
+        if request:
+            return request.build_absolute_uri(obj.pdf_url)
+
+        return obj.pdf_url
+    
+class InvestigationSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = models.Investigation
+        fields = "__all__"
 

@@ -430,6 +430,72 @@ class InventoryViewSet(TrackUserMixin, viewsets.ModelViewSet):
             user_groups__in=user.user_groups.all()
         ).distinct()
 
+    @action(detail=True, methods=["post"])
+    def consume(self, request, pk=None):
+        """
+        Consume stock from a specific batch
+        """
+        stock_id = request.data.get("stock_id")
+        quantity = request.data.get("quantity")
+        notes = request.data.get("notes", "")
+
+        if not stock_id or not quantity:
+            return Response({"error": "stock_id and quantity are required"}, status=400)
+
+        try:
+            stock = models.Stock.objects.get(id=stock_id, inventory_id=pk)
+        except models.Stock.DoesNotExist:
+            return Response({"error": "Stock (batch) not found"}, status=404)
+
+        quantity = int(quantity)
+        if quantity > stock.quantity:
+            return Response({"error": "Not enough stock in this batch"}, status=400)
+
+        # Create consumption record
+        consumption = models.StockConsumption.objects.create(
+            stock=stock,
+            consumed_quantity=quantity,
+            notes=notes
+        )
+
+        # Deduct quantity
+        stock.quantity -= quantity
+        stock.save()
+
+        return Response(
+            {
+                "message": "Stock consumed successfully",
+                "inventory_total": stock.inventory.total_quantity,
+                "consumed_from_batch": stock.batch_no,
+                "remaining_in_batch": stock.quantity
+            },
+            status=status.HTTP_200_OK
+        )
+
+    @action(detail=True, methods=["get"])
+    def stocks(self, request, pk=None):
+        """
+        Get all stocks (batches) for a specific inventory
+        """
+        try:
+            inventory = models.Inventory.objects.get(pk=pk)
+        except models.Inventory.DoesNotExist:
+            return Response({"error": "Inventory not found"}, status=404)
+
+        stocks = inventory.stocks.all()  # Get all related stocks
+        stock_data = StockSerializer(stocks, many=True).data
+
+        # Optional: include consumption history for these stocks
+        consumptions = models.StockConsumption.objects.filter(stock__inventory=inventory).order_by("-created_at")
+        consumption_data = StockConsumptionSerializer(consumptions, many=True).data
+
+        return Response({
+            "inventory_id": inventory.id,
+            "inventory_name": inventory.name,
+            "total_quantity": inventory.total_quantity,
+            "stocks": stock_data,
+            "consumptions": consumption_data
+        }, status=status.HTTP_200_OK)
 
 class StockViewSet(TrackUserMixin,viewsets.ModelViewSet):
     queryset = models.Stock.objects.all()
@@ -760,7 +826,7 @@ class SampleFormSubmitView(APIView):
             # ----------------------------------
             #  MANUAL + AUTO ANALYSES (DB ONLY)
             # ----------------------------------
-            manual_analyses = request.data.getlist("analyses")
+            manual_analyses = request.data.get("analyses", []) 
             manual_ids = {int(x) for x in manual_analyses} if manual_analyses else set()
 
             final_analysis_ids = manual_ids.union(auto_analysis_ids)
@@ -811,6 +877,20 @@ class DynamicSampleFormEntryViewSet(viewsets.ModelViewSet):
     filter_backends = [GenericSearchFilter]
     pagination_class = CustomPageNumberPagination
 
+
+    def get_queryset(self):
+        user = self.request.user
+
+        # Superadmins & Admins → full access
+        if user.is_superuser or user.role == "Admin":
+            return models.DynamicFormEntry.objects.all().order_by("-created_at")
+
+        # Normal users → only entries linked to their user_groups (from the entry or its form)
+        return models.DynamicFormEntry.objects.filter(
+            models.Q(user_groups__in=user.user_groups.all()) |
+            models.Q(form__user_groups__in=user.user_groups.all())
+        ).distinct().order_by("-created_at")
+
     # -----------------------------
     # Update Status Endpoint
     # -----------------------------
@@ -818,10 +898,21 @@ class DynamicSampleFormEntryViewSet(viewsets.ModelViewSet):
     def update_status(self, request):
         new_status = request.data.get("status")
         ids = request.data.get("ids", [])
-        analyst_id = request.data.get("analyst_id")  # for assign_analyst
+        analyst_id = request.data.get("analyst_id")
+        reason = request.data.get("reason")
+        password = request.data.get("password")
 
         if not new_status or not ids:
             return Response({"error": "status and ids are required"}, status=400)
+
+        # -----------------------------
+        # Require password & reason for release/rejected/hold
+        # -----------------------------
+        if new_status in ["release", "rejected", "hold"]:
+            if not reason or not password:
+                return Response({"error": "reason and password are required for this status"}, status=400)
+            if not request.user.check_password(password):
+                return Response({"error": "Incorrect password"}, status=403)
 
         # -----------------------------
         # Map status → permission action
@@ -831,7 +922,7 @@ class DynamicSampleFormEntryViewSet(viewsets.ModelViewSet):
             "in_progress": "result_entry",
             "completed": "result_entry",
             "assign_analyst": "update",
-            "release" : "release",
+            "release": "release",
             "rejected": "release",
             "hold": "cancel_restore",
             "unhold": "cancel_restore",
@@ -890,17 +981,28 @@ class DynamicSampleFormEntryViewSet(viewsets.ModelViewSet):
         # -----------------------------
         for entry in entries:
 
-            # ❌ Completed is locked except authorize/reject/hold
-            if entry.status == "completed" and new_status not in ["release", "rejected", "hold"]:
-                return Response({
-                    "error": f"Entry {entry.id} is completed and cannot be changed."
-                }, status=400)
+            # -----------------------------
+            # Completed → release/rejected validation
+            # -----------------------------
+            if new_status in ["release", "rejected"]:
+                allow = False
+                if entry.status == "completed":
+                    allow = True
+                elif entry.status == "hold":
+                    last_status_before_hold = (
+                        models.StatusHistory.objects
+                        .filter(entry=entry, new_status="hold")
+                        .order_by("-id")
+                        .first()
+                    )
+                    previous_status = last_status_before_hold.old_status if last_status_before_hold else None
+                    if previous_status == "completed":
+                        allow = True
 
-            # ❌ Authorize / Reject only if completed
-            if new_status in ["release", "rejected"] and entry.status != "completed":
-                return Response({
-                    "error": f"Entry {entry.id} must be completed before {new_status}."
-                }, status=400)
+                if not allow:
+                    return Response({
+                        "error": f"Entry {entry.id} must be completed before {new_status}."
+                    }, status=400)
 
             # -----------------------------
             # On Hold
@@ -910,7 +1012,7 @@ class DynamicSampleFormEntryViewSet(viewsets.ModelViewSet):
                     return Response({
                         "error": f"Entry {entry.id} is already on hold."
                     }, status=400)
-                update_status_with_history(entry, "hold", user)
+                update_status_with_history(entry, "hold", user, reason=reason)
                 continue
 
             # -----------------------------
@@ -921,7 +1023,7 @@ class DynamicSampleFormEntryViewSet(viewsets.ModelViewSet):
                     return Response({
                         "error": f"Entry {entry.id} can only be reactivated if it is 'release' or 'rejected'."
                     }, status=400)
-                update_status_with_history(entry, "in_progress", user)  # reactivate → reset to in_progress
+                update_status_with_history(entry, "in_progress", user, reason=reason)
                 continue
 
             # -----------------------------
@@ -940,7 +1042,22 @@ class DynamicSampleFormEntryViewSet(viewsets.ModelViewSet):
                     .first()
                 )
                 restored_status = last_status.old_status if last_status else "in_progress"
-                update_status_with_history(entry, restored_status, user)
+                update_status_with_history(entry, restored_status, user, reason=reason)
+                continue
+
+            # -----------------------------
+            # Release / Rejected → track history + create investigation if rejected
+            # -----------------------------
+            if new_status in ["release", "rejected"]:
+                update_status_with_history(entry, new_status, user, reason=reason)
+
+                # Create investigation automatically if rejected
+                if new_status == "rejected":
+                    models.Investigation.objects.create(
+                        sample=entry,
+                        rejected_at=timezone.now(),
+                        rejection_reason=reason
+                    )
                 continue
 
             # -----------------------------
@@ -952,6 +1069,7 @@ class DynamicSampleFormEntryViewSet(viewsets.ModelViewSet):
             "message": f"Status updated to {new_status}",
             "updated_ids": ids
         })
+
     
     @action(detail=False, methods=["get"], url_path="stats")
     def get_stats(self, request):
@@ -1647,23 +1765,27 @@ class GradeViewSet(viewsets.ModelViewSet):
     serializer_class = GradeSerializer
     permission_classes = [IsAuthenticated, HasModulePermission]
 
-class ProductViewSet(TrackUserMixin,viewsets.ModelViewSet):
+class ProductViewSet(TrackUserMixin, viewsets.ModelViewSet):
     queryset = models.Product.objects.all()
     serializer_class = ProductSerializer
-    permission_classes = [IsAuthenticated,HasModulePermission]
+    permission_classes = [IsAuthenticated, HasModulePermission]
     filter_backends = [GenericSearchFilter]
     pagination_class = CustomPageNumberPagination
 
-
     def get_queryset(self):
         user = self.request.user
+        queryset = models.Product.objects.all()
 
-        # Superadmins & Admin role → full access
+        product_type = self.request.query_params.get("product_type")
+
+        if product_type:
+            queryset = queryset.filter(product_type=product_type)
+
+        # 🔹 Role based filtering
         if user.is_superuser or user.role == "Admin":
-            return models.Product.objects.all()
+            return queryset
 
-        # Normal users → only those in their assigned user groups
-        return models.Product.objects.filter(
+        return queryset.filter(
             user_groups__in=user.user_groups.all()
         ).distinct()
 
@@ -1788,6 +1910,43 @@ class DynamicTableDataView(APIView):
                 "data": data
             }, status=status.HTTP_200_OK)
 
+
+        # =========================================================
+        # 🔵 SPECIAL CASE: app_product (product_type_id instead of name)
+        # =========================================================
+        if table_name == "app_product":
+            product_type_id = request.data.get("product_type_id")
+
+            products = models.Product.objects.all()
+
+            if product_type_id:
+                try:
+                    product_type_value = models.Value.objects.get(id=product_type_id)
+                    # normalize the string
+                    filter_value = product_type_value.value.upper().replace(" ", "_")
+                    products = products.filter(product_type=filter_value)
+                except models.Value.DoesNotExist:
+                    return Response(
+                        {"error": "Product type not found"},
+                        status=status.HTTP_404_NOT_FOUND
+                    )
+
+            data = []
+            for product in products:
+                data.append({
+                    "id": product.id,
+                    "name": product.name,
+                    "version": product.version,
+                    "description": product.description,
+                    "product_type": product.product_type
+                })
+
+            return Response({
+                "table": table_name,
+                "count": len(data),
+                "data": data
+            }, status=status.HTTP_200_OK)
+        
         # =========================================================
         # 🟢 DEFAULT / GENERIC DYNAMIC HANDLER
         # =========================================================
@@ -1975,6 +2134,8 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
     def post(self, request, entry_id):
         entry = get_object_or_404(models.DynamicFormEntry, pk=entry_id)
 
+        save_and_authorize = request.data.get("save_and_authorize", False)
+
         # -----------------------------
         # Check if user has 'result_entry' permission
         # -----------------------------
@@ -2118,8 +2279,6 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
                     existing_calc_result.value = str(numeric_value)
                     existing_calc_result.numeric_value = numeric_value
                     existing_calc_result.remarks = "Auto-calculated"
-                    existing_calc_result.authorization_flag = False
-                    existing_calc_result.authorization_remark = None
                     existing_calc_result.created_by = request.user
                     existing_calc_result.save()
                     saved_results.append(existing_calc_result)
@@ -2130,8 +2289,6 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
                         value=str(numeric_value),
                         numeric_value=numeric_value,
                         remarks="Auto-calculated",
-                        authorization_flag=False,
-                        authorization_remark=None,
                         created_by=request.user
                     )
                     saved_results.append(new_calc_result)
@@ -2140,15 +2297,22 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
             all_errors.extend(errors)
 
         # ---------------------------
+        # Auto Authorize (ONLY if requested)
+        # ---------------------------
+        if save_and_authorize:
+            models.ComponentResult.objects.filter(entry=entry).update(
+                authorization_flag=True
+            )
+
+        # ---------------------------
         # Update overall entry status
         # ---------------------------
-
         def update_entry_status(entry_obj, user):
             entry_analyses = models.DynamicFormEntryAnalysis.objects.filter(entry=entry_obj)
 
             total_components = 0
             filled_components = 0
-            all_authorized = True
+            authorized_components = 0
 
             for ea in entry_analyses:
                 sample_components = ea.sample_components.all()
@@ -2160,33 +2324,30 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
                         sample_component=sc
                     ).first()
 
-                    # Check if filled
                     if result and (result.value not in [None, ""] or result.numeric_value is not None):
                         filled_components += 1
-                        if not result.authorization_flag:
-                            all_authorized = False
-                    else:
-                        all_authorized = False
 
-            # ✅ Final Decision Logic
-            if total_components == 0 or filled_components == 0:
+                        if result.authorization_flag:
+                            authorized_components += 1
+
+            if total_components == 0:
                 final_status = "received"
+
             elif filled_components < total_components:
                 final_status = "in_progress"
-            elif filled_components == total_components and all_authorized:
-                final_status = "completed"
-            else:
+
+            elif authorized_components < total_components:
                 final_status = "in_progress"
 
-            # Use helper to update status and create history
+            else:
+                final_status = "completed"
+
             update_status_with_history(entry_obj, final_status, user)
-
             return final_status
-
 
         final_status = update_entry_status(entry, request.user)
 
-        # ---------------------------
+              # ---------------------------
         # Analysis-level status
         # ---------------------------
         analysis_status_list = []
@@ -2199,23 +2360,16 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
                 status_ = "initiated"
             else:
                 any_result_entered = False
-                all_authorized = True
                 for sc in components:
                     result = models.ComponentResult.objects.filter(
                         entry=entry,
                         sample_component=sc
                     ).first()
-                    if not result or result.value in [None, ""]:
-                        all_authorized = False
-                    else:
+                    if result and (result.value not in [None, ""] or result.numeric_value is not None):
                         any_result_entered = True
-                        if not result.authorization_flag:
-                            all_authorized = False
 
                 if not any_result_entered:
                     status_ = "initiated"
-                elif all_authorized:
-                    status_ = "authorized"
                 else:
                     status_ = "completed"
 
@@ -2227,6 +2381,7 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
         # ---------------------------
         # Build response
         # ---------------------------
+
         serializer = ComponentResultSerializer(all_saved_results, many=True)
 
         response = {
@@ -2242,7 +2397,7 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
             response["errors"] = all_errors
 
         return Response(response, status=status.HTTP_200_OK)
-
+    
     # ---------------------------
     # Get all results
     # ---------------------------
@@ -2973,6 +3128,7 @@ STATUS_CHOICES = [
     ("restored", "Restored"),
 ]
 
+
 class AnalyticsAPIView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -3010,35 +3166,87 @@ class AnalyticsAPIView(APIView):
         if end_date < start_date:
             return Response({"error": "end_date must be greater than or equal to start_date."}, status=400)
 
+        # ===================== 3D MONTH-REPORT-TEMPLATE =====================
+        reports_qs = models.GeneratedReport.objects.filter(
+            created_at__date__range=(start_date, end_date)
+        )
+
+        # If current_month filter is applied, restrict reports to current month only
+        if current_month == "true":
+            reports_qs = reports_qs.filter(
+                created_at__year=today.year,
+                created_at__month=today.month
+            )
+
+        # Annotate by month and template
+        reports_by_month_template = reports_qs.annotate(
+            month=TruncMonth('created_at')
+        ).values(
+            'month', 'template__name'
+        ).annotate(
+            count=Count('id')
+        ).order_by('month', 'template__name')
+
+        # Get all templates
+        templates = set([r['template__name'] for r in reports_by_month_template])
+        current_year_val = today.year
+
+        # Initialize month dictionary
+        monthly_report_dict = {f"{calendar.month_name[m]} {current_year_val}": [] for m in range(1, 13)}
+
+        # Fill counts for each template per month
+        for month_name in monthly_report_dict.keys():
+            for t in templates:
+                monthly_report_dict[month_name].append({
+                    "report_template": t,
+                    "count": 0
+                })
+
+        # Update actual counts from query
+        for r in reports_by_month_template:
+            month_name = f"{calendar.month_name[r['month'].month]} {r['month'].year}"
+            template_name = r['template__name']
+            for d in monthly_report_dict[month_name]:
+                if d['report_template'] == template_name:
+                    d['count'] = r['count']
+                    break
+
+        # Convert to list for FE
+        monthly_report_chart_data = [
+            {"month": month_name, "reports": reports}
+            for month_name, reports in monthly_report_dict.items()
+        ]
+
         # ===================== ENTRIES FILTER =====================
         entries_qs = models.DynamicFormEntry.objects.filter(
             created_at__date__range=(start_date, end_date)
         )
 
-        # Filter by product type dynamically
         if product_type:
-            filtered_entries = []
-            for entry in entries_qs:
-                form = entry.form
-                include_entry = False
-                for pf in form.fields.filter(field_property="link_to_table"):
-                    value = entry.data.get(pf.field_name)
-                    if value is not None:
-                        values = value if isinstance(value, list) else [value]
-                        for v in values:
-                            try:
-                                product_id = int(v)
-                                product_obj = models.Product.objects.get(id=product_id)
-                                if product_obj.product_type == product_type:
-                                    include_entry = True
-                                    break
-                            except (ValueError, models.Product.DoesNotExist):
-                                continue
+            product_types = [pt.strip() for pt in product_type.split(",") if pt.strip()]
+            if product_types:
+                filtered_entries = []
+                for entry in entries_qs:
+                    form = entry.form
+                    include_entry = False
+                    for pf in form.fields.filter(field_property="link_to_table"):
+                        value = entry.data.get(pf.field_name)
+                        if value is not None:
+                            values = value if isinstance(value, list) else [value]
+                            for v in values:
+                                try:
+                                    product_id = int(v)
+                                    product_obj = models.Product.objects.get(id=product_id)
+                                    if product_obj.product_type in product_types:
+                                        include_entry = True
+                                        break
+                                except (ValueError, models.Product.DoesNotExist):
+                                    continue
+                        if include_entry:
+                            break
                     if include_entry:
-                        break
-                if include_entry:
-                    filtered_entries.append(entry.id)
-            entries_qs = entries_qs.filter(id__in=filtered_entries)
+                        filtered_entries.append(entry.id)
+                entries_qs = entries_qs.filter(id__in=filtered_entries)
 
         # ===================== CARDS =====================
         total_users = models.User.objects.count()
@@ -3065,7 +3273,6 @@ class AnalyticsAPIView(APIView):
         ).values("month").annotate(count=Count("id")).order_by("month")
 
         monthly_data = {item["month"].month: item["count"] for item in monthly_entries_qs}
-        current_year_val = today.year
         monthly_entries = [
             {"month": f"{calendar.month_name[m]} {current_year_val}", "count": monthly_data.get(m, 0)}
             for m in range(1, 13)
@@ -3127,6 +3334,7 @@ class AnalyticsAPIView(APIView):
                 "status_distribution": status_distribution,
                 "top_analyses": top_analyses,
                 "top_components": top_components,
+                "monthly_report_templates": monthly_report_chart_data,  # ✅ Updated chart by report template
             },
             "alerts": {"instruments_due_30_days": instruments_due, "low_stock_inventories": low_stock},
             "leaderboards": {"top_analysts": top_analysts, "product_analysis_counts": product_analysis},
@@ -3398,12 +3606,21 @@ class DynamicFormEntryCompactTicketPDFView(APIView):
 
         entry = get_object_or_404(models.DynamicFormEntry, id=sample_id)
 
+        # ---------------- SERIALIZED DATA ----------------
+        from .serializers import DynamicFormEntrySerializer
+        serializer = DynamicFormEntrySerializer(entry, context={"request": request})
+        serialized_data = serializer.data
+        formatted_data = serialized_data.get("data", {})
+
         # ---------------- QR CODE ----------------
         qr_url = f"{settings.FRONTEND_BASE_URL}/sample-details/{entry.id}"
+
         qr = qrcode.QRCode(box_size=3, border=1)
         qr.add_data(qr_url)
         qr.make(fit=True)
+
         img = qr.make_image(fill_color="black", back_color="white")
+
         buffer = BytesIO()
         img.save(buffer, format="PNG")
         qr_base64 = base64.b64encode(buffer.getvalue()).decode()
@@ -3411,55 +3628,96 @@ class DynamicFormEntryCompactTicketPDFView(APIView):
 
         # ---------------- HTML ----------------
         html_content = f"""
-<html>
-<head>
-<style>
-  @page {{
-      size: 100mm 37.5mm;  /* width:height = 4:1.5 */
-      margin: 0;
-  }}
-  body {{
-      font-family: Arial;
-      font-size:8px;
-      margin:0;
-      padding:0;
-  }}
-  .container {{
-      display: flex;
-      flex-direction: row;  /* horizontal layout */
-      align-items: flex-start;
-      gap: 3mm;
-      padding: 2mm;
-  }}
-  .qr {{
-      flex: none;
-  }}
-  .details {{
-      flex: 1;
-      line-height: 1.1;
-  }}
-</style>
-</head>
-<body>
-<div class="container">
-  <div class="qr">
-    <img src="data:image/png;base64,{qr_base64}" width="70" height="70">
-  </div>
-  <div class="details">
-    <strong style="font-size:10px;">{entry.form.sample_name}</strong><br/>
-    <span>Secondary ID: {entry.sample_text_id}</span><br/>
-"""
+        <html>
+        <head>
+        <style>
+        @page {{
+            size: 100mm 37.5mm;
+            margin: 0;
+        }}
 
-        # Add JSON fields dynamically
-        for k, v in entry.data.items():
+        body {{
+            font-family: Arial;
+            font-size:8px;
+            margin:0;
+            padding:0;
+        }}
+
+        .label {{
+            display:flex;
+            flex-direction:row;
+            gap:3mm;
+            padding:1mm;
+            height:18mm;
+        }}
+
+        .qr {{
+            text-align:center;
+            flex:none;
+        }}
+
+        .details {{
+            flex:1;
+            line-height:1.1;
+        }}
+
+        .label-title {{
+            font-weight:bold;
+            font-size:7px;
+        }}
+        </style>
+        </head>
+
+        <body>
+
+        <!-- LAB SAMPLE LABEL -->
+
+        <div class="label">
+
+        <div class="qr">
+            <img src="data:image/png;base64,{qr_base64}" width="40" height="40"><br>
+            <div class="label-title">Lab Sample Label</div>
+        </div>
+
+        <div class="details">
+            <strong style="font-size:9px;">{entry.form.sample_name}</strong><br/>
+            <span>ID: {entry.sample_text_id}</span><br/>
+        """
+
+        # ---------------- FORMATTED DATA ----------------
+        for k, v in formatted_data.items():
             html_content += f"<span>{k}: {v}</span><br/>"
 
         html_content += """
-  </div>
-</div>
-</body>
-</html>
-"""
+        </div>
+        </div>
+        """
+
+        # ---------------- RETAINING LABEL ----------------
+
+        html_content += f"""
+        <div class="label">
+
+        <div class="qr">
+            <img src="data:image/png;base64,{qr_base64}" width="40" height="40"><br>
+            <div class="label-title">Retaining Label</div>
+        </div>
+
+        <div class="details">
+            <strong style="font-size:9px;">{entry.form.sample_name}</strong><br/>
+            <span>ID: {entry.sample_text_id}</span><br/>
+        """
+
+        for k, v in formatted_data.items():
+            html_content += f"<span>{k}: {v}</span><br/>"
+
+        html_content += """
+        </div>
+        </div>
+
+        </body>
+        </html>
+        """
 
         # ---------------- PDF GENERATE ----------------
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp:
@@ -3476,12 +3734,16 @@ class DynamicFormEntryCompactTicketPDFView(APIView):
         os.remove(temp_path)
 
         response = HttpResponse(pdf, content_type="application/pdf")
+
         filename = f"sample_{entry.id}_ticket.pdf"
+
         response["Content-Disposition"] = (
-            f'attachment; filename="{filename}"' if download else f'inline; filename="{filename}"'
+            f'attachment; filename="{filename}"'
+            if download
+            else f'inline; filename="{filename}"'
         )
 
-        return response 
+        return response
 
 
 from .models import DynamicFormEntry, Product 
@@ -3528,119 +3790,110 @@ class DynamicFormEntryQCReportPDFView(APIView):
         exp_date = data.get("Expiry Date", "---").split('T')[0]
 
         html_content = f"""
-        <html>
-        <head>
-        <style>
-            @page {{ size: A4; margin: 0; }}
-            body {{ font-family: 'Arial', sans-serif; margin: 0; padding: 40px; color: #000; }}
-            
-            .header-container {{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }}
-            .logo-pif {{ height: 50px; width: auto; }}
-            .logo-badael {{ height: 60px; width: auto; }}
-            
-            .sub-header {{ display: flex; justify-content: space-between; margin-top: 15px; font-size: 10px; border-top: 1px solid #eee; padding-top: 10px; }}
-            .doc-info-table {{ text-align: left; font-size: 10px; line-height: 1.4; }}
-            .doc-no-red {{ color: #FF0000; font-weight: bold; }}
+            <html>
+            <head>
+            <style>
+                @page {{ size: A4; margin: 0; }}
+                body {{
+                    font-family: 'Arial', sans-serif;
+                    margin: 0;
+                    padding: 0;
+                    height: 100vh;
+                    display: flex;
+                    justify-content: center;  /* horizontal center */
+                    align-items: flex-start;  /* start from top */
+                    background-color: #fff;
+                }}
 
-            .main-title-text {{ margin-top: 25px; font-weight: bold; font-size: 15px; text-transform: uppercase; }}
+                .label-outer-box {{
+                    border: 2px solid #5599FF;
+                    border-radius: 35px;
+                    padding: 30px 40px;
+                    width: 60%;
+                    min-height: 350px;
+                    background-color: {config['color']};
+                    color: #000;
+                    display: flex;
+                    flex-direction: column;
+                    justify-content: space-between;
+                    margin-top: 200px;
+                }}
 
-            /* Compact Square Box */
-            .label-outer-box {{
-                border: 2px solid #5599FF;
-                border-radius: 35px;
-                margin: 40px auto; 
-                padding: 30px 40px;
-                width: 60%;
-                min-height: 350px;
-                background-color: {config['color']}; 
-                color: #000; 
-                display: flex;
-                flex-direction: column;
-                justify-content: space-between;
-            }}
-            .label-title {{ text-align: center; font-size: 18px; font-weight: bold; text-decoration: underline; margin-bottom: 25px; }}
-            
-            .data-row {{ margin-bottom: 15px; display: flex; font-size: 13px; align-items: baseline; }}
-            .data-label {{ font-weight: bold; width: 130px; }}
-            .data-value {{ flex-grow: 1; padding-left: 8px; border-bottom: 1px solid #000; min-height: 18px; }}
+                .label-title {{
+                    text-align: center;
+                    font-size: 18px;
+                    font-weight: bold;
+                    text-decoration: underline;
+                    margin-bottom: 25px;
+                }}
 
-            .bottom-footer {{
-                position: absolute;
-                bottom: 30px;
-                left: 40px;
-                right: 40px;
-                display: flex;
-                justify-content: space-between;
-                font-size: 9px;
-                font-weight: bold;
-            }}
-        </style>
-        </head>
-        <body>
-            <div class="header-container">
-                <img src="{pif_logo_url}" class="logo-pif">
-                <img src="{badael_logo_url}" class="logo-badael">
-            </div>
+                .data-row {{
+                    margin-bottom: 15px;
+                    display: flex;
+                    font-size: 13px;
+                    align-items: baseline;
+                }}
 
-            <div class="sub-header">
-                <div style="font-weight: bold;">
-                    Badael Company – Governance, Risk & Compliance (GRC)<br>
-                    {config['title']}
+                .data-label {{
+                    font-weight: bold;
+                    width: 130px;
+                }}
+
+                .data-value {{
+                    flex-grow: 1;
+                    padding-left: 8px;
+                    border-bottom: 1px solid #000;
+                    min-height: 18px;
+                }}
+            </style>
+            </head>
+
+            <body>
+
+                <div class="label-outer-box">
+                    <div>
+                        <div class="label-title">{config['title'].replace(' Template', '')}</div>
+                        
+                        <div class="data-row">
+                            <span class="data-label">Product name:</span>
+                            <span class="data-value">{product_display_name}</span>
+                        </div>
+
+                        <div class="data-row">
+                            <span class="data-label">Batch number:</span>
+                            <span class="data-value">{data.get("Batch Number", "---")}</span>
+                        </div>
+
+                        <div class="data-row">
+                            <span class="data-label">Mfg. Date:</span>
+                            <span class="data-value">{mfg_date}</span>
+                        </div>
+
+                        <div class="data-row">
+                            <span class="data-label">Exp. Date:</span>
+                            <span class="data-value">{exp_date}</span>
+                        </div>
+
+                        <div class="data-row">
+                            <span class="data-label">Quantity:</span>
+                            <span class="data-value">{data.get("Quantity", "---")}</span>
+                        </div>
+
+                        <div class="data-row" style="margin-top: 35px;">
+                            <span class="data-label" style="width: 100px;">Sign by/date:</span>
+                            <span class="data-value"></span>
+                        </div>
+                    </div>
+
+                    <div style="text-align: right; font-weight: bold; font-size: 10px;">
+                        {config['doc_no']}
+                    </div>
                 </div>
-                <div class="doc-info-table">
-                    Document No. <span class="doc-no-red">{config['doc_no']}</span><br>
-                    Version No. <span style="color: #FF0000;">1.0</span><br>
-                    Effective Date: {current_date}<br>
-                    Next Review Date: 
-                </div>
-            </div>
 
-            <div class="main-title-text">{config['title']}</div>
-
-            <div class="label-outer-box">
-                <div>
-                    <div class="label-title">{config['title'].replace(' Template', '')}</div>
-                    
-                    <div class="data-row">
-                        <span class="data-label">Product name:</span>
-                        <span class="data-value">{product_display_name}</span>
-                    </div>
-                    <div class="data-row">
-                        <span class="data-label">Batch number:</span>
-                        <span class="data-value">{data.get("Batch Number", "---")}</span>
-                    </div>
-                    <div class="data-row">
-                        <span class="data-label">Mfg. Date:</span>
-                        <span class="data-value">{mfg_date}</span>
-                    </div>
-                    <div class="data-row">
-                        <span class="data-label">Exp. Date:</span>
-                        <span class="data-value">{exp_date}</span>
-                    </div>
-                    <div class="data-row">
-                        <span class="data-label">Quantity:</span>
-                        <span class="data-value">{data.get("Quantity", "---")}</span>
-                    </div>
-
-                    <div class="data-row" style="margin-top: 35px;">
-                        <span class="data-label" style="width: 100px;">Sign by/date:</span>
-                        <span class="data-value"></span>
-                    </div>
-                </div>
-                
-                <div style="text-align: right; font-weight: bold; font-size: 10px;">
-                    {config['doc_no']}
-                </div>
-            </div>
-
-            <div class="bottom-footer">
-                <div>Related Procedure: BC-GRC-IMS-SOP-25</div>
-                <div>Badael Confidential – For Internal Use Only</div>
-            </div>
-        </body>
-        </html>
-        """
-
+            </body>
+            </html>
+            """
+        
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp:
             temp_path = temp.name
 
@@ -3661,5 +3914,60 @@ class GeneratedReportViewSet(viewsets.ModelViewSet):
     """
     queryset = models.GeneratedReport.objects.all().order_by("-created_at")
     serializer_class = GeneratedReportSerializer
+    pagination_class = CustomPageNumberPagination
 
+class InvestigationViewSet(viewsets.ModelViewSet):
+    queryset = models.Investigation.objects.all().order_by("-rejected_at")
+    serializer_class = InvestigationSerializer
+    permission_classes = [IsAuthenticated]
+    pagination_class = CustomPageNumberPagination
+    
+
+    def get_queryset(self):
+        """
+        Optionally filter by sample_id using query param:
+        /api/investigations/?sample_id=1
+        """
+        qs = super().get_queryset()
+        sample_id = self.request.query_params.get("sample_id")
+        if sample_id:
+            qs = qs.filter(sample_id=sample_id)
+        return qs
+    
+    # -----------------------------
+    # Generate Follow-up Sample
+    # -----------------------------
+    @action(detail=True, methods=["post"])
+    def generate_followup_sample(self, request, pk=None):
+        """
+        Create a follow-up sample from this investigation.
+        Copies sample info from original sample, no analyses added.
+        """
+        try:
+            investigation = self.get_object()
+        except models.Investigation.DoesNotExist:
+            return Response({"error": "Investigation not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        original_sample = investigation.sample
+
+        # Create follow-up sample
+        followup_sample = DynamicFormEntry.objects.create(
+            form=original_sample.form,
+            data=original_sample.data,
+            status="initiated",
+            logged_by=request.user,
+            is_followup=True,
+            parent_sample=original_sample
+        )
+
+        # Copy user_groups from original sample
+        followup_sample.user_groups.set(original_sample.user_groups.all())
+        followup_sample.save()
+
+        return Response({
+            "message": "Follow-up sample created successfully",
+            "followup_sample_id": followup_sample.id,
+            "sample_text_id": followup_sample.sample_text_id,
+            "parent_sample_id": original_sample.id
+        })
 

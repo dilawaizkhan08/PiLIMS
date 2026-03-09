@@ -12,6 +12,8 @@ from django.utils.translation import gettext_lazy as _
 from . import choices
 import phonenumbers
 from django.core.exceptions import ValidationError
+from django.db.models import Sum
+from datetime import timedelta
 
 
 class BaseModel(models.Model):
@@ -234,16 +236,54 @@ class Instrument(BaseModel):
         return self.name
     
 
+from django.db.models import Max
 
 class InstrumentHistory(BaseModel):
     instrument = models.ForeignKey(Instrument, on_delete=models.CASCADE, related_name='history')
-    action_type = models.CharField(max_length=100,choices=choices.ActionType.choices)
+    action_type = models.CharField(max_length=100, choices=choices.ActionType.choices)
     start_date = models.DateField()
+
+    def save(self, *args, **kwargs):
+        super().save(*args, **kwargs)
+
+        instrument = self.instrument
+
+        # -----------------------------
+        # Latest Calibration History
+        # -----------------------------
+        latest_calibration = InstrumentHistory.objects.filter(
+            instrument=instrument,
+            action_type="Calibration",
+            is_deleted=False
+        ).order_by("-start_date").first()
+
+        if latest_calibration and instrument.calibration_period:
+            instrument.next_calibration_date = (
+                latest_calibration.start_date + timedelta(days=instrument.calibration_period)
+            )
+
+        # -----------------------------
+        # Latest Prevention History
+        # -----------------------------
+        latest_prevention = InstrumentHistory.objects.filter(
+            instrument=instrument,
+            action_type="Prevention",
+            is_deleted=False
+        ).order_by("-start_date").first()
+
+        if latest_prevention and instrument.prevention_period:
+            instrument.next_prevention_date = (
+                latest_prevention.start_date + timedelta(days=instrument.prevention_period)
+            )
+
+        instrument.save(update_fields=[
+            "next_calibration_date",
+            "next_prevention_date"
+        ])
 
     def __str__(self):
         return f"{self.instrument.name} - {self.action_type} on {self.start_date}"
     
-
 class Inventory(BaseModel):
     name = models.CharField(max_length=255)
     type =  models.CharField(max_length=255, null=True, blank=True)
@@ -255,7 +295,6 @@ class Inventory(BaseModel):
     supplier_name = models.CharField(max_length=255, null=True, blank=True)
     batch_no = models.CharField(max_length=255, null=True, blank=True)
 
-
     def __str__(self):
         return self.name
 
@@ -266,17 +305,44 @@ class Stock(BaseModel):
     expiration_date = models.DateField(blank=True, null=True)
     notes = models.TextField(blank=True, null=True)
     quantity = models.IntegerField()
+    batch_no = models.CharField(max_length=255, null=True, blank=True) 
 
     def __str__(self):
         return f"{self.inventory.name} - {self.quantity}"
 
     def save(self, *args, **kwargs):
         super().save(*args, **kwargs)
-        # Update total quantity in inventory
-        total = sum(stock.quantity for stock in self.inventory.stocks.all())
+
+        total = self.inventory.stocks.aggregate(
+            total=Sum("quantity")
+        )["total"] or 0
+
         self.inventory.total_quantity = total
         self.inventory.save()
 
+
+class StockConsumption(BaseModel):
+    stock = models.ForeignKey(
+        Stock, 
+        on_delete=models.CASCADE, 
+        related_name="consumptions"
+    )
+    consumed_quantity = models.IntegerField()
+    notes = models.TextField(blank=True, null=True)
+
+    def __str__(self):
+        return f"{self.stock.inventory.name} consumed {self.consumed_quantity}"
+
+    def save(self, *args, **kwargs):
+
+        if self.consumed_quantity > self.stock.quantity:
+            raise ValueError("Not enough stock to consume")
+
+        # deduct stock
+        self.stock.quantity -= self.consumed_quantity
+        self.stock.save() 
+
+        super().save(*args, **kwargs)
 
 class Value(BaseModel):
     list = models.ForeignKey(List, related_name='values', on_delete=models.CASCADE)
@@ -362,16 +428,37 @@ class DynamicFormEntry(BaseModel):
     comment = models.TextField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     analyses = models.ManyToManyField("Analysis", through="DynamicFormEntryAnalysis", related_name="entries", blank=True)
+    user_groups = models.ManyToManyField("UserGroup", blank=True, related_name="sample_entries")
+    retaining_sample_location = models.TextField(null=True, blank=True)
+    is_followup = models.BooleanField(default=False)
+    parent_sample = models.ForeignKey(
+        "self", null=True, blank=True, on_delete=models.SET_NULL, related_name="followup_samples"
+    )
+
 
     def save(self, *args, **kwargs):
         is_new = self.pk is None
         super().save(*args, **kwargs)
 
+        # -------------------------
+        # Set sample_text_id if new
+        # -------------------------
         if is_new and not self.sample_text_id:
-            # Format date as YYYYMMDD
             created_date_str = self.created_at.strftime("%Y%m%d")
-            self.sample_text_id = f"S-{created_date_str}-{self.id}"
+            if self.is_followup and self.parent_sample:
+                # Include parent sample ID in the text ID
+                self.sample_text_id = f"S-{created_date_str}-{self.id}-F{self.parent_sample.id}"
+            else:
+                self.sample_text_id = f"S-{created_date_str}-{self.id}"
             super().save(update_fields=["sample_text_id"])
+
+        # -------------------------
+        # Assign user_groups from the associated SampleForm
+        # -------------------------
+        if is_new and self.form:
+            form_user_groups = self.form.user_groups.all()
+            if form_user_groups.exists():
+                self.user_groups.set(form_user_groups)
 
     def __str__(self):
         return f"Entry {self.id} - {self.form.sample_name} ({self.status})"
@@ -398,12 +485,14 @@ class DynamicFormAttachment(models.Model):
 from django.db import models
 from django.utils import timezone
 
+
 class StatusHistory(models.Model):
     entry = models.ForeignKey("DynamicFormEntry", on_delete=models.CASCADE, related_name="status_history")
     old_status = models.CharField(max_length=20, null=True, blank=True)
     new_status = models.CharField(max_length=20)
     updated_by = models.ForeignKey("User", on_delete=models.SET_NULL, null=True)
     updated_at = models.DateTimeField(auto_now_add=True)
+    reason = models.TextField(blank=True, null=True)
     tat = models.FloatField(null=True, blank=True, help_text="TAT in seconds")
 
     def save(self, *args, **kwargs):
@@ -727,6 +816,13 @@ class ComponentResult(models.Model):
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
+    def save(self, *args, **kwargs):
+        if (self.value not in [None, ""]) or (self.numeric_value is not None):
+            self.authorization_flag = True
+            if not self.authorization_remark:
+                self.authorization_remark = "Auto-authorized after result entry"
+        super().save(*args, **kwargs)
+
 
 
 class SystemConfiguration(models.Model):
@@ -793,22 +889,51 @@ class QueryReportTemplate(BaseModel):
     def __str__(self):
         return self.name
 
+from django.db import transaction
 class GeneratedReport(models.Model):
-    sample = models.ForeignKey(
-        'DynamicFormEntry', 
-        on_delete=models.CASCADE, 
-        related_name='generated_reports'
-    )
-    template = models.ForeignKey(
-        'QueryReportTemplate',
-        on_delete=models.CASCADE,
-        related_name='generated_reports'
-    )
-    pdf_url = models.URLField(max_length=500) 
+    id = models.CharField(primary_key=True, max_length=30, editable=False)
+
+    sample = models.ForeignKey('DynamicFormEntry', on_delete=models.CASCADE, related_name='generated_reports')
+    template = models.ForeignKey('QueryReportTemplate', on_delete=models.CASCADE, related_name='generated_reports')
+    pdf_url = models.URLField(max_length=500)
     created_at = models.DateTimeField(auto_now_add=True)
 
+    def save(self, *args, **kwargs):
+        if not self.id:
+            with transaction.atomic():
+                today = timezone.now().strftime("%Y%m%d")
+
+                last_report = (
+                    GeneratedReport.objects
+                    .select_for_update()
+                    .filter(id__startswith=f"R-{today}-")
+                    .order_by('-created_at')
+                    .first()
+                )
+
+                if last_report:
+                    last_number = int(last_report.id.split("-")[-1])
+                    new_number = last_number + 1
+                else:
+                    new_number = 1
+
+                self.id = f"R-{today}-{new_number}"
+
+                super().save(*args, **kwargs)
+        else:
+            super().save(*args, **kwargs)
+
     def __str__(self):
-        return f"Report for sample {self.sample_id}"
+        return self.id
     
 
+class Investigation(models.Model):
+    sample = models.ForeignKey(DynamicFormEntry, on_delete=models.CASCADE, related_name="investigations")
+    rejected_at = models.DateTimeField(default=timezone.now)
+    rejection_reason = models.TextField()
+    corrective_actions = models.TextField(blank=True, null=True)
+    preventive_actions = models.TextField(blank=True, null=True)
+
+    def __str__(self):
+        return f"Investigation for Sample {self.sample.id}"
 
