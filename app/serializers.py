@@ -528,7 +528,18 @@ class AnalysisAttachmentSerializer(serializers.ModelSerializer):
 
 
 class AnalysisSerializer(serializers.ModelSerializer):
+    prep_id = serializers.PrimaryKeyRelatedField(
+        queryset=models.NicotineAssayReport.objects.all(),
+        source="nicotine_assay_report",
+        write_only=True,
+        required=False,
+        allow_null=True
+    )
+
+    prep = serializers.SerializerMethodField()  # SerializerMethodField → must have get_prep
+
     attachments = AnalysisAttachmentSerializer(many=True, read_only=True)
+
     attachment_urls = serializers.ListField(
         child=serializers.URLField(),
         write_only=True,
@@ -540,6 +551,7 @@ class AnalysisSerializer(serializers.ModelSerializer):
         write_only=True,
         required=False
     )
+
     components = ComponentSerializer(many=True, read_only=True)
 
     user_groups_ids = serializers.PrimaryKeyRelatedField(
@@ -551,6 +563,7 @@ class AnalysisSerializer(serializers.ModelSerializer):
     )
 
     user_groups = UserGroupSerializer(many=True, read_only=True)
+
     version = serializers.IntegerField(required=False, allow_null=True)
 
     test_method_id = serializers.PrimaryKeyRelatedField(
@@ -580,7 +593,9 @@ class AnalysisSerializer(serializers.ModelSerializer):
             "attachments",
             "attachment_urls",
             "components",
-            "component_ids",   
+            "component_ids",
+            "prep",
+            "prep_id"
         ]
 
     def create(self, validated_data):
@@ -628,8 +643,6 @@ class AnalysisSerializer(serializers.ModelSerializer):
 
         # Update attachments
         if attachment_urls:
-            # Optional: clear old attachments if desired
-            # instance.attachments.all().delete()
             for url in attachment_urls:
                 file_path = url.split('/media/')[-1]
                 try:
@@ -643,8 +656,7 @@ class AnalysisSerializer(serializers.ModelSerializer):
 
         # Update components
         if component_ids:
-            # Clear old components
-            instance.components.clear()  # if using ManyToMany
+            instance.components.clear()
             components = models.Component.objects.filter(id__in=component_ids)
             for comp in components:
                 comp.analysis = instance
@@ -652,7 +664,14 @@ class AnalysisSerializer(serializers.ModelSerializer):
 
         return instance
 
-
+    def get_prep(self, obj):
+        if obj.prep:  # ✅ use the model field name
+            return {
+                "id": obj.prep.id,
+                "created_at": obj.prep.created_at
+            }
+        return None
+    
 
 class InstrumentHistorySerializer(serializers.ModelSerializer):
     id = serializers.IntegerField(required=False)  # Allow PATCH with ID
