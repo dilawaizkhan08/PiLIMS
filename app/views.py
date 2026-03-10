@@ -2117,9 +2117,6 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
 
         save_and_authorize = request.data.get("save_and_authorize", False)
 
-        # -----------------------------
-        # Check if user has 'result_entry' permission
-        # -----------------------------
         module_name = models.DynamicFormEntry._meta.db_table
         has_permission = request.user.is_superuser or any(
             role.permissions.filter(module=module_name, action="result_entry").exists()
@@ -2146,12 +2143,12 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
         # Update entry comment
         # ---------------------------
         comment = request.data.get("comment")
-        if comment:
+        if comment is not None:
             entry.comment = comment
             entry.save(update_fields=["comment"])
 
         # ---------------------------
-        # Loop each analysis
+        # Loop analyses
         # ---------------------------
         for analysis_item in analyses_data:
             analysis_id = analysis_item.get("analysis_id")
@@ -2169,9 +2166,12 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
             saved_results = []
             errors = []
 
-            # 1️⃣ Save user-entered results
+            # ---------------------------
+            # Save user results
+            # ---------------------------
             for res in results_data:
                 sc_id = res.get("component_id")
+
                 if not sc_id:
                     errors.append("Missing component_id in payload")
                     continue
@@ -2193,6 +2193,11 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
                     errors.append(f"{sc.name}: invalid numeric value")
                     continue
 
+                payload_auth_flag = res.get("authorization_flag", False)
+
+                # save_and_authorize override
+                authorization_flag = True if save_and_authorize else payload_auth_flag
+
                 existing_result = models.ComponentResult.objects.filter(
                     entry=entry,
                     sample_component=sc
@@ -2201,20 +2206,29 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
                 if existing_result:
                     existing_result.value = res.get("value")
                     existing_result.numeric_value = numeric_value
+                    existing_result.remarks = res.get("remarks")
+                    existing_result.authorization_flag = authorization_flag
                     existing_result.created_by = request.user
                     existing_result.save()
+
                     saved_results.append(existing_result)
+
                 else:
                     new_result = models.ComponentResult.objects.create(
                         entry=entry,
                         sample_component=sc,
                         value=res.get("value"),
                         numeric_value=numeric_value,
+                        remarks=res.get("remarks"),
+                        authorization_flag=authorization_flag,
                         created_by=request.user
                     )
+
                     saved_results.append(new_result)
 
-            # 2️⃣ Auto-calculate calculated components
+            # ---------------------------
+            # Auto calculated components
+            # ---------------------------
             calculated_components = entry_analysis.sample_components.filter(
                 calculated=True,
                 custom_function__isnull=False
@@ -2229,6 +2243,7 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
                         (r for r in saved_results if r.sample_component_id == param.mapped_sample_component.id),
                         None
                     )
+
                     if not mapped_result:
                         mapped_result = models.ComponentResult.objects.filter(
                             entry=entry,
@@ -2251,6 +2266,8 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
                     errors.append(f"{sc.name}: Error executing function: {str(e)}")
                     continue
 
+                authorization_flag = True if save_and_authorize else False
+
                 existing_calc_result = models.ComponentResult.objects.filter(
                     entry=entry,
                     sample_component=sc
@@ -2260,9 +2277,12 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
                     existing_calc_result.value = str(numeric_value)
                     existing_calc_result.numeric_value = numeric_value
                     existing_calc_result.remarks = "Auto-calculated"
+                    existing_calc_result.authorization_flag = authorization_flag
                     existing_calc_result.created_by = request.user
                     existing_calc_result.save()
+
                     saved_results.append(existing_calc_result)
+
                 else:
                     new_calc_result = models.ComponentResult.objects.create(
                         entry=entry,
@@ -2270,25 +2290,20 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
                         value=str(numeric_value),
                         numeric_value=numeric_value,
                         remarks="Auto-calculated",
+                        authorization_flag=authorization_flag,
                         created_by=request.user
                     )
+
                     saved_results.append(new_calc_result)
 
             all_saved_results.extend(saved_results)
             all_errors.extend(errors)
 
         # ---------------------------
-        # Auto Authorize (ONLY if requested)
-        # ---------------------------
-        if save_and_authorize:
-            models.ComponentResult.objects.filter(entry=entry).update(
-                authorization_flag=True
-            )
-
-        # ---------------------------
-        # Update overall entry status
+        # Entry Status Update
         # ---------------------------
         def update_entry_status(entry_obj, user):
+
             entry_analyses = models.DynamicFormEntryAnalysis.objects.filter(entry=entry_obj)
 
             total_components = 0
@@ -2296,16 +2311,18 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
             authorized_components = 0
 
             for ea in entry_analyses:
-                sample_components = ea.sample_components.all()
-                total_components += sample_components.count()
 
-                for sc in sample_components:
+                components = ea.sample_components.all()
+                total_components += components.count()
+
+                for sc in components:
                     result = models.ComponentResult.objects.filter(
                         entry=entry_obj,
                         sample_component=sc
                     ).first()
 
                     if result and (result.value not in [None, ""] or result.numeric_value is not None):
+
                         filled_components += 1
 
                         if result.authorization_flag:
@@ -2328,40 +2345,37 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
 
         final_status = update_entry_status(entry, request.user)
 
-              # ---------------------------
-        # Analysis-level status
+        # ---------------------------
+        # Analysis status
         # ---------------------------
         analysis_status_list = []
         entry_analyses = models.DynamicFormEntryAnalysis.objects.filter(entry=entry)
 
         for ea in entry_analyses:
+
             components = ea.sample_components.all()
 
             if not components.exists():
                 status_ = "initiated"
+
             else:
                 any_result_entered = False
+
                 for sc in components:
                     result = models.ComponentResult.objects.filter(
                         entry=entry,
                         sample_component=sc
                     ).first()
+
                     if result and (result.value not in [None, ""] or result.numeric_value is not None):
                         any_result_entered = True
 
-                if not any_result_entered:
-                    status_ = "initiated"
-                else:
-                    status_ = "completed"
+                status_ = "completed" if any_result_entered else "initiated"
 
             analysis_status_list.append({
                 "analysis_id": ea.analysis_id,
                 "status": status_
             })
-
-        # ---------------------------
-        # Build response
-        # ---------------------------
 
         serializer = ComponentResultSerializer(all_saved_results, many=True)
 
@@ -3951,4 +3965,12 @@ class InvestigationViewSet(viewsets.ModelViewSet):
             "sample_text_id": followup_sample.sample_text_id,
             "parent_sample_id": original_sample.id
         })
+
+
+
+class NicotineAssayReportViewSet(viewsets.ModelViewSet):
+
+    queryset = models.NicotineAssayReport.objects.all().order_by("-created_at")
+    serializer_class = NicotineAssayReportSerializer
+    permission_classes = [IsAuthenticated]
 

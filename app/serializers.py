@@ -2336,3 +2336,10 @@ class InvestigationSerializer(serializers.ModelSerializer):
         model = models.Investigation
         fields = "__all__"
 
+
+class NicotineAssayReportSerializer(serializers.ModelSerializer):
+
+    class Meta:
+        model = models.NicotineAssayReport
+        fields = "__all__"
+
