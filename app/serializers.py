@@ -100,14 +100,15 @@ class RoleSerializer(serializers.ModelSerializer):
 
         instance.name = validated_data.get("name", instance.name)
         instance.save()
+
         instance.users.set(users)
 
         instance.permissions.all().delete()
+
         for perm in permissions_data:
-            models.Permission.objects.create(role=instance, **perm)
+            models.Permission.objects.get_or_create(role=instance, **perm)
 
         return instance
-
 
 
 class UserSerializer(serializers.ModelSerializer):

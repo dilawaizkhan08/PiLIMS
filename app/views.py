@@ -430,7 +430,7 @@ class InventoryViewSet(TrackUserMixin, viewsets.ModelViewSet):
             user_groups__in=user.user_groups.all()
         ).distinct()
 
-    @action(detail=True, methods=["post"])
+    @action(detail=True, methods=["post"],permission_classes=[IsAuthenticated, HasModulePermission])
     def consume(self, request, pk=None):
         """
         Consume stock from a specific batch

@@ -957,6 +957,7 @@ PERMISSION_CHOICES = [
     ("release", "Realease"),
     ("cancel_restore", "Cancel/Restore"),
     ("reactivate", "Reactivate"),
+    ("consume_stock", "Consume Stock"),
 ]
 
 class Role(models.Model):

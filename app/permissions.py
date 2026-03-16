@@ -90,6 +90,9 @@ class HasModulePermission(BasePermission):
             "destroy": "delete",
             "update_status": "update",
             "stats": "view",
+
+            "consume": "consume_stock",
+            "stocks": "view", 
         }
 
         action = getattr(view, "action", None)
