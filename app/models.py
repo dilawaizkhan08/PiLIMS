@@ -326,12 +326,18 @@ class Component(BaseModel):
         blank=True
     )
     decimal_places = models.IntegerField(null=True, blank=True)
+    default_result = models.CharField(
+        max_length=255,
+        null=True,
+        blank=True,
+        help_text="Default result value that appears in result entry screen"
+    )
     listname = models.ForeignKey(List, on_delete=models.SET_NULL, null=True, blank=True, related_name="components")
 
     custom_function = models.ForeignKey('CustomFunction',on_delete=models.SET_NULL,null=True,blank=True,related_name='components')
 
     def __str__(self):
-        return f"{self.name} ({self.analysis.name})"
+        return f"{self.name}"
 
 
 
@@ -488,6 +494,12 @@ class StockConsumption(BaseModel):
     )
     consumed_quantity = models.IntegerField()
     notes = models.TextField(blank=True, null=True)
+    consumed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True
+    )
 
     def __str__(self):
         return f"{self.stock.inventory.name} consumed {self.consumed_quantity}"
@@ -704,13 +716,18 @@ class SampleComponent(models.Model):
     description = models.TextField(null=True, blank=True)
     optional = models.BooleanField(null=True)
 
-    # 🔥 CRITICAL SHIFT
     calculated = models.BooleanField(default=False)
     custom_function = models.ForeignKey(
         "CustomFunction",
         on_delete=models.SET_NULL,
         null=True,
         blank=True
+    )
+    default_result = models.CharField(
+        max_length=255,
+        null=True,
+        blank=True,
+        help_text="Default result value that appears in result entry screen"
     )
 
     def __str__(self):

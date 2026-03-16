@@ -388,7 +388,6 @@ class ParameterMappingSerializer(serializers.Serializer):
 
 
 class ComponentSerializer(serializers.ModelSerializer):
-
     unit_id = serializers.PrimaryKeyRelatedField(
         queryset=models.Unit.objects.all(),
         source="unit",
@@ -417,6 +416,13 @@ class ComponentSerializer(serializers.ModelSerializer):
         required=False
     )
 
+    # ✅ NEW FIELD
+    default_result = serializers.CharField(
+        required=False,
+        allow_null=True,
+        allow_blank=True
+    )
+
     rounding_display = serializers.CharField(source='get_rounding_display', read_only=True)
     parameters = ParameterMappingSerializer(many=True, required=False)
 
@@ -429,7 +435,9 @@ class ComponentSerializer(serializers.ModelSerializer):
             'optional', 'calculated',
             'function_id', 'function',
             'minimum', 'maximum', 'rounding', 'rounding_display',
-            'decimal_places', 'list_id', 'listname', 'parameters'
+            'decimal_places', 'list_id', 'listname',
+            'default_result',  # ✅ include here
+            'parameters'
         ]
 
     def validate(self, attrs):
@@ -458,9 +466,9 @@ class ComponentSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         parameters_data = validated_data.pop("parameters", [])
-        # ⚠️ ab analysis context se nahi aayega, directly null allow hoga
         component = models.Component.objects.create(**validated_data)
 
+        # ⚙️ handle calculated function parameters
         if component.calculated and component.custom_function:
             expected_vars = set(component.custom_function.variables)
             provided_vars = {p["parameter"] for p in parameters_data}
@@ -496,6 +504,11 @@ class ComponentSerializer(serializers.ModelSerializer):
 
         return component
 
+    def update(self, instance, validated_data):
+        # ✅ make sure default_result can be updated
+        instance.default_result = validated_data.get("default_result", instance.default_result)
+        return super().update(instance, validated_data)
+
     def to_representation(self, instance):
         data = super().to_representation(instance)
         if instance.calculated and instance.custom_function:
@@ -510,8 +523,7 @@ class ComponentSerializer(serializers.ModelSerializer):
                 for p in instance.function_parameters.all()
             ]
         return data
-
-
+    
 class AnalysisAttachmentSerializer(serializers.ModelSerializer):
     url = serializers.SerializerMethodField()
 
@@ -528,15 +540,12 @@ class AnalysisAttachmentSerializer(serializers.ModelSerializer):
 
 
 class AnalysisSerializer(serializers.ModelSerializer):
-    prep_id = serializers.PrimaryKeyRelatedField(
+
+    prep = serializers.PrimaryKeyRelatedField(
         queryset=models.NicotineAssayReport.objects.all(),
-        source="nicotine_assay_report",
-        write_only=True,
         required=False,
         allow_null=True
     )
-
-    prep = serializers.SerializerMethodField()  # SerializerMethodField → must have get_prep
 
     attachments = AnalysisAttachmentSerializer(many=True, read_only=True)
 
@@ -594,8 +603,7 @@ class AnalysisSerializer(serializers.ModelSerializer):
             "attachment_urls",
             "components",
             "component_ids",
-            "prep",
-            "prep_id"
+            "prep"
         ]
 
     def create(self, validated_data):
@@ -781,10 +789,12 @@ class InstrumentSerializer(serializers.ModelSerializer):
         return instance
 
 class StockConsumptionSerializer(serializers.ModelSerializer):
+    consumed_by_name = serializers.CharField(source="consumed_by.name", read_only=True)
 
     class Meta:
         model = models.StockConsumption
-        fields = ["id", "stock", "consumed_quantity", "notes", "created_at"]
+        fields = ["id", "stock", "consumed_quantity", "notes", "created_at", "consumed_by",
+            "consumed_by_name"]
 
 
 class StockSerializer(serializers.ModelSerializer):
@@ -1496,7 +1506,14 @@ class SampleComponentSerializer(serializers.ModelSerializer):
     )
     component_name = serializers.CharField(source="component.name", read_only=True)
 
-    type = serializers.ChoiceField(choices=choices.ComponentTypes.choices,required=False,allow_null=True)
+    # ✅ NEW FIELD
+    default_result = serializers.CharField(
+        required=False,
+        allow_null=True,
+        allow_blank=True
+    )
+
+    type = serializers.ChoiceField(choices=choices.ComponentTypes.choices, required=False, allow_null=True)
 
     function_id = serializers.PrimaryKeyRelatedField(
         queryset=models.CustomFunction.objects.all(),
@@ -1538,6 +1555,7 @@ class SampleComponentSerializer(serializers.ModelSerializer):
             "function_id",
             "function",
             "parameters",
+            "default_result",  # ✅ added here
         ]
 
     def validate(self, attrs):
@@ -1569,7 +1587,14 @@ class SampleComponentSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         parameters_data = self.initial_data.get("parameters", [])
-        sample_component = models.SampleComponent.objects.create(**validated_data)
+
+        # ✅ Save default_result from payload
+        default_result = validated_data.get("default_result", None)
+
+        sample_component = models.SampleComponent.objects.create(
+            **validated_data,
+            default_result=default_result
+        )
 
         if sample_component.calculated and sample_component.custom_function:
             expected_vars = set(sample_component.custom_function.variables)
@@ -1609,13 +1634,15 @@ class SampleComponentSerializer(serializers.ModelSerializer):
     def update(self, instance, validated_data):
         parameters_data = self.initial_data.get("parameters", [])
 
+        # ✅ Update default_result
+        instance.default_result = validated_data.get("default_result", instance.default_result)
+
         # Update regular fields
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
         instance.save()
 
         if instance.calculated and instance.custom_function and parameters_data:
-            # Fetch existing parameters for this sample component
             existing_params = {p.parameter: p for p in instance.function_parameters.all()}
 
             expected_vars = set(instance.custom_function.variables)
@@ -1633,7 +1660,6 @@ class SampleComponentSerializer(serializers.ModelSerializer):
                     {"parameters": f"Unexpected variables: {', '.join(extra)}"}
                 )
 
-            # Update existing or create new
             for param in parameters_data:
                 var_name = param["parameter"]
                 mapped_id = param["mapped_sample_component"]
@@ -1646,12 +1672,10 @@ class SampleComponentSerializer(serializers.ModelSerializer):
                     )
 
                 if var_name in existing_params:
-                    # Update existing mapping
                     fp = existing_params[var_name]
                     fp.mapped_sample_component = mapped_component
                     fp.save()
                 else:
-                    # Create new mapping
                     models.SampleComponentFunctionParameter.objects.create(
                         sample_component=instance,
                         parameter=var_name,
@@ -1659,7 +1683,6 @@ class SampleComponentSerializer(serializers.ModelSerializer):
                     )
 
         return instance
-
 
     def get_parameters(self, obj):
         if obj.calculated and obj.custom_function:
@@ -1671,7 +1694,6 @@ class SampleComponentSerializer(serializers.ModelSerializer):
                 param_obj = mapping.get(var_name)
 
                 if not param_obj:
-                    # Return null mapping instead of crashing
                     result.append({
                         "parameter": var_name,
                         "mapped_sample_component": None
@@ -1692,7 +1714,12 @@ class SampleComponentSerializer(serializers.ModelSerializer):
 
         return []
 
-
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        # ✅ Include default_result fallback from parent Component if empty
+        if not data.get("default_result") and instance.component:
+            data["default_result"] = instance.component.default_result
+        return data
 
 
 class FileOrURLField(serializers.Field):

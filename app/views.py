@@ -448,6 +448,7 @@ class InventoryViewSet(TrackUserMixin, viewsets.ModelViewSet):
             return Response({"error": "Stock (batch) not found"}, status=404)
 
         quantity = int(quantity)
+
         if quantity > stock.quantity:
             return Response({"error": "Not enough stock in this batch"}, status=400)
 
@@ -455,6 +456,7 @@ class InventoryViewSet(TrackUserMixin, viewsets.ModelViewSet):
         consumption = models.StockConsumption.objects.create(
             stock=stock,
             consumed_quantity=quantity,
+            consumed_by=request.user,   # ✅ Logged in user
             notes=notes
         )
 
@@ -467,11 +469,12 @@ class InventoryViewSet(TrackUserMixin, viewsets.ModelViewSet):
                 "message": "Stock consumed successfully",
                 "inventory_total": stock.inventory.total_quantity,
                 "consumed_from_batch": stock.batch_no,
-                "remaining_in_batch": stock.quantity
+                "remaining_in_batch": stock.quantity,
+                "consumed_by": request.user.username  # optional response
             },
             status=status.HTTP_200_OK
         )
-
+    
     @action(detail=True, methods=["get"])
     def stocks(self, request, pk=None):
         """
@@ -2021,7 +2024,7 @@ class DynamicTableDataView(APIView):
 class EntryAnalysesSchemaView(APIView):
     """
     Returns analyses and their components for a given entry,
-    including analysis-level status.
+    including analysis-level status and default_result.
     """
     def get(self, request, entry_id):
         entry = get_object_or_404(models.DynamicFormEntry, pk=entry_id)
@@ -2038,13 +2041,19 @@ class EntryAnalysesSchemaView(APIView):
             comps = []
             for sc in ea.sample_components.all():
                 comp = sc.component
+                if not comp:
+                    continue  # skip if component is missing
+
                 choices = sc.spec_limits if comp.type.lower() == "list" else None
 
-                # Optionally include result for each component if it exists
+                # Get result if exists
                 result = models.ComponentResult.objects.filter(
                     entry=entry,
                     sample_component=sc
                 ).first()
+
+                # ✅ default_result: sample override first, fallback to component
+                default_result = sc.default_result if sc.default_result else comp.default_result
 
                 comps.append({
                     "id": sc.id,  # Sample Component ID
@@ -2058,6 +2067,7 @@ class EntryAnalysesSchemaView(APIView):
                     "choices": choices,
                     "specifications": sc.spec_limits,
                     "calculated": comp.calculated,
+                    "default_result": default_result, 
                     "value": result.value if result else None,
                     "numeric_value": result.numeric_value if result else None,
                     "authorization_flag": result.authorization_flag if result else None,
@@ -2095,7 +2105,7 @@ class EntryAnalysesSchemaView(APIView):
                 "analysis_id": ea.analysis.id,
                 "analysis_name": ea.analysis.name,
                 "components": comps,
-                "analysis_status": analysis_status  # ✅ Added
+                "analysis_status": analysis_status
             })
 
         return Response({
@@ -2161,6 +2171,18 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
                 entry=entry,
                 analysis_id=analysis_id
             )
+
+            # ---------------------------
+            # CHECK FOR NICOTINEASSAY EXPIRY
+            # ---------------------------
+            prep = entry_analysis.analysis.prep  # NicotineAssayReport
+            if prep and prep.nicotine_standard_expiry_date:
+                today = timezone.now().date()
+                if prep.nicotine_standard_expiry_date < today:
+                    all_errors.append(
+                        f"Analysis '{entry_analysis.analysis.name}' cannot accept results because its preparation expired on {prep.nicotine_standard_expiry_date}."
+                    )
+                    continue  # Skip saving results for this analysis
 
             results_data = analysis_item.get("results", [])
             saved_results = []
@@ -3973,4 +3995,5 @@ class NicotineAssayReportViewSet(viewsets.ModelViewSet):
     queryset = models.NicotineAssayReport.objects.all().order_by("-created_at")
     serializer_class = NicotineAssayReportSerializer
     permission_classes = [IsAuthenticated]
+    pagination_class = CustomPageNumberPagination
 
