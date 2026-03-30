@@ -2115,6 +2115,34 @@ class EntryAnalysesSchemaView(APIView):
         })
 
 
+
+
+# ---------------------------
+# Helper function to check expiry
+# ---------------------------
+def is_preparation_expired(prep):
+    if not prep:
+        return False
+
+    today = timezone.now().date()
+
+    expiry_fields = [
+        prep.nicotine_standard_expiry_date,
+        prep.phase_a_expiry_date,
+        prep.phase_b_expiry_date,
+        prep.solvent_expiry_date,
+    ]
+
+    # Filter only non-null dates
+    expiry_dates = [d for d in expiry_fields if d]
+
+    # If any expiry date is in the past, prep is expired
+    return any(expiry < today for expiry in expiry_dates)
+
+
+# ---------------------------
+# Main API View
+# ---------------------------
 class AnalysisResultSubmitView(TrackUserMixin, APIView):
     """
     Submit results for an analysis, automatically calculating dependent fields
@@ -2127,6 +2155,9 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
 
         save_and_authorize = request.data.get("save_and_authorize", False)
 
+        # ---------------------------
+        # Check permissions
+        # ---------------------------
         module_name = models.DynamicFormEntry._meta.db_table
         has_permission = request.user.is_superuser or any(
             role.permissions.filter(module=module_name, action="result_entry").exists()
@@ -2173,20 +2204,19 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
             )
 
             # ---------------------------
-            # CHECK FOR NICOTINEASSAY EXPIRY
+            # Check for expired preparation
             # ---------------------------
             prep = entry_analysis.analysis.prep  # NicotineAssayReport
             if prep and prep.nicotine_standard_expiry_date:
                 today = timezone.now().date()
                 if prep.nicotine_standard_expiry_date < today:
-                    all_errors.append(
-                        f"Analysis '{entry_analysis.analysis.name}' cannot accept results because its preparation expired on {prep.nicotine_standard_expiry_date}."
+                    # Raise an exception immediately instead of appending to errors
+                    return Response(
+                        {
+                            "error": f"Cannot save results: preparation for analysis '{entry_analysis.analysis.name}' has expired."
+                        },
+                        status=status.HTTP_400_BAD_REQUEST
                     )
-                    continue  # Skip saving results for this analysis
-
-            results_data = analysis_item.get("results", [])
-            saved_results = []
-            errors = []
 
             # ---------------------------
             # Save user results
@@ -2216,8 +2246,6 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
                     continue
 
                 payload_auth_flag = res.get("authorization_flag", False)
-
-                # save_and_authorize override
                 authorization_flag = True if save_and_authorize else payload_auth_flag
 
                 existing_result = models.ComponentResult.objects.filter(
@@ -2249,7 +2277,7 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
                     saved_results.append(new_result)
 
             # ---------------------------
-            # Auto calculated components
+            # Auto-calculated components
             # ---------------------------
             calculated_components = entry_analysis.sample_components.filter(
                 calculated=True,
@@ -2325,7 +2353,6 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
         # Entry Status Update
         # ---------------------------
         def update_entry_status(entry_obj, user):
-
             entry_analyses = models.DynamicFormEntryAnalysis.objects.filter(entry=entry_obj)
 
             total_components = 0
@@ -2333,7 +2360,6 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
             authorized_components = 0
 
             for ea in entry_analyses:
-
                 components = ea.sample_components.all()
                 total_components += components.count()
 
@@ -2344,21 +2370,16 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
                     ).first()
 
                     if result and (result.value not in [None, ""] or result.numeric_value is not None):
-
                         filled_components += 1
-
                         if result.authorization_flag:
                             authorized_components += 1
 
             if total_components == 0:
                 final_status = "received"
-
             elif filled_components < total_components:
                 final_status = "in_progress"
-
             elif authorized_components < total_components:
                 final_status = "in_progress"
-
             else:
                 final_status = "completed"
 
@@ -2374,12 +2395,10 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
         entry_analyses = models.DynamicFormEntryAnalysis.objects.filter(entry=entry)
 
         for ea in entry_analyses:
-
             components = ea.sample_components.all()
 
             if not components.exists():
                 status_ = "initiated"
-
             else:
                 any_result_entered = False
 
