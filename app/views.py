@@ -852,7 +852,7 @@ class SampleFormSubmitView(APIView):
             "entries": all_entries
         }, status=status.HTTP_201_CREATED)
 
-
+from django.db.models import Q
 class DynamicSampleFormEntryViewSet(viewsets.ModelViewSet):
     queryset = models.DynamicFormEntry.objects.all().order_by("-created_at")
     serializer_class = DynamicFormEntrySerializer
@@ -861,7 +861,6 @@ class DynamicSampleFormEntryViewSet(viewsets.ModelViewSet):
     filter_backends = [GenericSearchFilter]
     pagination_class = CustomPageNumberPagination
 
-
     def get_queryset(self):
         user = self.request.user
 
@@ -869,10 +868,10 @@ class DynamicSampleFormEntryViewSet(viewsets.ModelViewSet):
         if user.is_superuser or user.role == "Admin":
             return models.DynamicFormEntry.objects.all().order_by("-created_at")
 
-        # Normal users → only entries linked to their user_groups (from the entry or its form)
+        # Normal users → restricted access
         return models.DynamicFormEntry.objects.filter(
-            models.Q(user_groups__in=user.user_groups.all()) |
-            models.Q(form__user_groups__in=user.user_groups.all())
+            Q(user_groups__in=user.user_groups.all()) |
+            Q(form__user_groups__in=user.user_groups.all())
         ).distinct().order_by("-created_at")
 
     # -----------------------------
