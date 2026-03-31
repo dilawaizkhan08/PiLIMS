@@ -2152,36 +2152,35 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
 
     def post(self, request, entry_id):
         entry = get_object_or_404(models.DynamicFormEntry, pk=entry_id)
-
         save_and_authorize = request.data.get("save_and_authorize", False)
+        analyses_data = request.data.get("analyses", [])
+        all_saved_results = []
+        all_errors = []
 
         # ---------------------------
-        # Check permissions
+        # Permission Check
         # ---------------------------
         module_name = models.DynamicFormEntry._meta.db_table
-        has_permission = request.user.is_superuser or any(
+        if not (request.user.is_superuser or any(
             role.permissions.filter(module=module_name, action="result_entry").exists()
             for role in request.user.roles.all()
-        )
-
-        if not has_permission:
+        )):
             return Response(
                 {"error": "You do not have permission to enter results for this module."},
                 status=status.HTTP_403_FORBIDDEN
             )
 
+        # ---------------------------
+        # Entry Hold Check
+        # ---------------------------
         if entry.status == "hold":
             return Response(
                 {"error": "Entry is on hold. Results cannot be submitted."},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        analyses_data = request.data.get("analyses", [])
-        all_saved_results = []
-        all_errors = []
-
         # ---------------------------
-        # Update entry comment
+        # Update Comment
         # ---------------------------
         comment = request.data.get("comment")
         if comment is not None:
@@ -2189,10 +2188,61 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
             entry.save(update_fields=["comment"])
 
         # ---------------------------
-        # Loop analyses
+        # Helper functions
+        # ---------------------------
+        def save_component_result(entry, sc, value, numeric_value, remarks, auth_flag):
+            existing = models.ComponentResult.objects.filter(entry=entry, sample_component=sc).first()
+            if existing:
+                existing.value = value
+                existing.numeric_value = numeric_value
+                existing.remarks = remarks
+                existing.authorization_flag = auth_flag
+                existing.created_by = request.user
+                existing.save()
+                return existing
+            return models.ComponentResult.objects.create(
+                entry=entry,
+                sample_component=sc,
+                value=value,
+                numeric_value=numeric_value,
+                remarks=remarks,
+                authorization_flag=auth_flag,
+                created_by=request.user
+            )
+
+        def process_auto_calculated(sc, saved_results):
+            param_values = {}
+            for param in sc.function_parameters.all():
+                mapped_result = next(
+                    (r for r in saved_results if r.sample_component_id == param.mapped_sample_component.id),
+                    models.ComponentResult.objects.filter(
+                        entry=entry,
+                        sample_component=param.mapped_sample_component
+                    ).first()
+                )
+                if not mapped_result or mapped_result.numeric_value is None:
+                    all_errors.append(f"{sc.name}: missing input for variable '{param.parameter}'")
+                    return None
+                param_values[param.parameter] = mapped_result.numeric_value
+
+            try:
+                numeric_value = sc.custom_function.evaluate(**param_values)
+            except Exception as e:
+                all_errors.append(f"{sc.name}: Error executing function: {str(e)}")
+                return None
+
+            auth_flag = save_and_authorize
+            return save_component_result(entry, sc, str(numeric_value), numeric_value, "Auto-calculated", auth_flag)
+
+        # ---------------------------
+        # Process Analyses
         # ---------------------------
         for analysis_item in analyses_data:
             analysis_id = analysis_item.get("analysis_id")
+            results_data = analysis_item.get("results", [])
+            errors = []
+            saved_results = []
+
             if not analysis_id:
                 all_errors.append("Missing analysis_id in one of the analyses.")
                 continue
@@ -2203,223 +2253,102 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
                 analysis_id=analysis_id
             )
 
-            # ---------------------------
-            # Check for expired preparation
-            # ---------------------------
-            prep = entry_analysis.analysis.prep  # NicotineAssayReport
-            if prep and prep.nicotine_standard_expiry_date:
-                today = timezone.now().date()
-                if prep.nicotine_standard_expiry_date < today:
-                    # Raise an exception immediately instead of appending to errors
-                    return Response(
-                        {
-                            "error": f"Cannot save results: preparation for analysis '{entry_analysis.analysis.name}' has expired."
-                        },
-                        status=status.HTTP_400_BAD_REQUEST
-                    )
+            # Check expired preparation
+            prep = entry_analysis.analysis.prep
+            if prep and prep.nicotine_standard_expiry_date and prep.nicotine_standard_expiry_date < timezone.now().date():
+                return Response(
+                    {"error": f"Cannot save results: preparation for analysis '{entry_analysis.analysis.name}' has expired."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
 
-            # ---------------------------
-            # Save user results
-            # ---------------------------
+            # Save regular results
             for res in results_data:
                 sc_id = res.get("component_id")
-
                 if not sc_id:
                     errors.append("Missing component_id in payload")
                     continue
-
                 try:
-                    sc = models.SampleComponent.objects.get(
-                        pk=sc_id,
-                        entry_analysis=entry_analysis
-                    )
+                    sc = models.SampleComponent.objects.get(pk=sc_id, entry_analysis=entry_analysis)
                 except models.SampleComponent.DoesNotExist:
                     errors.append(f"SampleComponent {sc_id} not found in analysis {analysis_id}")
                     continue
 
                 numeric_value = None
-                try:
-                    if res.get("numeric_value") not in [None, ""]:
+                if res.get("numeric_value") not in [None, ""]:
+                    try:
                         numeric_value = float(res.get("numeric_value"))
-                except ValueError:
-                    errors.append(f"{sc.name}: invalid numeric value")
-                    continue
+                    except ValueError:
+                        errors.append(f"{sc.name}: invalid numeric value")
+                        continue
 
-                payload_auth_flag = res.get("authorization_flag", False)
-                authorization_flag = True if save_and_authorize else payload_auth_flag
+                auth_flag = save_and_authorize or res.get("authorization_flag", False)
+                saved_results.append(save_component_result(
+                    entry,
+                    sc,
+                    res.get("value"),
+                    numeric_value,
+                    res.get("remarks"),
+                    auth_flag
+                ))
 
-                existing_result = models.ComponentResult.objects.filter(
-                    entry=entry,
-                    sample_component=sc
-                ).first()
-
-                if existing_result:
-                    existing_result.value = res.get("value")
-                    existing_result.numeric_value = numeric_value
-                    existing_result.remarks = res.get("remarks")
-                    existing_result.authorization_flag = authorization_flag
-                    existing_result.created_by = request.user
-                    existing_result.save()
-
-                    saved_results.append(existing_result)
-
-                else:
-                    new_result = models.ComponentResult.objects.create(
-                        entry=entry,
-                        sample_component=sc,
-                        value=res.get("value"),
-                        numeric_value=numeric_value,
-                        remarks=res.get("remarks"),
-                        authorization_flag=authorization_flag,
-                        created_by=request.user
-                    )
-
-                    saved_results.append(new_result)
-
-            # ---------------------------
-            # Auto-calculated components
-            # ---------------------------
+            # Save auto-calculated components
             calculated_components = entry_analysis.sample_components.filter(
                 calculated=True,
                 custom_function__isnull=False
             ).prefetch_related("function_parameters__mapped_sample_component")
 
             for sc in calculated_components:
-                param_values = {}
-                missing_input = False
-
-                for param in sc.function_parameters.all():
-                    mapped_result = next(
-                        (r for r in saved_results if r.sample_component_id == param.mapped_sample_component.id),
-                        None
-                    )
-
-                    if not mapped_result:
-                        mapped_result = models.ComponentResult.objects.filter(
-                            entry=entry,
-                            sample_component=param.mapped_sample_component
-                        ).first()
-
-                    if not mapped_result or mapped_result.numeric_value is None:
-                        errors.append(f"{sc.name}: missing input for variable '{param.parameter}'")
-                        missing_input = True
-                        break
-
-                    param_values[param.parameter] = mapped_result.numeric_value
-
-                if missing_input:
-                    continue
-
-                try:
-                    numeric_value = sc.custom_function.evaluate(**param_values)
-                except Exception as e:
-                    errors.append(f"{sc.name}: Error executing function: {str(e)}")
-                    continue
-
-                authorization_flag = True if save_and_authorize else False
-
-                existing_calc_result = models.ComponentResult.objects.filter(
-                    entry=entry,
-                    sample_component=sc
-                ).first()
-
-                if existing_calc_result:
-                    existing_calc_result.value = str(numeric_value)
-                    existing_calc_result.numeric_value = numeric_value
-                    existing_calc_result.remarks = "Auto-calculated"
-                    existing_calc_result.authorization_flag = authorization_flag
-                    existing_calc_result.created_by = request.user
-                    existing_calc_result.save()
-
-                    saved_results.append(existing_calc_result)
-
-                else:
-                    new_calc_result = models.ComponentResult.objects.create(
-                        entry=entry,
-                        sample_component=sc,
-                        value=str(numeric_value),
-                        numeric_value=numeric_value,
-                        remarks="Auto-calculated",
-                        authorization_flag=authorization_flag,
-                        created_by=request.user
-                    )
-
-                    saved_results.append(new_calc_result)
+                result = process_auto_calculated(sc, saved_results)
+                if result:
+                    saved_results.append(result)
 
             all_saved_results.extend(saved_results)
             all_errors.extend(errors)
 
         # ---------------------------
-        # Entry Status Update
+        # Update Entry Status
         # ---------------------------
-        def update_entry_status(entry_obj, user):
-            entry_analyses = models.DynamicFormEntryAnalysis.objects.filter(entry=entry_obj)
+        def update_entry_status(entry_obj):
+            analyses = models.DynamicFormEntryAnalysis.objects.filter(entry=entry_obj)
+            total, filled, authorized = 0, 0, 0
 
-            total_components = 0
-            filled_components = 0
-            authorized_components = 0
-
-            for ea in entry_analyses:
-                components = ea.sample_components.all()
-                total_components += components.count()
-
-                for sc in components:
-                    result = models.ComponentResult.objects.filter(
-                        entry=entry_obj,
-                        sample_component=sc
-                    ).first()
-
+            for ea in analyses:
+                for sc in ea.sample_components.all():
+                    total += 1
+                    result = models.ComponentResult.objects.filter(entry=entry_obj, sample_component=sc).first()
                     if result and (result.value not in [None, ""] or result.numeric_value is not None):
-                        filled_components += 1
+                        filled += 1
                         if result.authorization_flag:
-                            authorized_components += 1
+                            authorized += 1
 
-            if total_components == 0:
-                final_status = "received"
-            elif filled_components < total_components:
-                final_status = "in_progress"
-            elif authorized_components < total_components:
-                final_status = "in_progress"
+            if total == 0:
+                status_ = "received"
+            elif filled < total or authorized < total:
+                status_ = "in_progress"
             else:
-                final_status = "completed"
+                status_ = "completed"
 
-            update_status_with_history(entry_obj, final_status, user)
-            return final_status
+            update_status_with_history(entry_obj, status_, request.user)
+            return status_
 
-        final_status = update_entry_status(entry, request.user)
+        final_status = update_entry_status(entry)
 
         # ---------------------------
-        # Analysis status
+        # Analysis Status
         # ---------------------------
         analysis_status_list = []
-        entry_analyses = models.DynamicFormEntryAnalysis.objects.filter(entry=entry)
-
-        for ea in entry_analyses:
+        for ea in models.DynamicFormEntryAnalysis.objects.filter(entry=entry):
             components = ea.sample_components.all()
-
-            if not components.exists():
-                status_ = "initiated"
-            else:
-                any_result_entered = False
-
-                for sc in components:
-                    result = models.ComponentResult.objects.filter(
-                        entry=entry,
-                        sample_component=sc
-                    ).first()
-
-                    if result and (result.value not in [None, ""] or result.numeric_value is not None):
-                        any_result_entered = True
-
-                status_ = "completed" if any_result_entered else "initiated"
-
+            any_entered = any(
+                models.ComponentResult.objects.filter(entry=entry, sample_component=sc).exists()
+                for sc in components
+            )
             analysis_status_list.append({
                 "analysis_id": ea.analysis_id,
-                "status": status_
+                "status": "completed" if any_entered else "initiated"
             })
 
         serializer = ComponentResultSerializer(all_saved_results, many=True)
-
         response = {
             "message": "Results saved successfully" if not all_errors else "Saved with errors",
             "entry_id": entry.id,
@@ -2428,12 +2357,10 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
             "results": serializer.data,
             "analysis_status": analysis_status_list
         }
-
         if all_errors:
             response["errors"] = all_errors
 
         return Response(response, status=status.HTTP_200_OK)
-    
     # ---------------------------
     # Get all results
     # ---------------------------
