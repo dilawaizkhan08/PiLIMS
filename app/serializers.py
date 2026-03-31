@@ -2389,4 +2389,5 @@ class NicotineAssayReportSerializer(serializers.ModelSerializer):
     class Meta:
         model = models.NicotineAssayReport
         fields = "__all__"
+        read_only_fields = ["prepared_by"]
 

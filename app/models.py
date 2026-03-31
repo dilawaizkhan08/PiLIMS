@@ -119,7 +119,7 @@ MAIN_PREPARATION_CHOICES = [
     ('MPA', 'Phase A'),
     ('MPB', 'Phase B'),
     ('MPC', 'Phase C'),
-    ('MPS', 'Solvent and Solution'),  # new main type
+    ('MPS', 'Solvent and Solution'),  
 ]
 
 # Sub-types for Solvent/Solution
@@ -167,6 +167,7 @@ class NicotineAssayReport(models.Model):
 
     # Nicotine Standard
     nicotine_standard_type = models.CharField(max_length=3, choices=NICOTINE_STANDARD_CHOICES, blank=True, null=True)
+    prepared_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
 
     def save(self, *args, **kwargs):
         # Auto-generate prep_id if not set

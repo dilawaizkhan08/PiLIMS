@@ -3934,3 +3934,134 @@ class NicotineAssayReportViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
     pagination_class = CustomPageNumberPagination
 
+    def perform_create(self, serializer):
+        serializer.save(prepared_by=self.request.user)
+
+
+
+class PreparationLabelPDFView(APIView):
+    """
+    GET /api/preparations/label-pdf/?prep_id=&download=true
+    """
+
+    def get(self, request):
+        prep_id = request.query_params.get("prep_id")
+        download = request.query_params.get("download")
+
+        if not prep_id:
+            return Response({"error": "prep_id required"}, status=400)
+
+        prep = get_object_or_404(models.NicotineAssayReport, prep_id=prep_id)
+
+        # ---------------- QR CODE ----------------
+        qr_url = f"{settings.FRONTEND_BASE_URL}/preparations/{prep.id}/edit"
+
+        qr = qrcode.QRCode(box_size=3, border=1)
+        qr.add_data(qr_url)
+        qr.make(fit=True)
+
+        img = qr.make_image(fill_color="black", back_color="white")
+
+        buffer = BytesIO()
+        img.save(buffer, format="PNG")
+        qr_base64 = base64.b64encode(buffer.getvalue()).decode()
+        buffer.close()
+
+        # ---------------- DATA ----------------
+        dop = prep.created_at.strftime("%d-%m-%Y") if prep.created_at else "-"
+        doe = prep.expiry_date.strftime("%d-%m-%Y") if prep.expiry_date else "-"
+        prepared_by = prep.prepared_by.name if prep.prepared_by else "N/A"
+
+        # ---------------- HTML ----------------
+        html_content = f"""
+        <html>
+        <head>
+        <style>
+        @page {{
+            size: 100mm 37.5mm;
+            margin: 0;
+        }}
+
+        body {{
+            font-family: Arial;
+            font-size:8px;
+            margin:0;
+            padding:0;
+        }}
+
+        .label {{
+            display:flex;
+            flex-direction:row;
+            gap:3mm;
+            padding:1mm;
+            height:18mm;
+        }}
+
+        .qr {{
+            text-align:center;
+            flex:none;
+        }}
+
+        .details {{
+            flex:1;
+            line-height:1.2;
+        }}
+
+        .label-title {{
+            font-weight:bold;
+            font-size:7px;
+        }}
+        </style>
+        </head>
+
+        <body>
+
+        <!-- PREPARATION LABEL -->
+
+        <div class="label">
+
+        <div class="qr">
+            <img src="data:image/png;base64,{qr_base64}" width="40" height="40"><br>
+            <div class="label-title">Preparation Label</div>
+        </div>
+
+        <div class="details">
+            <strong style="font-size:9px;">Preparation</strong><br/>
+            <span>ID: {prep.prep_id}</span><br/>
+            <span>DOP: {dop}</span><br/>
+            <span>DOE: {doe}</span><br/>
+            <span>Prepared By: {prepared_by}</span><br/>
+        </div>
+
+        </div>
+
+        </body>
+        </html>
+        """
+
+        # ---------------- PDF GENERATE ----------------
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp:
+            temp_path = temp.name
+
+        HTML(string=html_content).write_pdf(
+            temp_path,
+            stylesheets=[CSS(string="@page { size: 100mm 37.5mm; margin:0; }")]
+        )
+
+        with open(temp_path, "rb") as f:
+            pdf = f.read()
+
+        os.remove(temp_path)
+
+        response = HttpResponse(pdf, content_type="application/pdf")
+
+        filename = f"preparation_{prep.prep_id}.pdf"
+
+        response["Content-Disposition"] = (
+            f'attachment; filename="{filename}"'
+            if download
+            else f'inline; filename="{filename}"'
+        )
+
+        return response
+
