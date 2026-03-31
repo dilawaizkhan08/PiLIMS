@@ -2121,23 +2121,11 @@ class EntryAnalysesSchemaView(APIView):
 # Helper function to check expiry
 # ---------------------------
 def is_preparation_expired(prep):
-    if not prep:
+    if not prep or not prep.expiry_date:
         return False
 
     today = timezone.now().date()
-
-    expiry_fields = [
-        prep.nicotine_standard_expiry_date,
-        prep.phase_a_expiry_date,
-        prep.phase_b_expiry_date,
-        prep.solvent_expiry_date,
-    ]
-
-    # Filter only non-null dates
-    expiry_dates = [d for d in expiry_fields if d]
-
-    # If any expiry date is in the past, prep is expired
-    return any(expiry < today for expiry in expiry_dates)
+    return prep.expiry_date < today
 
 
 # ---------------------------
@@ -2255,9 +2243,12 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
 
             # Check expired preparation
             prep = entry_analysis.analysis.prep
-            if prep and prep.nicotine_standard_expiry_date and prep.nicotine_standard_expiry_date < timezone.now().date():
+
+            if prep and prep.expiry_date and prep.expiry_date < timezone.now().date():
                 return Response(
-                    {"error": f"Cannot save results: preparation for analysis '{entry_analysis.analysis.name}' has expired."},
+                    {
+                        "error": f"Cannot save results: preparation for analysis '{entry_analysis.analysis.name}' has expired."
+                    },
                     status=status.HTTP_400_BAD_REQUEST
                 )
 

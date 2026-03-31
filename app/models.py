@@ -108,170 +108,86 @@ class List(BaseModel):
     def __str__(self):
         return self.name
 
+from django.db import models
+from django.utils import timezone
+from datetime import timedelta
+import uuid
+
+# Preparation Types
+# Main Prep Types
+MAIN_PREPARATION_CHOICES = [
+    ('MPA', 'Phase A'),
+    ('MPB', 'Phase B'),
+    ('MPC', 'Phase C'),
+    ('MPS', 'Solvent and Solution'),  # new main type
+]
+
+# Sub-types for Solvent/Solution
+SOLVENT_SUB_CHOICES = [
+    ('NSS', 'Nicotine Standard Solution'),
+    ('PSS', 'Solvent Solution'),
+]
+
+# Nicotine Standard Types
+NICOTINE_STANDARD_CHOICES = [
+    ('NSA', 'Nicotine Standard A'),
+    ('NSB', 'Nicotine Standard B'),
+]
+
+def generate_preparation_id(prep_type):
+    """
+    Generate unique preparation ID with syntax:
+    MPA-DDYYMM-XXXXX for Phase A
+    MPB-DDYYMM-XXXXX for Phase B
+    MPC-DDYYMM-XXXXX for Phase C
+    NSS-DDYYMM-XXXXX for Nicotine Standard Solution
+    PSS-DDYYMM-XXXXX for Solvent Solution
+    """
+    now = timezone.now()
+    number = str(uuid.uuid4().int)[:5]  # 5-digit unique number
+    return f"{prep_type}-{now.strftime('%d%m%y')}-{number}"
+
 
 class NicotineAssayReport(models.Model):
-
-    # =========================
-    # MOBILE PHASE A
-    # =========================
-
-    phase_a_qc_reference = models.CharField(max_length=100, blank=True, null=True)
-    phase_a_preparation_date = models.DateField(null=True, blank=True)
-    phase_a_expiry_date = models.DateField(null=True, blank=True)
-    phase_a_volume_prepared = models.CharField(max_length=50, null=True, blank=True)
-
-    phase_a_ammonium_acetate_g = models.FloatField(null=True, blank=True)
-    phase_a_methanol_ml = models.FloatField(null=True, blank=True)
-    phase_a_ph_value = models.FloatField(null=True, blank=True)
-    phase_a_filter_type = models.CharField(max_length=100, blank=True, null=True)
-
-    phase_a_step1_completed = models.BooleanField(default=False)
-    phase_a_step2_completed = models.BooleanField(default=False)
-
-
-    # =========================
-    # MOBILE PHASE B
-    # =========================
-
-    phase_b_qc_reference = models.CharField(max_length=100, blank=True, null=True)
-    phase_b_preparation_date = models.DateField(null=True, blank=True)
-    phase_b_expiry_date = models.DateField(null=True, blank=True)
-    phase_b_volume_prepared = models.CharField(max_length=50, null=True, blank=True)
-
-    phase_b_ammonium_acetate_g = models.FloatField(null=True, blank=True)
-    phase_b_water_ml = models.FloatField(null=True, blank=True)
-
-    phase_b_ph_value = models.FloatField(null=True, blank=True)
-    phase_b_filter_type = models.CharField(max_length=100, blank=True, null=True)
-
-    phase_b_step1_completed = models.BooleanField(default=False)
-    phase_b_step2_completed = models.BooleanField(default=False)
-
-
-    # =========================
-    # MOBILE PHASE C
-    # =========================
-
-    phase_c_tetrahydrofuran_ml = models.FloatField(null=True, blank=True)
-    phase_c_degas_minutes = models.IntegerField(null=True, blank=True)
-
-
-    # =========================
-    # GRADIENT TIME TABLE
-    # =========================
-
-    gradient_initial_a = models.FloatField(null=True, blank=True)
-    gradient_initial_b = models.FloatField(null=True, blank=True)
-    gradient_initial_c = models.FloatField(null=True, blank=True)
-
-    gradient_05_a = models.FloatField(null=True, blank=True)
-    gradient_05_b = models.FloatField(null=True, blank=True)
-    gradient_05_c = models.FloatField(null=True, blank=True)
-
-    gradient_1_5_a = models.FloatField(null=True, blank=True)
-    gradient_1_5_b = models.FloatField(null=True, blank=True)
-    gradient_1_5_c = models.FloatField(null=True, blank=True)
-
-    gradient_8_a = models.FloatField(null=True, blank=True)
-    gradient_8_b = models.FloatField(null=True, blank=True)
-    gradient_8_c = models.FloatField(null=True, blank=True)
-
-    gradient_9_a = models.FloatField(null=True, blank=True)
-    gradient_9_b = models.FloatField(null=True, blank=True)
-    gradient_9_c = models.FloatField(null=True, blank=True)
-
-    gradient_10_a = models.FloatField(null=True, blank=True)
-    gradient_10_b = models.FloatField(null=True, blank=True)
-    gradient_10_c = models.FloatField(null=True, blank=True)
-
-
-    # =========================
-    # CHROMATOGRAPHIC CONDITIONS
-    # =========================
-
-    flow_rate_ml_min = models.CharField(max_length=50, null=True, blank=True)
-    injection_volume_ul = models.CharField(max_length=50, null=True, blank=True)
-    run_time_minutes = models.CharField(max_length=50, null=True, blank=True)
-
-
-    # =========================
-    # SYSTEM SUITABILITY
-    # =========================
-
-    standard_precision = models.CharField(max_length=50, null=True, blank=True)
-    std_check = models.CharField(max_length=50, null=True, blank=True)
-
-
-    # =========================
-    # SOLVENT SOLUTION
-    # =========================
-
-    solvent_qc_reference = models.CharField(max_length=100, blank=True, null=True)
-    solvent_preparation_date = models.DateField(null=True, blank=True)
-    solvent_expiry_date = models.DateField(null=True, blank=True)
-
-    solvent_water_ml = models.FloatField(null=True, blank=True)
-    solvent_methanol_ml = models.FloatField(null=True, blank=True)
-
-    solvent_volume_prepared = models.CharField(max_length=50, blank=True, null=True)
-
-
-    # =========================
-    # NICOTINE STANDARD
-    # =========================
-
-    nicotine_standard_a_ref = models.CharField(max_length=100, blank=True, null=True)
-    nicotine_standard_b_ref = models.CharField(max_length=100, blank=True, null=True)
-
-    nicotine_standard_preparation_date = models.DateField(null=True, blank=True)
-    nicotine_standard_expiry_date = models.DateField(null=True, blank=True)
-
-    nicotine_weight_mg = models.FloatField(null=True, blank=True)
-    nicotine_solution_volume_ml = models.FloatField(null=True, blank=True)
-
-    standard_step_completed = models.BooleanField(default=False)
-
-
-    # =========================
-    # SAMPLE PREPARATION
-    # =========================
-
-    blend_weight_mg = models.FloatField(null=True, blank=True)
-    solvent_added_ml = models.FloatField(null=True, blank=True)
-
-    pouch_used = models.FloatField(null=True, blank=True)
-
-    sample_step_completed = models.BooleanField(default=False)
-
-
-    # =========================
-    # SYSTEM CHECK QUESTIONS
-    # =========================
-
-    system_washed_with_buffers = models.BooleanField(null=True, blank=True)
-    system_flushed_with_water = models.BooleanField(null=True, blank=True)
-    injector_cycles = models.BooleanField(null=True, blank=True)
-    test_notes_complted = models.BooleanField(null=True, blank=True)
-    applicable_results_present = models.BooleanField(null=True, blank=True)
-    hplc_report_attached = models.BooleanField(null=True, blank=True)
-    all_chemical_used = models.BooleanField(null=True, blank=True)
-
-
-    comments = models.CharField(max_length=900, blank=True, null=True)
-
-
-    # =========================
-    # META
-    # =========================
-
+    prep_type = models.CharField(max_length=3, choices=MAIN_PREPARATION_CHOICES)
+    prep_sub_type = models.CharField(max_length=3, choices=SOLVENT_SUB_CHOICES, blank=True, null=True)
+    prep_id = models.CharField(max_length=50, unique=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    expiry_days = models.PositiveIntegerField()
+    expiry_date = models.DateField(blank=True, null=True)
+
+    # Common fields (Phase A & B)
+    volume_prepared = models.FloatField(blank=True, null=True)  # ml
+    ammonium_acetate_weight = models.FloatField(blank=True, null=True)  # g
+    pH_reading = models.FloatField(blank=True, null=True)
+
+    # Solvent / Solution
+    water_weight = models.FloatField(blank=True, null=True)  # g
+    methanol_weight = models.FloatField(blank=True, null=True)  # g
+
+    # Nicotine Standard
+    nicotine_standard_type = models.CharField(max_length=3, choices=NICOTINE_STANDARD_CHOICES, blank=True, null=True)
+
+    def save(self, *args, **kwargs):
+        # Auto-generate prep_id if not set
+        if not self.prep_id:
+            self.prep_id = generate_preparation_id(self.prep_type)
+
+        # Calculate expiry date if not set
+        if self.expiry_days and not self.expiry_date:
+            self.expiry_date = timezone.now().date() + timedelta(days=self.expiry_days)
+
+        super().save(*args, **kwargs)
+
+    @property
+    def is_expired(self):
+        if not self.expiry_date:
+            return False
+        return self.expiry_date < timezone.now().date()
 
     def __str__(self):
-        return f"Nicotine Assay Report {self.id}"
-    
+        return f"{self.prep_id} ({self.get_prep_type_display()})"
 
-
-# ===================== Analyses ====================
 
 class Analysis(BaseModel):
     name = models.CharField(max_length=255)
