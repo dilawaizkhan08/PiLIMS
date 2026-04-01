@@ -38,6 +38,7 @@ class HasModulePermission(BasePermission):
         "unhold": "cancel_restore",
         "reactivate": "reactivate",
         "assign_analyst": "result_entry",
+        "generate_followup_sample": "create"
     }
 
     def has_permission(self, request, view):

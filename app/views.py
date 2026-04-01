@@ -3872,7 +3872,7 @@ class GeneratedReportViewSet(viewsets.ModelViewSet):
 class InvestigationViewSet(viewsets.ModelViewSet):
     queryset = models.Investigation.objects.all().order_by("-rejected_at")
     serializer_class = InvestigationSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, HasModulePermission]
     pagination_class = CustomPageNumberPagination
     
 
@@ -3930,7 +3930,7 @@ class NicotineAssayReportViewSet(viewsets.ModelViewSet):
 
     queryset = models.NicotineAssayReport.objects.all().order_by("-created_at")
     serializer_class = NicotineAssayReportSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, HasModulePermission]
     pagination_class = CustomPageNumberPagination
 
     def perform_create(self, serializer):
