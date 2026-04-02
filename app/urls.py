@@ -75,8 +75,8 @@ urlpatterns = [
 
     path('generate-pdf/', views.HTMLToPDFView.as_view(), name='generate-pdf'),
 
-    path("create-template/", views.ReportTemplateCreateView.as_view(), name="create_template"),
-    path("render-report/", views.RenderReportView.as_view(), name="render_report"),
+    # path("create-template/", views.ReportTemplateCreateView.as_view(), name="create_template"),
+    # path("render-report/", views.RenderReportView.as_view(), name="render_report"),
     path("render-request-report/", views.RenderRequestReportView.as_view(), name="render-request-report"),
     path('dashboard/', views.AnalyticsAPIView.as_view(), name='analytics-dashboard'),
 

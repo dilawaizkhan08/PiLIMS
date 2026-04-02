@@ -2824,146 +2824,146 @@ def get_nested_value(obj, attr_path):
     return value
 
 
-class ReportTemplateCreateView(APIView):
-    """
-    Create a dynamic report template.
-    Accepts HTML, CSS, and nested field mappings.
-    Normalizes labels to template-safe keys.
-    """
+# class ReportTemplateCreateView(APIView):
+#     """
+#     Create a dynamic report template.
+#     Accepts HTML, CSS, and nested field mappings.
+#     Normalizes labels to template-safe keys.
+#     """
 
-    def post(self, request):
-        data = request.data.copy()
-        fields = data.get("fields", [])
-        normalized_fields = []
+#     def post(self, request):
+#         data = request.data.copy()
+#         fields = data.get("fields", [])
+#         normalized_fields = []
 
-        for field in fields:
-            label = field.get("label", "")
-            path = field.get("path", "")
-            safe_label = (
-                slugify(label).replace("-", "_").replace(".", "_")
-            )
-            normalized_fields.append({
-                "label": safe_label,
-                "path": path
-            })
+#         for field in fields:
+#             label = field.get("label", "")
+#             path = field.get("path", "")
+#             safe_label = (
+#                 slugify(label).replace("-", "_").replace(".", "_")
+#             )
+#             normalized_fields.append({
+#                 "label": safe_label,
+#                 "path": path
+#             })
 
-        data["fields"] = normalized_fields
+#         data["fields"] = normalized_fields
 
-        serializer = ReportTemplateSerializer(data=data)
-        if serializer.is_valid():
-            template = serializer.save()
-            return Response({
-                "message": "Template created successfully",
-                "template_id": template.id,
-                "normalized_fields": normalized_fields
-            }, status=status.HTTP_201_CREATED)
+#         serializer = ReportTemplateSerializer(data=data)
+#         if serializer.is_valid():
+#             template = serializer.save()
+#             return Response({
+#                 "message": "Template created successfully",
+#                 "template_id": template.id,
+#                 "normalized_fields": normalized_fields
+#             }, status=status.HTTP_201_CREATED)
 
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-
-class RenderReportView(APIView):
-    """
-    Render stored template for DynamicFormEntry sample.
-    Returns both rendered HTML and downloadable PDF file.
-    """
-
-    def get(self, request):
-        template_id = request.query_params.get("template_id")
-        sample_id = request.query_params.get("sample_id")
-        download = request.query_params.get("download")  # optional flag
-
-        if not (template_id and sample_id):
-            return Response(
-                {"error": "template_id and sample_id required"},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        try:
-            report_template = models.ReportTemplate.objects.get(id=template_id)
-        except models.ReportTemplate.DoesNotExist:
-            return Response({"error": "Template not found"}, status=status.HTTP_404_NOT_FOUND)
-
-        try:
-            entry = (
-                models.DynamicFormEntry.objects
-                .select_related("form", "analyst", "logged_by")
-                .prefetch_related(
-                    "analyses",
-                    "analyses__components",
-                    "form__group_analysis_list",
-                    "form__group_analysis_list__user_groups",
-                    "form__user_groups",
-                )
-                .get(id=sample_id)
-            )
-        except models.DynamicFormEntry.DoesNotExist:
-            return Response({"error": "Sample not found"}, status=status.HTTP_404_NOT_FOUND)
-
-        # Context
-        context_data = {}
-        for field in report_template.fields:
-            label = field.get("label", "")
-            path = field.get("path", "")
-            safe_key = slugify(label).replace("-", "_").replace(".", "_")
-            value = get_nested_value(entry, path)
-            context_data[safe_key] = value
-
-        # Render HTML
-        html_template = Template(report_template.html_content)
-        rendered_html = html_template.render(Context(context_data))
-        if report_template.css_content:
-            rendered_html = f"<style>{report_template.css_content}</style>\n{rendered_html}"
-
-        # Generate PDF
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_pdf:
-            temp_path = temp_pdf.name
-
-        # Reduce default PDF margins
-        custom_css = """
-        @page {
-            size: A4;
-            margin: 10mm;
-        }
-        body {
-            margin: 0;
-            padding: 5px;
-            box-sizing: border-box;
-        }
-        table {
-            width: 100%;
-            border-collapse: collapse;
-        }
-        th, td {
-            border: 1px solid #000;
-            padding: 6px;
-            text-align: center;
-            font-size: 12px;
-        }
-        th {
-            background-color: #f2f2f2;
-        }
-        """
-
-        combined_css = f"{custom_css}\n{report_template.css_content or ''}"
-
-        HTML(string=rendered_html, base_url=request.build_absolute_uri("/")).write_pdf(
-            target=temp_path,
-            stylesheets=[CSS(string=combined_css)]
-        )
+#         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
-        with open(temp_path, "rb") as f:
-            pdf_data = f.read()
-        os.remove(temp_path)
+# class RenderReportView(APIView):
+#     """
+#     Render stored template for DynamicFormEntry sample.
+#     Returns both rendered HTML and downloadable PDF file.
+#     """
 
-        # ✅ If user requested ?download=true → send the actual file
-        if download:
-            response = HttpResponse(pdf_data, content_type="application/pdf")
-            response["Content-Disposition"] = f'attachment; filename="report_{sample_id}.pdf"'
-            return response
+#     def get(self, request):
+#         template_id = request.query_params.get("template_id")
+#         sample_id = request.query_params.get("sample_id")
+#         download = request.query_params.get("download")  # optional flag
 
-        # ✅ Otherwise, send both HTML + PDF (embedded binary)
-        return HttpResponse(pdf_data, content_type="application/pdf")
+#         if not (template_id and sample_id):
+#             return Response(
+#                 {"error": "template_id and sample_id required"},
+#                 status=status.HTTP_400_BAD_REQUEST
+#             )
+
+#         try:
+#             report_template = models.ReportTemplate.objects.get(id=template_id)
+#         except models.ReportTemplate.DoesNotExist:
+#             return Response({"error": "Template not found"}, status=status.HTTP_404_NOT_FOUND)
+
+#         try:
+#             entry = (
+#                 models.DynamicFormEntry.objects
+#                 .select_related("form", "analyst", "logged_by")
+#                 .prefetch_related(
+#                     "analyses",
+#                     "analyses__components",
+#                     "form__group_analysis_list",
+#                     "form__group_analysis_list__user_groups",
+#                     "form__user_groups",
+#                 )
+#                 .get(id=sample_id)
+#             )
+#         except models.DynamicFormEntry.DoesNotExist:
+#             return Response({"error": "Sample not found"}, status=status.HTTP_404_NOT_FOUND)
+
+#         # Context
+#         context_data = {}
+#         for field in report_template.fields:
+#             label = field.get("label", "")
+#             path = field.get("path", "")
+#             safe_key = slugify(label).replace("-", "_").replace(".", "_")
+#             value = get_nested_value(entry, path)
+#             context_data[safe_key] = value
+
+#         # Render HTML
+#         html_template = Template(report_template.html_content)
+#         rendered_html = html_template.render(Context(context_data))
+#         if report_template.css_content:
+#             rendered_html = f"<style>{report_template.css_content}</style>\n{rendered_html}"
+
+#         # Generate PDF
+#         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_pdf:
+#             temp_path = temp_pdf.name
+
+#         # Reduce default PDF margins
+#         custom_css = """
+#         @page {
+#             size: A4;
+#             margin: 10mm;
+#         }
+#         body {
+#             margin: 0;
+#             padding: 5px;
+#             box-sizing: border-box;
+#         }
+#         table {
+#             width: 100%;
+#             border-collapse: collapse;
+#         }
+#         th, td {
+#             border: 1px solid #000;
+#             padding: 6px;
+#             text-align: center;
+#             font-size: 12px;
+#         }
+#         th {
+#             background-color: #f2f2f2;
+#         }
+#         """
+
+#         combined_css = f"{custom_css}\n{report_template.css_content or ''}"
+
+#         HTML(string=rendered_html, base_url=request.build_absolute_uri("/")).write_pdf(
+#             target=temp_path,
+#             stylesheets=[CSS(string=combined_css)]
+#         )
+
+
+#         with open(temp_path, "rb") as f:
+#             pdf_data = f.read()
+#         os.remove(temp_path)
+
+#         # ✅ If user requested ?download=true → send the actual file
+#         if download:
+#             response = HttpResponse(pdf_data, content_type="application/pdf")
+#             response["Content-Disposition"] = f'attachment; filename="report_{sample_id}.pdf"'
+#             return response
+
+#         # ✅ Otherwise, send both HTML + PDF (embedded binary)
+#         return HttpResponse(pdf_data, content_type="application/pdf")
 
 
 class RenderRequestReportView(APIView):
@@ -3360,19 +3360,20 @@ class QueryReportTemplateCreateView(APIView):
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-
-class QueryReportRenderView(APIView):
+from django.core.mail import EmailMessage
+class QueryReportRenderView(View):
     """
     GET /api/reports/render/?template_id=&sample_id=&download=true
     → Executes SQL with sample_id = DynamicFormEntry.id
     → Renders SQL result in Jinja2 HTML + CSS → PDF
     → Saves PDF URL in GeneratedReport model
+    → Sends PDF by email if sample is completed
     """
 
     def get(self, request):
-        template_id = request.query_params.get("template_id")
-        sample_id = request.query_params.get("sample_id")
-        download = request.query_params.get("download")
+        template_id = request.GET.get("template_id")
+        sample_id = request.GET.get("sample_id")
+        download = request.GET.get("download")
 
         if not (template_id and sample_id):
             return Response(
@@ -3445,12 +3446,23 @@ class QueryReportRenderView(APIView):
         table { width: 100%; border-collapse: collapse; }
         th, td { border: 1px solid #000; padding: 6px; text-align: left; font-size: 12px; }
         th { background-color: #f2f2f2; }
-        .qr-code { position: absolute; top: 10px; right: 10px; width: 80px; height: 80px; }
+        .qr-code {
+            position: absolute;
+            top: 10px;
+            right: 10px; 
+            width: 60px;
+            height: 60px;
+            z-index: 9999;
+        }
         """
         combined_css = f"{default_css}\n{template_obj.css_content or ''}"
 
-        # 7️⃣a Inject QR code at top-right
-        qr_html = f'<img class="qr-code" src="{context_data["qr_code"]}" alt="Sample QR">'
+        # 7️⃣a Inject QR code at top-right without overriding header content
+        qr_html = f'''
+        <div style="position: absolute; top: 10px; right: 10px; width: 60px; height: 60px; z-index: 9999;">
+            <img src="{context_data["qr_code"]}" style="width:100%;height:100%;" alt="Sample QR">
+        </div>
+        '''
         rendered_html = qr_html + rendered_html
 
         # 8️⃣ Generate PDF
@@ -3477,7 +3489,34 @@ class QueryReportRenderView(APIView):
             pdf_url=pdf_url
         )
 
-        # 9️⃣ Return response
+        # 8️⃣c Send PDF to sample creator if completed
+        if entry.status == "completed" and entry.logged_by and entry.logged_by.email:
+            try:
+                subject = f"Report for Sample {entry.sample_text_id}"
+                body = (
+                    f"Hello {entry.logged_by.get_full_name() or entry.logged_by.email},\n\n"
+                    f"The report for your sample ({entry.sample_text_id}) has been generated.\n"
+                    f"You can download it from the link below:\n\n"
+                    f"{request.build_absolute_uri(pdf_url)}\n\n"
+                    f"Regards,\nLab Team"
+                )
+
+                email = EmailMessage(
+                    subject=subject,
+                    body=body,
+                    from_email=settings.DEFAULT_FROM_EMAIL,
+                    to=[entry.logged_by.email],
+                )
+
+                # Attach PDF
+                with default_storage.open(pdf_path, "rb") as f:
+                    email.attach(f"report_{entry.sample_text_id}.pdf", f.read(), "application/pdf")
+
+                email.send(fail_silently=False)
+            except Exception as e:
+                print(f"Failed to send email: {e}")
+
+        # 9️⃣ Return PDF response
         with default_storage.open(pdf_path, "rb") as f:
             pdf_bytes = f.read()
 
@@ -3501,7 +3540,7 @@ class QueryReportRenderView(APIView):
             columns = [col[0] for col in cursor.description]
             rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
         return rows
-
+    
 class DatabaseStructureView(APIView):
     def get(self, request):
         tables = []
