@@ -3361,6 +3361,8 @@ class QueryReportTemplateCreateView(APIView):
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 from django.core.mail import EmailMessage
+
+
 class QueryReportRenderView(APIView):
     """
     GET /api/reports/render/?template_id=&sample_id=&download=true
@@ -3446,24 +3448,12 @@ class QueryReportRenderView(APIView):
         table { width: 100%; border-collapse: collapse; }
         th, td { border: 1px solid #000; padding: 6px; text-align: left; font-size: 12px; }
         th { background-color: #f2f2f2; }
-        .qr-code {
-            position: absolute;
-            top: 10px;
-            right: 10px; 
-            width: 60px;
-            height: 60px;
-            z-index: 9999;
-        }
         """
         combined_css = f"{default_css}\n{template_obj.css_content or ''}"
 
-        # 7️⃣a Inject QR code at top-right without overriding header content
-        qr_html = f'''
-        <div style="position: absolute; top: 10px; right: 10px; width: 60px; height: 60px; z-index: 9999;">
-            <img src="{context_data["qr_code"]}" style="width:100%;height:100%;" alt="Sample QR">
-        </div>
-        '''
-        rendered_html = qr_html + rendered_html
+        # 7️⃣a Inject QR code in header (remove absolute float)
+        # ✅ The template must have <td> with position:relative to place QR code
+        # So we just pass qr_code in context and handle in Jinja template
 
         # 8️⃣ Generate PDF
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_pdf:
@@ -3539,8 +3529,7 @@ class QueryReportRenderView(APIView):
             cursor.execute(sql_query, params)
             columns = [col[0] for col in cursor.description]
             rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
-        return rows
-    
+        return rows 
 class DatabaseStructureView(APIView):
     def get(self, request):
         tables = []
