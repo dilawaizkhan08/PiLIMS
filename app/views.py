@@ -3361,7 +3361,7 @@ class QueryReportTemplateCreateView(APIView):
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 from django.core.mail import EmailMessage
-class QueryReportRenderView(View):
+class QueryReportRenderView(APIView):
     """
     GET /api/reports/render/?template_id=&sample_id=&download=true
     → Executes SQL with sample_id = DynamicFormEntry.id
