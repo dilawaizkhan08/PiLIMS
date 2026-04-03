@@ -55,6 +55,7 @@ class User(AbstractUser, BaseModel):
     last_activity = models.DateTimeField(null=True, blank=True)
     signature = models.ImageField(upload_to="signatures/", null=True, blank=True)
     
+    
 
     def clean(self):
         super().clean()
@@ -107,11 +108,6 @@ class List(BaseModel):
 
     def __str__(self):
         return self.name
-
-from django.db import models
-from django.utils import timezone
-from datetime import timedelta
-import uuid
 
 # Preparation Types
 # Main Prep Types
@@ -190,6 +186,53 @@ class NicotineAssayReport(models.Model):
         return f"{self.prep_id} ({self.get_prep_type_display()})"
 
 
+class Training(BaseModel):
+    training_id = models.CharField(max_length=100, unique=True, editable=False)
+    description = models.TextField()
+
+    attachment = models.URLField(null=True, blank=True) 
+
+    MODE_CHOICES = (
+        ("online", "Online"),
+        ("onsite", "Onsite"),
+    )
+    mode = models.CharField(max_length=10, choices=MODE_CHOICES)
+
+    users = models.ManyToManyField(
+        User,
+        through="UserTraining",
+        related_name="trainings",
+        blank=True
+    )
+
+    def save(self, *args, **kwargs):
+        if not self.training_id:
+            last = Training.objects.order_by("-id").first()
+            if last and last.training_id:
+                last_num = int(last.training_id.replace("T", ""))
+                new_id = f"T{str(last_num + 1).zfill(3)}"
+            else:
+                new_id = "T001"
+
+            self.training_id = new_id
+
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return self.training_id
+    
+    
+class UserTraining(BaseModel):
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    training = models.ForeignKey(Training, on_delete=models.CASCADE)
+
+    training_date = models.DateField()
+    expiry_date = models.DateField()
+
+    def __str__(self):
+        return f"{self.user.username} - {self.training.training_id}"
+
+
 class Analysis(BaseModel):
     name = models.CharField(max_length=255)
     alias_name = models.CharField(max_length=255, null=True, blank=True)
@@ -206,6 +249,12 @@ class Analysis(BaseModel):
         null=True,
         blank=True,
         related_name="analyses"
+    )
+    trainings = models.ManyToManyField(
+        Training,
+        related_name="analyses",
+        blank=True,
+        null=True,
     )
     def __str__(self):
         return self.name

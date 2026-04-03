@@ -4093,3 +4093,33 @@ class PreparationLabelPDFView(APIView):
 
         return response
 
+
+class TrainingViewSet(viewsets.ModelViewSet):
+    queryset = models.Training.objects.all()
+    serializer_class = TrainingSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        user = self.request.user
+
+        # Superadmin / Admin → full access
+        if user.is_superuser or getattr(user, "role", None) == "Admin":
+            return models.Training.objects.all()
+
+        return models.Training.objects.filter(users=user).distinct()
+
+
+class DocumentUploadView(APIView):
+    parser_classes = [MultiPartParser]  # Accept file uploads
+
+    def post(self, request):
+        file_obj = request.FILES.get("file")
+        if not file_obj:
+            return Response({"error": "No file provided"}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Save the file
+        path = default_storage.save(f"training_attachments/{file_obj.name}", ContentFile(file_obj.read()))
+        file_url = request.build_absolute_uri(default_storage.url(path))
+
+        return Response({"file_url": file_url}, status=status.HTTP_201_CREATED)
+

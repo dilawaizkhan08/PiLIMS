@@ -42,6 +42,7 @@ router.register(r"sample-components", views.SampleComponentViewSet, basename="sa
 router.register(r"generated-reports", views.GeneratedReportViewSet, basename="generatedreport")
 router.register(r'investigations', views.InvestigationViewSet, basename='investigation')
 router.register(r'nicotine-assay', views.NicotineAssayReportViewSet, basename='nicotine-assay')
+router.register(r"trainings", views.TrainingViewSet, basename="trainings")
 
 urlpatterns = [
     path('', include(router.urls)),
@@ -87,5 +88,6 @@ urlpatterns = [
     path('samples/pdf/', views.DynamicFormEntryCompactTicketPDFView.as_view(), name='sample_pdf'),
     path('samples/qc-label-pdf/', views.DynamicFormEntryQCReportPDFView.as_view(),),
     path("preparations/label-pdf/", views.PreparationLabelPDFView.as_view(), name='preparations-label-pdf'),
+    path("upload-doc/", views.DocumentUploadView.as_view(), name="upload-doc"),
 
 ]

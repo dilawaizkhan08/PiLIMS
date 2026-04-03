@@ -2391,3 +2391,117 @@ class NicotineAssayReportSerializer(serializers.ModelSerializer):
         fields = "__all__"
         read_only_fields = ["prepared_by"]
 
+
+
+
+
+
+class UserTrainingSerializer(serializers.ModelSerializer):
+    user = serializers.StringRelatedField(read_only=True)
+    user_id = serializers.IntegerField(write_only=True, required=True)
+
+    class Meta:
+        model = models.UserTraining
+        fields = ["id", "user", "user_id", "training_date", "expiry_date"]
+
+class TrainingSerializer(serializers.ModelSerializer):
+    user_trainings = UserTrainingSerializer(many=True, required=False)
+    analyses = serializers.PrimaryKeyRelatedField(
+        many=True,
+        queryset=models.Analysis.objects.all(),
+        required=False
+    )
+    attachment = serializers.URLField(required=False, allow_blank=True)
+
+    class Meta:
+        model = models.Training
+        fields = [
+            "id",
+            "training_id",
+            "description",
+            "attachment",
+            "mode",
+            "analyses",
+            "user_trainings",
+        ]
+
+    def create(self, validated_data):
+        user_trainings_data = validated_data.pop("user_trainings", [])
+        analyses = validated_data.pop("analyses", [])
+
+        training = models.Training.objects.create(**validated_data)
+        training.analyses.set(analyses)
+
+        for ut in user_trainings_data:
+            user_id = ut.pop("user_id")
+            models.UserTraining.objects.create(
+                training=training,
+                user_id=user_id,
+                **ut
+            )
+
+        return training
+
+    def update(self, instance, validated_data):
+        user_trainings_data = validated_data.pop("user_trainings", None)
+        analyses = validated_data.pop("analyses", None)
+
+        # Update training fields
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+
+        # Update analyses
+        if analyses is not None:
+            instance.analyses.set(analyses)
+
+        if user_trainings_data is not None:
+            # Map existing UserTraining IDs for this training
+            existing = {ut.id: ut for ut in instance.usertraining_set.all()}
+            sent_ids = []
+
+            for ut_data in user_trainings_data:
+                ut_id = ut_data.get("id")
+                user_id = ut_data.pop("user_id")
+
+                if ut_id and ut_id in existing:
+                    # Update existing UserTraining
+                    ut_obj = existing[ut_id]
+                    ut_obj.user_id = user_id
+                    for attr, val in ut_data.items():
+                        setattr(ut_obj, attr, val)
+                    ut_obj.save()
+                    sent_ids.append(ut_id)
+                else:
+                    # Check if a record exists for this user in this training
+                    ut_obj = models.UserTraining.objects.filter(
+                        training=instance, user_id=user_id
+                    ).first()
+                    if ut_obj:
+                        for attr, val in ut_data.items():
+                            setattr(ut_obj, attr, val)
+                        ut_obj.save()
+                        sent_ids.append(ut_obj.id)
+                    else:
+                        # Create new if no record exists
+                        new_ut = models.UserTraining.objects.create(
+                            training=instance,
+                            user_id=user_id,
+                            **ut_data
+                        )
+                        sent_ids.append(new_ut.id)
+
+            # Delete removed ones
+            for ut_id, ut_obj in existing.items():
+                if ut_id not in sent_ids:
+                    ut_obj.delete()
+
+        return instance 
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        data["user_trainings"] = UserTrainingSerializer(
+            instance.usertraining_set.all(),
+            many=True
+        ).data
+        return data
