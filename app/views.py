@@ -4097,7 +4097,8 @@ class PreparationLabelPDFView(APIView):
 class TrainingViewSet(viewsets.ModelViewSet):
     queryset = models.Training.objects.all()
     serializer_class = TrainingSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, HasModulePermission]
+    pagination_class = CustomPageNumberPagination
 
     def get_queryset(self):
         user = self.request.user
