@@ -586,6 +586,12 @@ class AnalysisSerializer(serializers.ModelSerializer):
 
     test_method = TestMethodSerializer(read_only=True)
 
+    trainings = serializers.PrimaryKeyRelatedField(
+        many=True,
+        queryset=models.Training.objects.all(),
+        required=False
+    )
+
     class Meta:
         model = models.Analysis
         fields = [
@@ -604,7 +610,8 @@ class AnalysisSerializer(serializers.ModelSerializer):
             "attachment_urls",
             "components",
             "component_ids",
-            "prep"
+            "prep",
+            "trainings" 
         ]
 
     def create(self, validated_data):
@@ -640,6 +647,7 @@ class AnalysisSerializer(serializers.ModelSerializer):
         attachment_urls = validated_data.pop("attachment_urls", [])
         user_groups = validated_data.pop("user_groups", [])
         component_ids = validated_data.pop("component_ids", [])
+        trainings = validated_data.pop("trainings", None)  # 👈 FIX
 
         # Update fields
         for attr, value in validated_data.items():
@@ -649,6 +657,10 @@ class AnalysisSerializer(serializers.ModelSerializer):
         # Update user groups
         if user_groups:
             instance.user_groups.set(user_groups)
+
+        # ✅ FIX trainings
+        if trainings is not None:
+            instance.trainings.set(trainings)
 
         # Update attachments
         if attachment_urls:
@@ -665,14 +677,13 @@ class AnalysisSerializer(serializers.ModelSerializer):
 
         # Update components
         if component_ids:
-            instance.components.clear()
             components = models.Component.objects.filter(id__in=component_ids)
             for comp in components:
                 comp.analysis = instance
                 comp.save()
 
         return instance
-
+    
     def get_prep(self, obj):
         if obj.prep:  # ✅ use the model field name
             return {
