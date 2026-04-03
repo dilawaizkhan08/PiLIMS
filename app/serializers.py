@@ -2442,6 +2442,7 @@ class TrainingSerializer(serializers.ModelSerializer):
 
         return training
 
+ 
     def update(self, instance, validated_data):
         user_trainings_data = validated_data.pop("user_trainings", None)
         analyses = validated_data.pop("analyses", None)
@@ -2456,7 +2457,6 @@ class TrainingSerializer(serializers.ModelSerializer):
             instance.analyses.set(analyses)
 
         if user_trainings_data is not None:
-            # Map existing UserTraining IDs for this training
             existing = {ut.id: ut for ut in instance.usertraining_set.all()}
             sent_ids = []
 
@@ -2464,10 +2464,18 @@ class TrainingSerializer(serializers.ModelSerializer):
                 ut_id = ut_data.get("id")
                 user_id = ut_data.pop("user_id")
 
+                # Check if the user exists
+                from app.models import User
+                user_obj = User.objects.filter(id=user_id).first()
+                if not user_obj:
+                    raise serializers.ValidationError({
+                        "user_id": f"User with id {user_id} does not exist."
+                    })
+
                 if ut_id and ut_id in existing:
                     # Update existing UserTraining
                     ut_obj = existing[ut_id]
-                    ut_obj.user_id = user_id
+                    ut_obj.user = user_obj
                     for attr, val in ut_data.items():
                         setattr(ut_obj, attr, val)
                     ut_obj.save()
@@ -2475,7 +2483,7 @@ class TrainingSerializer(serializers.ModelSerializer):
                 else:
                     # Check if a record exists for this user in this training
                     ut_obj = models.UserTraining.objects.filter(
-                        training=instance, user_id=user_id
+                        training=instance, user=user_obj
                     ).first()
                     if ut_obj:
                         for attr, val in ut_data.items():
@@ -2483,10 +2491,10 @@ class TrainingSerializer(serializers.ModelSerializer):
                         ut_obj.save()
                         sent_ids.append(ut_obj.id)
                     else:
-                        # Create new if no record exists
+                        # Create new UserTraining
                         new_ut = models.UserTraining.objects.create(
                             training=instance,
-                            user_id=user_id,
+                            user=user_obj,
                             **ut_data
                         )
                         sent_ids.append(new_ut.id)
@@ -2496,8 +2504,7 @@ class TrainingSerializer(serializers.ModelSerializer):
                 if ut_id not in sent_ids:
                     ut_obj.delete()
 
-        return instance 
-
+        return instance
     def to_representation(self, instance):
         data = super().to_representation(instance)
         data["user_trainings"] = UserTrainingSerializer(
