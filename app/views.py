@@ -2222,6 +2222,29 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
             return save_component_result(entry, sc, str(numeric_value), numeric_value, "Auto-calculated", auth_flag)
 
         # ---------------------------
+        # Training Validation (Separate Messages)
+        # ---------------------------
+        def get_training_issue(user, analysis):
+            """
+            Returns None if user has valid training.
+            Otherwise, returns the reason: 'unauthorized' or 'expired'
+            """
+            now = timezone.now().date()
+            trainings = analysis.trainings.all()
+            if not trainings.exists():
+                return None  # No training required
+
+            user_trainings = models.UserTraining.objects.filter(user=user, training__in=trainings)
+            if not user_trainings.exists():
+                return "unauthorized" 
+
+            # Check if any training is valid (not expired)
+            if not user_trainings.filter(expiry_date__gte=now).exists():
+                return "expired"
+
+            return None  # Authorized and training valid
+
+        # ---------------------------
         # Process Analyses
         # ---------------------------
         for analysis_item in analyses_data:
@@ -2240,9 +2263,25 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
                 analysis_id=analysis_id
             )
 
-            # Check expired preparation
-            prep = entry_analysis.analysis.prep
+            # ---------------------------
+            # Training Check
+            # ---------------------------
+            issue = get_training_issue(request.user, entry_analysis.analysis)
+            if issue == "unauthorized":
+                return Response(
+                    {"error": f"You are not authorized to enter results for analysis '{entry_analysis.analysis.name}' because you are not trained."},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+            elif issue == "expired":
+                return Response(
+                    {"error": f"Your training for analysis '{entry_analysis.analysis.name}' has expired. You cannot enter results."},
+                    status=status.HTTP_403_FORBIDDEN
+                )
 
+            # ---------------------------
+            # Check expired preparation
+            # ---------------------------
+            prep = entry_analysis.analysis.prep
             if prep and prep.expiry_date and prep.expiry_date < timezone.now().date():
                 return Response(
                     {
@@ -2251,7 +2290,9 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
+            # ---------------------------
             # Save regular results
+            # ---------------------------
             for res in results_data:
                 sc_id = res.get("component_id")
                 if not sc_id:
@@ -2281,7 +2322,9 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
                     auth_flag
                 ))
 
+            # ---------------------------
             # Save auto-calculated components
+            # ---------------------------
             calculated_components = entry_analysis.sample_components.filter(
                 calculated=True,
                 custom_function__isnull=False
@@ -2351,6 +2394,8 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
             response["errors"] = all_errors
 
         return Response(response, status=status.HTTP_200_OK)
+    
+    
     # ---------------------------
     # Get all results
     # ---------------------------
