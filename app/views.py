@@ -4165,7 +4165,7 @@ class DocumentUploadView(APIView):
 
         # Save the file
         path = default_storage.save(f"training_attachments/{file_obj.name}", ContentFile(file_obj.read()))
-        file_url = request.build_absolute_uri(default_storage.url(path))
-
-        return Response({"file_url": file_url}, status=status.HTTP_201_CREATED)
+        
+        # Return relative path only
+        return Response({"attachment": path}, status=status.HTTP_201_CREATED)
 

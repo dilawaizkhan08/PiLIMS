@@ -2422,8 +2422,8 @@ class TrainingSerializer(serializers.ModelSerializer):
         queryset=models.Analysis.objects.all(),
         required=False
     )
-    attachment = serializers.URLField(required=False, allow_blank=True)
 
+    attachment = serializers.CharField(required=False, allow_blank=True)
     class Meta:
         model = models.Training
         fields = [
@@ -2516,10 +2516,29 @@ class TrainingSerializer(serializers.ModelSerializer):
                     ut_obj.delete()
 
         return instance
+    
+
     def to_representation(self, instance):
+        """Return full URL with base (scheme + host) + path only"""
         data = super().to_representation(instance)
+        request = self.context.get("request")
+        
+        if data.get("attachment") and request:
+            # Only base URL + attachment path
+            base_url = f"{request.scheme}://{request.get_host()}"
+            data["attachment"] = f"{base_url}/media/{data['attachment']}"
+        
+        # Serialize user_trainings
         data["user_trainings"] = UserTrainingSerializer(
             instance.usertraining_set.all(),
-            many=True
+            many=True,
+            context=self.context
         ).data
+
         return data
+    
+
+
+
+
+
