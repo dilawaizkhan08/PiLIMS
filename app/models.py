@@ -109,8 +109,7 @@ class List(BaseModel):
     def __str__(self):
         return self.name
 
-# Preparation Types
-# Main Prep Types
+
 MAIN_PREPARATION_CHOICES = [
     ('MPA', 'Phase A'),
     ('MPB', 'Phase B'),
@@ -144,33 +143,71 @@ def generate_preparation_id(prep_type):
     return f"{prep_type}-{now.strftime('%d%m%y')}-{number}"
 
 
+class Preparation(models.Model):
+    prep_id = models.CharField(max_length=50, unique=True, editable=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    prepared_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
+
+    def save(self, *args, **kwargs):
+        if not self.prep_id:
+            self.prep_id = generate_preparation_id("MP") 
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return self.prep_id
+
 class NicotineAssayReport(models.Model):
+    preparation = models.ForeignKey(
+        Preparation,
+        on_delete=models.CASCADE,
+        related_name="reports", null=True, blank=True
+    )
+
     prep_type = models.CharField(max_length=3, choices=MAIN_PREPARATION_CHOICES)
     prep_sub_type = models.CharField(max_length=3, choices=SOLVENT_SUB_CHOICES, blank=True, null=True)
     prep_id = models.CharField(max_length=50, unique=True, null=True)
+
     created_at = models.DateTimeField(auto_now_add=True)
     expiry_days = models.PositiveIntegerField()
     expiry_date = models.DateField(blank=True, null=True)
 
-    # Common fields (Phase A & B)
-    volume_prepared = models.FloatField(blank=True, null=True)  # ml
-    ammonium_acetate_weight = models.FloatField(blank=True, null=True)  # g
+    # Phase A & B
+    volume_prepared = models.FloatField(blank=True, null=True)
+    ammonium_acetate_weight = models.FloatField(blank=True, null=True)
     pH_reading = models.FloatField(blank=True, null=True)
 
     # Solvent / Solution
-    water_weight = models.FloatField(blank=True, null=True)  # g
-    methanol_weight = models.FloatField(blank=True, null=True)  # g
+    water_weight = models.FloatField(blank=True, null=True)
+    methanol_weight = models.FloatField(blank=True, null=True)
 
     # Nicotine Standard
-    nicotine_standard_type = models.CharField(max_length=3, choices=NICOTINE_STANDARD_CHOICES, blank=True, null=True)
-    prepared_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
+    nicotine_standard_type = models.CharField(
+        max_length=3,
+        choices=NICOTINE_STANDARD_CHOICES,
+        blank=True,
+        null=True
+    )
 
     def save(self, *args, **kwargs):
-        # Auto-generate prep_id if not set
-        if not self.prep_id:
-            self.prep_id = generate_preparation_id(self.prep_type)
 
-        # Calculate expiry date if not set
+        if self.preparation:
+            NicotineAssayReport.objects.filter(
+                preparation=self.preparation,
+                expiry_date__gte=timezone.now().date()
+            ).exclude(id=self.id).update(
+                expiry_date=timezone.now().date() - timedelta(days=1)
+            )
+
+        if not self.prep_id:
+            if self.prep_type == 'MPS' and self.prep_sub_type:
+                prefix = self.prep_sub_type
+            elif self.nicotine_standard_type:
+                prefix = self.nicotine_standard_type
+            else:
+                prefix = self.prep_type
+
+            self.prep_id = generate_preparation_id(prefix)
+
         if self.expiry_days and not self.expiry_date:
             self.expiry_date = timezone.now().date() + timedelta(days=self.expiry_days)
 
@@ -178,13 +215,10 @@ class NicotineAssayReport(models.Model):
 
     @property
     def is_expired(self):
-        if not self.expiry_date:
-            return False
-        return self.expiry_date < timezone.now().date()
+        return self.expiry_date and self.expiry_date < timezone.now().date()
 
     def __str__(self):
-        return f"{self.prep_id} ({self.get_prep_type_display()})"
-
+        return self.prep_id
 
 class Training(BaseModel):
     training_id = models.CharField(max_length=100, unique=True, editable=False)
@@ -244,7 +278,7 @@ class Analysis(BaseModel):
     price = models.FloatField(null=True, blank=True)
     description = models.TextField(null=True, blank=True)
     prep = models.ForeignKey(
-        "NicotineAssayReport",
+        "Preparation",  # <-- now links to Preparation parent model
         on_delete=models.SET_NULL,
         null=True,
         blank=True,

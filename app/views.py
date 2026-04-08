@@ -2278,17 +2278,20 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
                     status=status.HTTP_403_FORBIDDEN
                 )
 
+        
             # ---------------------------
-            # Check expired preparation
+            # Check expired preparation (latest nicotine assay)
             # ---------------------------
             prep = entry_analysis.analysis.prep
-            if prep and prep.expiry_date and prep.expiry_date < timezone.now().date():
-                return Response(
-                    {
-                        "error": f"Cannot save results: preparation for analysis '{entry_analysis.analysis.name}' has expired."
-                    },
-                    status=status.HTTP_400_BAD_REQUEST
-                )
+            if prep:
+                latest_nicotine = prep.nicotineassayreport_set.order_by('-created_at').first()
+                if latest_nicotine and latest_nicotine.expiry_date and latest_nicotine.expiry_date < timezone.now().date():
+                    return Response(
+                        {
+                            "error": f"Cannot save results:Preparation '{prep.id}' has expired."
+                        },
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
 
             # ---------------------------
             # Save regular results
@@ -4000,15 +4003,26 @@ class InvestigationViewSet(viewsets.ModelViewSet):
 
 
 
-class NicotineAssayReportViewSet(viewsets.ModelViewSet):
+class PreparationViewSet(viewsets.ModelViewSet):
+    queryset = models.Preparation.objects.all().order_by("-created_at")
+    serializer_class = PreparationSerializer
+    permission_classes = [IsAuthenticated]
 
-    queryset = models.NicotineAssayReport.objects.all().order_by("-created_at")
-    serializer_class = NicotineAssayReportSerializer
-    permission_classes = [IsAuthenticated, HasModulePermission]
-    pagination_class = CustomPageNumberPagination
+    def get_serializer_context(self):
+        return {"request": self.request}
 
-    def perform_create(self, serializer):
-        serializer.save(prepared_by=self.request.user)
+    @action(detail=True, methods=["post"])
+    def add_nicotine(self, request, pk=None):
+        preparation = self.get_object()
+
+        serializer = NicotineAssayReportSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        serializer.save(preparation=preparation)
+
+        return Response({
+            "message": "New nicotine added. Old automatically expired."
+        })
 
 
 

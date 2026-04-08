@@ -2396,12 +2396,44 @@ class InvestigationSerializer(serializers.ModelSerializer):
 
 
 class NicotineAssayReportSerializer(serializers.ModelSerializer):
-
     class Meta:
         model = models.NicotineAssayReport
-        fields = "__all__"
-        read_only_fields = ["prepared_by"]
+        exclude = ["preparation"]
 
+class PreparationSerializer(serializers.ModelSerializer):
+    reports = NicotineAssayReportSerializer(many=True)
+
+    class Meta:
+        model = models.Preparation
+        fields = ["id", "prep_id", "reports"]
+        read_only_fields = ["prep_id"]
+
+    def validate(self, data):
+        reports = data.get("reports", [])
+
+        # ✅ ONLY ONE on CREATE
+        if self.instance is None and len(reports) != 1:
+            raise serializers.ValidationError(
+                "Exactly ONE nicotine assay is required during creation."
+            )
+
+        return data
+
+    def create(self, validated_data):
+        reports_data = validated_data.pop("reports")
+
+        # Create parent
+        preparation = models.Preparation.objects.create(
+            prepared_by=self.context["request"].user
+        )
+
+        # Create first nicotine
+        models.NicotineAssayReport.objects.create(
+            preparation=preparation,
+            **reports_data[0]
+        )
+
+        return preparation
 
 
 
