@@ -4039,7 +4039,17 @@ class PreparationLabelPDFView(APIView):
         if not prep_id:
             return Response({"error": "prep_id required"}, status=400)
 
-        prep = get_object_or_404(models.NicotineAssayReport, prep_id=prep_id)
+        # ✅ Get parent preparation
+        prep = get_object_or_404(models.Preparation, prep_id=prep_id)
+
+        # ✅ Get latest nicotine assay
+        latest_nicotine = prep.reports.order_by("-created_at").first()
+
+        if not latest_nicotine:
+            return Response(
+                {"error": "No nicotine assay found for this preparation"},
+                status=404
+            )
 
         # ---------------- QR CODE ----------------
         qr_url = f"{settings.FRONTEND_BASE_URL}/preparations/{prep.id}/edit"
@@ -4056,8 +4066,8 @@ class PreparationLabelPDFView(APIView):
         buffer.close()
 
         # ---------------- DATA ----------------
-        dop = prep.created_at.strftime("%d-%m-%Y") if prep.created_at else "-"
-        doe = prep.expiry_date.strftime("%d-%m-%Y") if prep.expiry_date else "-"
+        dop = latest_nicotine.created_at.strftime("%d-%m-%Y") if latest_nicotine.created_at else "-"
+        doe = latest_nicotine.expiry_date.strftime("%d-%m-%Y") if latest_nicotine.expiry_date else "-"
         prepared_by = prep.prepared_by.name if prep.prepared_by else "N/A"
 
         # ---------------- HTML ----------------
@@ -4104,8 +4114,6 @@ class PreparationLabelPDFView(APIView):
 
         <body>
 
-        <!-- PREPARATION LABEL -->
-
         <div class="label">
 
         <div class="qr">
@@ -4115,7 +4123,7 @@ class PreparationLabelPDFView(APIView):
 
         <div class="details">
             <strong style="font-size:9px;">Preparation</strong><br/>
-            <span>ID: {prep.prep_id}</span><br/>
+            <span>ID: {latest_nicotine.prep_id}</span><br/>
             <span>DOP: {dop}</span><br/>
             <span>DOE: {doe}</span><br/>
             <span>Prepared By: {prepared_by}</span><br/>
@@ -4127,7 +4135,7 @@ class PreparationLabelPDFView(APIView):
         </html>
         """
 
-        # ---------------- PDF GENERATE ----------------
+        # ---------------- PDF ----------------
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp:
             temp_path = temp.name
 
@@ -4143,7 +4151,7 @@ class PreparationLabelPDFView(APIView):
 
         response = HttpResponse(pdf, content_type="application/pdf")
 
-        filename = f"preparation_{prep.prep_id}.pdf"
+        filename = f"preparation_{latest_nicotine.prep_id}.pdf"
 
         response["Content-Disposition"] = (
             f'attachment; filename="{filename}"'
@@ -4152,7 +4160,6 @@ class PreparationLabelPDFView(APIView):
         )
 
         return response
-
 
 class TrainingViewSet(viewsets.ModelViewSet):
     queryset = models.Training.objects.all()
