@@ -4006,7 +4006,8 @@ class InvestigationViewSet(viewsets.ModelViewSet):
 class PreparationViewSet(viewsets.ModelViewSet):
     queryset = models.Preparation.objects.all().order_by("-created_at")
     serializer_class = PreparationSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, HasModulePermission]
+    pagination_class = CustomPageNumberPagination
 
     def get_serializer_context(self):
         return {"request": self.request}
