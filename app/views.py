@@ -2284,7 +2284,7 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
             # ---------------------------
             prep = entry_analysis.analysis.prep
             if prep:
-                latest_nicotine = prep.nicotineassayreport_set.order_by('-created_at').first()
+                latest_nicotine = prep.reports.order_by('-created_at').first()
                 if latest_nicotine and latest_nicotine.expiry_date and latest_nicotine.expiry_date < timezone.now().date():
                     return Response(
                         {
