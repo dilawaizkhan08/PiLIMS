@@ -543,7 +543,7 @@ class AnalysisAttachmentSerializer(serializers.ModelSerializer):
 class AnalysisSerializer(serializers.ModelSerializer):
 
     prep = serializers.PrimaryKeyRelatedField(
-        queryset=models.NicotineAssayReport.objects.all(),
+        queryset=models.Preparation.objects.all(),
         required=False,
         allow_null=True
     )
