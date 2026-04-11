@@ -1110,4 +1110,112 @@ class Investigation(models.Model):
 
 
 
+
+import random
+from django.utils import timezone
+
+def generate_inspection_id():
+    now = timezone.now().strftime('%Y%m%d%H%M%S')
+    random_digits = str(random.randint(10000, 99999))
+    return f"IMS-{now}-{random_digits}"
+
+class IncomingMaterialSampleInspection(models.Model):
+    CLARITY_CHOICES = [
+        ('clear', 'Clear'),
+        ('not_clear', 'Not Clear'),
+    ]
+
+    PRESENCE_CHOICES = [
+        ('present', 'Present'),
+        ('absent', 'Absent'),
+    ]
+
+
+    inspection_sheet_no = models.CharField(
+        max_length=50,
+        primary_key=True,
+        default=generate_inspection_id,
+        editable=False
+    )
+    material = models.ForeignKey(
+        Product,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='inspections'
+    )
+    grn_number = models.CharField(max_length=100, blank=True, null=True)
+    received_total_number = models.PositiveIntegerField(blank=True, null=True)
+    vendor_lot_number = models.CharField(max_length=100, blank=True, null=True)
+
+    # A - Suppliers Label Information
+    clarity = models.CharField(
+        max_length=20,
+        choices=CLARITY_CHOICES,
+        blank=True,
+        null=True
+    )
+
+    item_description = models.CharField(
+        max_length=20,
+        choices=PRESENCE_CHOICES,
+        blank=True,
+        null=True
+    )
+
+    supplier_name = models.CharField(
+        max_length=20,
+        choices=PRESENCE_CHOICES,
+        blank=True,
+        null=True
+    )
+
+    supplier_lot_number = models.CharField(
+        max_length=20,
+        choices=PRESENCE_CHOICES,
+        blank=True,
+        null=True
+    )
+
+    manufacturing_date = models.CharField(
+        max_length=20,
+        choices=PRESENCE_CHOICES,
+        blank=True,
+        null=True
+    )
+
+    expiry_date = models.CharField(
+        max_length=20,
+        choices=PRESENCE_CHOICES,
+        blank=True,
+        null=True
+    )
+
+    # B - Sampling Information
+    number_of_containers_to_be_opened = models.PositiveIntegerField(blank=True, null=True)
+    sampled_quantity = models.CharField(max_length=255, blank=True, null=True)
+    sampled_by = models.CharField(max_length=255, blank=True, null=True)
+
+    container_sealed_after_sampling = models.BooleanField(default=False)
+    container_labeled_after_sealed = models.BooleanField(default=False)
+
+    checked_by = models.CharField(max_length=255, blank=True, null=True)
+    checked_sign_date = models.DateField(blank=True, null=True)
+
+    approved_by = models.CharField(max_length=255, blank=True, null=True)
+    approved_sign_date = models.DateField(blank=True, null=True)
+
+    # Final Decision
+    is_accepted = models.BooleanField(default=False)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'incoming_material_sample_inspection'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return self.inspection_sheet_no
+
     

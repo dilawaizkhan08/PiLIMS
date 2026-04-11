@@ -2569,7 +2569,11 @@ class TrainingSerializer(serializers.ModelSerializer):
 
         return data
     
-
+class IncomingMaterialSampleInspectionSerializer(serializers.ModelSerializer):
+    material_name = serializers.CharField(source='material.name', read_only=True)
+    class Meta:
+        model = models.IncomingMaterialSampleInspection
+        fields = '__all__'
 
 
 

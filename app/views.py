@@ -3344,6 +3344,206 @@ class AnalyticsAPIView(APIView):
 
         return Response(payload)
 
+
+
+
+from calendar import month_name
+from django.db.models import Count, Q
+from django.utils.timezone import now
+
+class DashboardAPIView(APIView):
+
+    def get(self, request):
+        today = now().date()
+        current_year = today.year
+        current_month = today.month
+
+        # ====== FILTER PARAMETERS ======
+        date_filter = request.query_params.get("date_filter")  # "day", "month", "year", or "range"
+        start_date_str = request.query_params.get("start_date")
+        end_date_str = request.query_params.get("end_date")
+        module_name = request.query_params.get("module_name")  # "analysis", "product", "sample", "reports"
+
+        # Default filter: current year
+        start_date = datetime(current_year, 1, 1)
+        end_date = datetime(current_year, 12, 31, 23, 59, 59)
+
+        if date_filter == "day":
+            start_date = datetime.combine(today, datetime.min.time())
+            end_date = datetime.combine(today, datetime.max.time())
+        elif date_filter == "month":
+            start_date = datetime(current_year, current_month, 1)
+            if current_month == 12:
+                end_date = datetime(current_year, 12, 31, 23, 59, 59)
+            else:
+                end_date = datetime(current_year, current_month + 1, 1) - timedelta(seconds=1)
+        elif date_filter == "range" and start_date_str and end_date_str:
+            start_date = datetime.fromisoformat(start_date_str)
+            end_date = datetime.fromisoformat(end_date_str)
+
+        # Helper to apply date filter
+        def apply_date_filter(queryset):
+            return queryset.filter(created_at__gte=start_date, created_at__lte=end_date)
+
+        # Helper to format monthly data
+        def format_monthly_data(queryset):
+            data = {month_name[item['month'].month]: item['count'] for item in queryset}
+            return {month_name[i]: data.get(month_name[i], 0) for i in range(1, 13)}
+
+        response_data = {}
+
+        # =========================
+        # ANALYSIS
+        # =========================
+        if module_name in (None, "analysis"):
+            analysis_qs = apply_date_filter(models.Analysis.objects.all())
+            analysis_monthly_qs = (
+                analysis_qs
+                .annotate(month=TruncMonth("created_at"))
+                .values("month")
+                .annotate(count=Count("id"))
+                .order_by("month")
+            )
+            analysis_monthly = format_monthly_data(analysis_monthly_qs)
+
+            analysis_prep_stats = {
+                "with_prep": analysis_qs.filter(prep__isnull=False).count(),
+                "without_prep": analysis_qs.filter(prep__isnull=True).count(),
+            }
+
+            analysis_training_stats = {
+                "with_training": analysis_qs.filter(trainings__isnull=False).count(),
+                "without_training": analysis_qs.filter(trainings__isnull=True).count(),
+            }
+
+            response_data["analysis"] = {
+                "monthly": analysis_monthly,
+                "prep_stats": analysis_prep_stats,
+                "training_stats": analysis_training_stats,
+            }
+
+        # =========================
+        # TRAINING
+        # =========================
+        if module_name in (None, "training"):
+            training_qs = apply_date_filter(models.Training.objects.all())
+            training_count = training_qs.count()
+            response_data["training"] = {
+                "total_count": training_count,
+            }
+
+        # =========================
+        # PREPARATION
+        # =========================
+        if module_name in (None, "preparation"):
+            preparation_qs = apply_date_filter(models.Preparation.objects.all())
+            preparation_count = preparation_qs.count()
+            response_data["preparation"] = {
+                "total_count": preparation_count,
+            }
+
+        # =========================
+        # PRODUCT
+        # =========================
+        if module_name in (None, "product"):
+            product_qs = apply_date_filter(models.Product.objects.all())
+            product_monthly_qs = (
+                product_qs
+                .annotate(month=TruncMonth("created_at"))
+                .values("month")
+                .annotate(count=Count("id"))
+                .order_by("month")
+            )
+            product_monthly = format_monthly_data(product_monthly_qs)
+
+            product_type_count = (
+                product_qs
+                .values("product_type")
+                .annotate(count=Count("id"))
+            )
+
+            product_sampling_grade = (
+                models.ProductSamplingGrade.objects
+                .values("grade__name")
+                .annotate(count=Count("product", distinct=True))
+            )
+
+            response_data["product"] = {
+                "monthly": product_monthly,
+                "type_count": product_type_count,
+                "sampling_grade": product_sampling_grade,
+            }
+
+        # =========================
+        # SAMPLE
+        # =========================
+        if module_name in (None, "sample"):
+            sample_qs = apply_date_filter(models.DynamicFormEntry.objects.all())
+
+            sample_status = (
+                sample_qs
+                .values("status")
+                .annotate(count=Count("id"))
+            )
+
+            sample_monthly_qs = (
+                sample_qs
+                .annotate(month=TruncMonth("created_at"))
+                .values("month")
+                .annotate(count=Count("id"))
+                .order_by("month")
+            )
+            sample_monthly = format_monthly_data(sample_monthly_qs)
+
+            form_usage = (
+                sample_qs
+                .values("form__sample_name")
+                .annotate(count=Count("id"))
+            )
+
+            followup_stats = {
+                "followup": sample_qs.filter(is_followup=True).count(),
+                "normal": sample_qs.filter(is_followup=False).count(),
+            }
+
+            response_data["sample"] = {
+                "status": sample_status,
+                "monthly": sample_monthly,
+                "form_usage": form_usage,
+                "followup": followup_stats,
+            }
+
+        # =========================
+        # REPORTS
+        # =========================
+        if module_name in (None, "reports"):
+            reports_qs = apply_date_filter(models.GeneratedReport.objects.all())
+            reports_monthly_qs = (
+                reports_qs
+                .annotate(month=TruncMonth("created_at"))
+                .values("month")
+                .annotate(count=Count("id"))
+                .order_by("month")
+            )
+            reports_monthly = format_monthly_data(reports_monthly_qs)
+
+            reports_by_template = (
+                reports_qs
+                .annotate(month=TruncMonth("created_at"))
+                .values("month", "template__name")
+                .annotate(count=Count("id"))
+                .order_by("month")
+            )
+            for item in reports_by_template:
+                item['month'] = month_name[item['month'].month]
+
+            response_data["reports"] = {
+                "monthly": reports_monthly,
+                "by_template": list(reports_by_template),
+            }
+
+        return Response(response_data)
+
 @method_decorator(csrf_exempt, name='dispatch')
 class QueryReportTemplateCreateView(APIView):
 
@@ -4190,4 +4390,40 @@ class DocumentUploadView(APIView):
         
         # Return relative path only
         return Response({"attachment": path}, status=status.HTTP_201_CREATED)
+
+
+
+class IncomingMaterialSampleInspectionViewSet(viewsets.ModelViewSet):
+    queryset = models.IncomingMaterialSampleInspection.objects.all()
+    serializer_class = IncomingMaterialSampleInspectionSerializer
+    pagination_class = CustomPageNumberPagination
+
+
+    @action(detail=True, methods=['patch'], url_path='update-acceptance')
+    def update_acceptance(self, request, pk=None):
+        try:
+            instance = self.get_object()
+
+            is_accepted = request.data.get('is_accepted')
+
+            if is_accepted is None:
+                return Response(
+                    {"error": "is_accepted field is required"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            instance.is_accepted = is_accepted
+            instance.save(update_fields=['is_accepted'])
+
+            return Response({
+                "message": "Acceptance status updated successfully",
+                "inspection_sheet_no": instance.inspection_sheet_no,
+                "is_accepted": instance.is_accepted
+            })
+
+        except Exception as e:
+            return Response(
+                {"error": str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
