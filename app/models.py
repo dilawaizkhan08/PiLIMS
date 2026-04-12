@@ -191,6 +191,18 @@ class NicotineAssayReport(models.Model):
     def save(self, *args, **kwargs):
 
         if self.preparation:
+            existing_report = NicotineAssayReport.objects.filter(
+                preparation=self.preparation
+            ).exclude(id=self.id).first()
+
+            if existing_report:
+                if existing_report.prep_type != self.prep_type:
+                    raise ValidationError(
+                        f"All nicotine entries for this preparation must be of type '{existing_report.prep_type}'"
+                    )
+
+        # 🔽 Existing logic (same as yours)
+        if self.preparation:
             NicotineAssayReport.objects.filter(
                 preparation=self.preparation,
                 expiry_date__gte=timezone.now().date()
@@ -212,7 +224,6 @@ class NicotineAssayReport(models.Model):
             self.expiry_date = timezone.now().date() + timedelta(days=self.expiry_days)
 
         super().save(*args, **kwargs)
-
     @property
     def is_expired(self):
         return self.expiry_date and self.expiry_date < timezone.now().date()
@@ -278,7 +289,7 @@ class Analysis(BaseModel):
     price = models.FloatField(null=True, blank=True)
     description = models.TextField(null=True, blank=True)
     prep = models.ForeignKey(
-        "Preparation",  # <-- now links to Preparation parent model
+        "Preparation",
         on_delete=models.SET_NULL,
         null=True,
         blank=True,

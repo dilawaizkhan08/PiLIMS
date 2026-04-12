@@ -4212,19 +4212,31 @@ class PreparationViewSet(viewsets.ModelViewSet):
     def get_serializer_context(self):
         return {"request": self.request}
 
+    from rest_framework.exceptions import ValidationError
+
     @action(detail=True, methods=["post"])
     def add_nicotine(self, request, pk=None):
         preparation = self.get_object()
 
-        serializer = NicotineAssayReportSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
+        incoming_type = request.data.get("prep_type")
 
+        existing_report = preparation.reports.first()
+
+        if existing_report:
+            if existing_report.prep_type != incoming_type:
+                raise ValidationError({
+                    "prep_type": f"It must be '{existing_report.get_prep_type_display()}'"
+                })
+
+        serializer = NicotineAssayReportSerializer(
+            data=request.data
+        )
+        serializer.is_valid(raise_exception=True)
         serializer.save(preparation=preparation)
 
         return Response({
             "message": "New nicotine added. Old automatically expired."
         })
-
 
 
 class PreparationLabelPDFView(APIView):
