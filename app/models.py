@@ -233,8 +233,6 @@ class NicotineAssayReport(models.Model):
     def __str__(self):
         return self.prep_id
 
-
-
 class Training(BaseModel):
     training_id = models.CharField(max_length=100, unique=True, editable=False)
     description = models.TextField()
