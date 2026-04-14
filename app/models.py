@@ -147,6 +147,7 @@ class Preparation(models.Model):
     prep_id = models.CharField(max_length=50, unique=True, editable=False)
     created_at = models.DateTimeField(auto_now_add=True)
     prepared_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
+    details = models.TextField(blank=True, null=True)
 
     def save(self, *args, **kwargs):
         if not self.prep_id:
@@ -224,12 +225,15 @@ class NicotineAssayReport(models.Model):
             self.expiry_date = timezone.now().date() + timedelta(days=self.expiry_days)
 
         super().save(*args, **kwargs)
+
     @property
     def is_expired(self):
         return self.expiry_date and self.expiry_date < timezone.now().date()
 
     def __str__(self):
         return self.prep_id
+
+
 
 class Training(BaseModel):
     training_id = models.CharField(max_length=100, unique=True, editable=False)
@@ -288,12 +292,10 @@ class Analysis(BaseModel):
     test_method = models.ForeignKey(TestMethod, on_delete=models.SET_NULL, null=True, blank=True)
     price = models.FloatField(null=True, blank=True)
     description = models.TextField(null=True, blank=True)
-    prep = models.ForeignKey(
+    prep = models.ManyToManyField(
         "Preparation",
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="analyses"
+        related_name="analyses",
+        blank=True
     )
     trainings = models.ManyToManyField(
         Training,
@@ -486,15 +488,6 @@ class Stock(BaseModel):
     def __str__(self):
         return f"{self.inventory.name} - {self.quantity}"
 
-    def save(self, *args, **kwargs):
-        super().save(*args, **kwargs)
-
-        total = self.inventory.stocks.aggregate(
-            total=Sum("quantity")
-        )["total"] or 0
-
-        self.inventory.total_quantity = total
-        self.inventory.save()
 
 
 class StockConsumption(BaseModel):
@@ -516,13 +509,12 @@ class StockConsumption(BaseModel):
         return f"{self.stock.inventory.name} consumed {self.consumed_quantity}"
 
     def save(self, *args, **kwargs):
-
         if self.consumed_quantity > self.stock.quantity:
             raise ValueError("Not enough stock to consume")
 
-        # deduct stock
-        self.stock.quantity -= self.consumed_quantity
-        self.stock.save() 
+        # ❌ REMOVE THIS LINE
+        # self.stock.quantity -= self.consumed_quantity
+        # self.stock.save()
 
         super().save(*args, **kwargs)
 

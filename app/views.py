@@ -430,50 +430,75 @@ class InventoryViewSet(TrackUserMixin, viewsets.ModelViewSet):
             user_groups__in=user.user_groups.all()
         ).distinct()
 
-    @action(detail=True, methods=["post"],permission_classes=[IsAuthenticated, HasModulePermission])
+    from django.db import transaction
+    from django.db.models import Sum
+
+    @action(detail=True,methods=["post"],permission_classes=[IsAuthenticated, HasModulePermission])
     def consume(self, request, pk=None):
         """
         Consume stock from a specific batch
         """
+
         stock_id = request.data.get("stock_id")
         quantity = request.data.get("quantity")
         notes = request.data.get("notes", "")
 
         if not stock_id or not quantity:
-            return Response({"error": "stock_id and quantity are required"}, status=400)
+            return Response(
+                {"error": "stock_id and quantity are required"},
+                status=400
+            )
 
         try:
-            stock = models.Stock.objects.get(id=stock_id, inventory_id=pk)
+            quantity = int(quantity)
+
+            with transaction.atomic():
+                stock = models.Stock.objects.select_for_update().get(
+                    id=stock_id,
+                    inventory_id=pk
+                )
+
+                if quantity > stock.quantity:
+                    return Response(
+                        {"error": "Not enough stock in this batch"},
+                        status=400
+                    )
+
+                # 1. Deduct stock
+                stock.quantity -= quantity
+                stock.save()
+
+                # 2. Create consumption record
+                models.StockConsumption.objects.create(
+                    stock=stock,
+                    consumed_quantity=quantity,
+                    consumed_by=request.user,
+                    notes=notes
+                )
+
+                # 3. Update inventory total (SAFE & SINGLE SOURCE)
+                inventory = stock.inventory
+                inventory.total_quantity = inventory.stocks.aggregate(
+                    total=Sum("quantity")
+                )["total"] or 0
+                inventory.save()
+
+            return Response(
+                {
+                    "message": "Stock consumed successfully",
+                    "inventory_total": inventory.total_quantity,
+                    "consumed_from_batch": stock.batch_no,
+                    "remaining_in_batch": stock.quantity,
+                    "consumed_by": request.user.username
+                },
+                status=status.HTTP_200_OK
+            )
+
         except models.Stock.DoesNotExist:
-            return Response({"error": "Stock (batch) not found"}, status=404)
-
-        quantity = int(quantity)
-
-        if quantity > stock.quantity:
-            return Response({"error": "Not enough stock in this batch"}, status=400)
-
-        # Create consumption record
-        consumption = models.StockConsumption.objects.create(
-            stock=stock,
-            consumed_quantity=quantity,
-            consumed_by=request.user,   # ✅ Logged in user
-            notes=notes
-        )
-
-        # Deduct quantity
-        stock.quantity -= quantity
-        stock.save()
-
-        return Response(
-            {
-                "message": "Stock consumed successfully",
-                "inventory_total": stock.inventory.total_quantity,
-                "consumed_from_batch": stock.batch_no,
-                "remaining_in_batch": stock.quantity,
-                "consumed_by": request.user.username  # optional response
-            },
-            status=status.HTTP_200_OK
-        )
+            return Response(
+                {"error": "Stock (batch) not found"},
+                status=404
+            )
     
     @action(detail=True, methods=["get"])
     def stocks(self, request, pk=None):
@@ -499,6 +524,7 @@ class InventoryViewSet(TrackUserMixin, viewsets.ModelViewSet):
             "stocks": stock_data,
             "consumptions": consumption_data
         }, status=status.HTTP_200_OK)
+
 
 class StockViewSet(TrackUserMixin,viewsets.ModelViewSet):
     queryset = models.Stock.objects.all()
@@ -2282,17 +2308,42 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
             # ---------------------------
             # Check expired preparation (latest nicotine assay)
             # ---------------------------
-            prep = entry_analysis.analysis.prep
-            if prep:
-                latest_nicotine = prep.reports.order_by('-created_at').first()
-                if latest_nicotine and latest_nicotine.expiry_date and latest_nicotine.expiry_date < timezone.now().date():
+            preps = entry_analysis.analysis.prep.all()
+
+            if preps.exists():
+                today = timezone.now().date()
+                valid_prep_found = False
+                invalid_preps = []
+
+                for prep in preps:
+                    # latest report
+                    latest_report = prep.reports.order_by('-created_at').first()
+
+                    if not latest_report:
+                        invalid_preps.append({
+                            "prep_id": prep.prep_id,
+                            "reason": "no report"
+                        })
+                        continue
+
+                    if latest_report.expiry_date and latest_report.expiry_date >= today:
+                        valid_prep_found = True
+                        break
+                    else:
+                        invalid_preps.append({
+                            "prep_id": prep.prep_id,
+                            "reason": "expired"
+                        })
+
+                # ❌ if ALL invalid
+                if not valid_prep_found:
                     return Response(
                         {
-                            "error": f"Cannot save results:Preparation '{prep.id}' has expired."
+                            "error": "Cannot save results: All associated preparations are invalid.",
+                            "details": invalid_preps
                         },
                         status=status.HTTP_400_BAD_REQUEST
                     )
-
             # ---------------------------
             # Save regular results
             # ---------------------------

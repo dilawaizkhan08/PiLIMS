@@ -542,10 +542,11 @@ class AnalysisAttachmentSerializer(serializers.ModelSerializer):
 
 class AnalysisSerializer(serializers.ModelSerializer):
 
+    # ✅ MANY=True but name same "prep"
     prep = serializers.PrimaryKeyRelatedField(
+        many=True,
         queryset=models.Preparation.objects.all(),
-        required=False,
-        allow_null=True
+        required=False
     )
 
     attachments = AnalysisAttachmentSerializer(many=True, read_only=True)
@@ -610,17 +611,27 @@ class AnalysisSerializer(serializers.ModelSerializer):
             "attachment_urls",
             "components",
             "component_ids",
-            "prep",
-            "trainings" 
+            "prep",          # ✅ same name
+            "trainings"
         ]
 
     def create(self, validated_data):
         attachment_urls = validated_data.pop("attachment_urls", [])
         user_groups = validated_data.pop("user_groups", [])
         component_ids = validated_data.pop("component_ids", [])
+        trainings = validated_data.pop("trainings", [])
+        preps = validated_data.pop("prep", [])  # ✅ IMPORTANT
 
         analysis = models.Analysis.objects.create(**validated_data)
+
+        # M2M
         analysis.user_groups.set(user_groups)
+
+        if trainings:
+            analysis.trainings.set(trainings)
+
+        if preps:
+            analysis.prep.set(preps)  # ✅ IMPORTANT (model field bhi prep hona chahiye)
 
         # Attach attachments
         for url in attachment_urls:
@@ -647,22 +658,25 @@ class AnalysisSerializer(serializers.ModelSerializer):
         attachment_urls = validated_data.pop("attachment_urls", [])
         user_groups = validated_data.pop("user_groups", [])
         component_ids = validated_data.pop("component_ids", [])
-        trainings = validated_data.pop("trainings", None)  # 👈 FIX
+        trainings = validated_data.pop("trainings", None)
+        preps = validated_data.pop("prep", None)  # ✅ IMPORTANT
 
         # Update fields
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
         instance.save()
 
-        # Update user groups
+        # M2M updates
         if user_groups:
             instance.user_groups.set(user_groups)
 
-        # ✅ FIX trainings
         if trainings is not None:
             instance.trainings.set(trainings)
 
-        # Update attachments
+        if preps is not None:
+            instance.prep.set(preps)  # ✅ IMPORTANT
+
+        # Attachments
         if attachment_urls:
             for url in attachment_urls:
                 file_path = url.split('/media/')[-1]
@@ -675,7 +689,7 @@ class AnalysisSerializer(serializers.ModelSerializer):
                 attachment.analysis = instance
                 attachment.save()
 
-        # Update components
+        # Components
         if component_ids:
             components = models.Component.objects.filter(id__in=component_ids)
             for comp in components:
@@ -683,15 +697,6 @@ class AnalysisSerializer(serializers.ModelSerializer):
                 comp.save()
 
         return instance
-    
-    def get_prep(self, obj):
-        if obj.prep:  # ✅ use the model field name
-            return {
-                "id": obj.prep.id,
-                "created_at": obj.prep.created_at
-            }
-        return None
-    
 
 class InstrumentHistorySerializer(serializers.ModelSerializer):
     id = serializers.IntegerField(required=False)  # Allow PATCH with ID
@@ -2400,34 +2405,47 @@ class NicotineAssayReportSerializer(serializers.ModelSerializer):
         model = models.NicotineAssayReport
         exclude = ["preparation"]
 
+
 class PreparationSerializer(serializers.ModelSerializer):
     reports = NicotineAssayReportSerializer(many=True)
 
     class Meta:
         model = models.Preparation
-        fields = ["id", "prep_id", "reports"]
+        fields = ["id", "prep_id", "details", "reports"] 
         read_only_fields = ["prep_id"]
 
     def validate(self, data):
-        reports = data.get("reports", [])
+        reports = data.get("reports", None)
 
-        # ✅ ONLY ONE on CREATE
-        if self.instance is None and len(reports) != 1:
-            raise serializers.ValidationError(
-                "Exactly ONE nicotine assay is required during creation."
-            )
+        if self.instance is None:
+
+            if not reports or len(reports) != 1:
+                raise ValidationError(
+                    "Exactly ONE nicotine assay is required during creation."
+                )
+
+            prep_type = reports[0].get("prep_type")
+
+            if prep_type:
+                exists = models.NicotineAssayReport.objects.filter(
+                    prep_type=prep_type
+                ).exists()
+
+                if exists:
+                    raise ValidationError({
+                        "prep_type": f"{prep_type} already exists in another preparation."
+                    })
 
         return data
 
     def create(self, validated_data):
         reports_data = validated_data.pop("reports")
 
-        # Create parent
         preparation = models.Preparation.objects.create(
-            prepared_by=self.context["request"].user
+            prepared_by=self.context["request"].user,
+            details=validated_data.get("details") 
         )
 
-        # Create first nicotine
         models.NicotineAssayReport.objects.create(
             preparation=preparation,
             **reports_data[0]
@@ -2435,10 +2453,13 @@ class PreparationSerializer(serializers.ModelSerializer):
 
         return preparation
 
+    def update(self, instance, validated_data):
 
+        instance.details = validated_data.get("details", instance.details)
+        instance.save()
 
-
-
+        return instance
+    
 class UserTrainingSerializer(serializers.ModelSerializer):
     user = serializers.StringRelatedField(read_only=True)
     user_id = serializers.IntegerField(write_only=True, required=True)
