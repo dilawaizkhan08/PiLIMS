@@ -6,6 +6,17 @@ from rest_framework import status
 from smtplib import SMTPException
 import logging
 from app import models
+import json
+import os
+import tempfile
+from io import BytesIO
+
+from django.db import connection
+from django.core.files.base import ContentFile
+from django.core.files.storage import default_storage
+
+from jinja2 import Template as JinjaTemplate
+from weasyprint import HTML
 
 
 
@@ -91,3 +102,69 @@ def update_status_with_history(entry, new_status, user,reason=None):
             updated_by=user,
             reason=reason
         )
+
+
+def generate_report(template_id, sample_id, request):
+    try:
+        template_obj = models.QueryReportTemplate.objects.get(id=template_id)
+        entry = models.DynamicFormEntry.objects.get(id=sample_id)
+
+        params = {"sample_id": int(sample_id)}
+
+        # Execute SQL
+        with connection.cursor() as cursor:
+            cursor.execute(template_obj.sql_query, params)
+            columns = [col[0] for col in cursor.description]
+            result = [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+        if not result:
+            return None
+
+        # Parse JSON field
+        parsed_data = {}
+        if "data" in result[0]:
+            try:
+                parsed_data = json.loads(result[0]["data"])
+            except:
+                pass
+
+        context_data = {
+            "rows": result,
+            "entry": entry,
+            "data": parsed_data,
+            "sample_text_id": entry.sample_text_id,
+            "created_at": entry.created_at
+        }
+
+        # Render HTML
+        jinja_template = JinjaTemplate(template_obj.jinja_html_content)
+        rendered_html = jinja_template.render(context_data)
+
+        # Generate PDF
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_pdf:
+            temp_path = temp_pdf.name
+
+        HTML(string=rendered_html).write_pdf(target=temp_path)
+
+        # Save file
+        with open(temp_path, "rb") as f:
+            file_content = ContentFile(f.read())
+
+        pdf_filename = f"{template_obj.name}_entry_{sample_id}.pdf"
+        pdf_path = default_storage.save(f"reports/{pdf_filename}", file_content)
+        pdf_url = default_storage.url(pdf_path)
+
+        os.remove(temp_path)
+
+        # Save in DB (🔗 THIS IS LINK)
+        models.GeneratedReport.objects.create(
+            sample=entry,
+            template=template_obj,
+            pdf_url=pdf_url
+        )
+
+        return pdf_url
+
+    except Exception as e:
+        print(f"Report generation failed: {e}")
+        return None

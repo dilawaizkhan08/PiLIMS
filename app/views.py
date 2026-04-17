@@ -801,12 +801,10 @@ class SampleFormSubmitView(APIView):
                     clean_data[field.field_name] = file_urls
                     continue
 
-                # 2️⃣ DATETIME
-                if isinstance(value, datetime):
+                if isinstance(value, (datetime, date)):
                     clean_data[field.field_name] = value.isoformat()
                     continue
 
-                # 3️⃣ LINK TO PRODUCT → AUTO ANALYSES
                 if (
                     field.field_property == "link_to_table"
                     and field.link_to_table == "app_product"
@@ -879,6 +877,7 @@ class SampleFormSubmitView(APIView):
         }, status=status.HTTP_201_CREATED)
 
 from django.db.models import Q
+from .utility import generate_report
 class DynamicSampleFormEntryViewSet(viewsets.ModelViewSet):
     queryset = models.DynamicFormEntry.objects.all().order_by("-created_at")
     serializer_class = DynamicFormEntrySerializer
@@ -915,7 +914,7 @@ class DynamicSampleFormEntryViewSet(viewsets.ModelViewSet):
             return Response({"error": "status and ids are required"}, status=400)
 
         # -----------------------------
-        # Require password & reason for release/rejected/hold
+        # Require password & reason
         # -----------------------------
         if new_status in ["release", "rejected", "hold"]:
             if not reason or not password:
@@ -924,7 +923,7 @@ class DynamicSampleFormEntryViewSet(viewsets.ModelViewSet):
                 return Response({"error": "Incorrect password"}, status=403)
 
         # -----------------------------
-        # Map status → permission action
+        # Permission mapping
         # -----------------------------
         status_permission_map = {
             "received": "receive",
@@ -961,88 +960,87 @@ class DynamicSampleFormEntryViewSet(viewsets.ModelViewSet):
         user = request.user
 
         # -----------------------------
-        # Handle assign_analyst separately
+        # Assign analyst
         # -----------------------------
         if new_status == "assign_analyst":
             if not analyst_id:
-                return Response({"error": "analyst_id is required when assigning analyst"}, status=400)
+                return Response({"error": "analyst_id is required"}, status=400)
 
             try:
                 analyst = models.User.objects.get(id=analyst_id)
             except models.User.DoesNotExist:
-                return Response({"error": f"Analyst with id {analyst_id} not found"}, status=404)
+                return Response({"error": "Analyst not found"}, status=404)
 
             for entry in entries:
                 if entry.status != "received":
                     return Response({
-                        "error": f"Entry {entry.id} must be 'received' before assigning analyst."
+                        "error": f"Entry {entry.id} must be 'received' first."
                     }, status=400)
 
-            # Only assign analyst (status unchanged → no history needed)
             entries.update(analyst=analyst)
+
             return Response({
-                "message": f"Analyst {analyst.id} assigned to entries (status unchanged)",
+                "message": f"Analyst assigned",
                 "updated_ids": ids
             })
 
         # -----------------------------
-        # Normal status updates (including hold/unhold)
+        # STATUS UPDATES
         # -----------------------------
         for entry in entries:
 
             # -----------------------------
-            # Completed → release/rejected validation
+            # Release / Rejected validation
             # -----------------------------
             if new_status in ["release", "rejected"]:
                 allow = False
+
                 if entry.status == "completed":
                     allow = True
                 elif entry.status == "hold":
-                    last_status_before_hold = (
+                    last_status = (
                         models.StatusHistory.objects
                         .filter(entry=entry, new_status="hold")
                         .order_by("-id")
                         .first()
                     )
-                    previous_status = last_status_before_hold.old_status if last_status_before_hold else None
+                    previous_status = last_status.old_status if last_status else None
                     if previous_status == "completed":
                         allow = True
 
                 if not allow:
                     return Response({
-                        "error": f"Entry {entry.id} must be completed before {new_status}."
+                        "error": f"Entry {entry.id} must be completed before {new_status}"
                     }, status=400)
 
             # -----------------------------
-            # On Hold
+            # HOLD
             # -----------------------------
             if new_status == "hold":
                 if entry.status == "hold":
-                    return Response({
-                        "error": f"Entry {entry.id} is already on hold."
-                    }, status=400)
+                    return Response({"error": f"Entry {entry.id} already on hold"}, status=400)
+
                 update_status_with_history(entry, "hold", user, reason=reason)
                 continue
 
             # -----------------------------
-            # Reactivate validation
+            # REACTIVATE
             # -----------------------------
             if new_status == "reactivate":
                 if entry.status not in ["release", "rejected"]:
                     return Response({
-                        "error": f"Entry {entry.id} can only be reactivated if it is 'release' or 'rejected'."
+                        "error": f"Entry {entry.id} must be released/rejected first"
                     }, status=400)
+
                 update_status_with_history(entry, "in_progress", user, reason=reason)
                 continue
 
             # -----------------------------
-            # Unhold → restore previous status
+            # UNHOLD
             # -----------------------------
             if new_status == "unhold":
                 if entry.status != "hold":
-                    return Response({
-                        "error": f"Entry {entry.id} is not on hold."
-                    }, status=400)
+                    return Response({"error": f"Entry {entry.id} is not on hold"}, status=400)
 
                 last_status = (
                     models.StatusHistory.objects
@@ -1051,26 +1049,51 @@ class DynamicSampleFormEntryViewSet(viewsets.ModelViewSet):
                     .first()
                 )
                 restored_status = last_status.old_status if last_status else "in_progress"
+
                 update_status_with_history(entry, restored_status, user, reason=reason)
                 continue
 
             # -----------------------------
-            # Release / Rejected → track history + create investigation if rejected
+            # RELEASE / REJECTED
             # -----------------------------
             if new_status in ["release", "rejected"]:
+
                 update_status_with_history(entry, new_status, user, reason=reason)
 
-                # Create investigation automatically if rejected
+                if new_status == "release":
+
+                    coa_templates = models.QueryReportTemplate.objects.filter(
+                        name__icontains="coa"
+                    )
+
+                    for template in coa_templates:
+
+                        # Avoid duplicate reports
+                        exists = models.GeneratedReport.objects.filter(
+                            sample=entry,
+                            template=template
+                        ).exists()
+
+                        if exists:
+                            continue
+
+                        try:
+                            generate_report(template.id, entry.id, request)
+                        except Exception as e:
+                            print(f"COA generation failed for entry {entry.id}: {e}")
+
+                # Investigation if rejected
                 if new_status == "rejected":
                     models.Investigation.objects.create(
                         sample=entry,
                         rejected_at=timezone.now(),
                         rejection_reason=reason
                     )
+
                 continue
 
             # -----------------------------
-            # Normal status update
+            # NORMAL STATUS
             # -----------------------------
             update_status_with_history(entry, new_status, user)
 
@@ -1078,7 +1101,6 @@ class DynamicSampleFormEntryViewSet(viewsets.ModelViewSet):
             "message": f"Status updated to {new_status}",
             "updated_ids": ids
         })
-
     
     @action(detail=False, methods=["get"], url_path="stats")
     def get_stats(self, request):
@@ -3166,6 +3188,7 @@ class RenderRequestReportView(APIView):
 class QueryReportTemplateViewSet(viewsets.ModelViewSet):
     queryset = models.QueryReportTemplate.objects.all().order_by('-id')
     serializer_class = QueryReportTemplateSerializer
+    filter_backends = [GenericSearchFilter]
 
 
 STATUS_CHOICES = [
@@ -4196,6 +4219,7 @@ class GeneratedReportViewSet(viewsets.ModelViewSet):
     queryset = models.GeneratedReport.objects.all().order_by("-created_at")
     serializer_class = GeneratedReportSerializer
     pagination_class = CustomPageNumberPagination
+    filter_backends = [GenericSearchFilter]
 
 class InvestigationViewSet(viewsets.ModelViewSet):
     queryset = models.Investigation.objects.all().order_by("-rejected_at")
@@ -4467,21 +4491,44 @@ class IncomingMaterialSampleInspectionViewSet(viewsets.ModelViewSet):
         try:
             instance = self.get_object()
 
-            is_accepted = request.data.get('is_accepted')
+            decision = request.data.get('decision')
+            accepted_quantity = request.data.get('accepted_quantity')
 
-            if is_accepted is None:
+            if decision not in ['accepted', 'rejected', 'partial']:
                 return Response(
-                    {"error": "is_accepted field is required"},
+                    {"error": "Invalid decision value"},
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
-            instance.is_accepted = is_accepted
-            instance.save(update_fields=['is_accepted'])
+            if decision == 'accepted':
+                instance.accepted_quantity = instance.received_total_number
+
+            elif decision == 'rejected':
+                instance.accepted_quantity = 0
+
+            elif decision == 'partial':
+                if not accepted_quantity:
+                    return Response(
+                        {"error": "accepted_quantity is required for partial acceptance"},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+
+                if int(accepted_quantity) > instance.received_total_number:
+                    return Response(
+                        {"error": "Accepted quantity cannot exceed received quantity"},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+
+                instance.accepted_quantity = accepted_quantity
+
+            instance.decision = decision
+            instance.save(update_fields=['decision', 'accepted_quantity'])
 
             return Response({
-                "message": "Acceptance status updated successfully",
+                "message": "Inspection decision updated successfully",
                 "inspection_sheet_no": instance.inspection_sheet_no,
-                "is_accepted": instance.is_accepted
+                "decision": instance.decision,
+                "accepted_quantity": instance.accepted_quantity
             })
 
         except Exception as e:
@@ -4489,4 +4536,3 @@ class IncomingMaterialSampleInspectionViewSet(viewsets.ModelViewSet):
                 {"error": str(e)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
-

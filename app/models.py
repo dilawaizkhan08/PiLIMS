@@ -539,7 +539,7 @@ class SampleField(BaseModel):
     FIELD_PROPERTY_CHOICES = [
         ('text', 'Text'),
         ('numeric', 'Numeric'),
-        ('date_time', 'Date & Time'),
+        ('date', 'Date'),
         ('list', 'List'),
         ('link_to_table', 'Link to Table'),
         ('attachment', 'Attachment'),
@@ -1130,7 +1130,11 @@ class IncomingMaterialSampleInspection(models.Model):
         ('present', 'Present'),
         ('absent', 'Absent'),
     ]
-
+    DECISION_CHOICES = [
+        ('accepted', 'Accepted'),
+        ('rejected', 'Rejected'),
+        ('partial', 'Partially Accepted'),
+    ]
 
     inspection_sheet_no = models.CharField(
         max_length=50,
@@ -1206,8 +1210,15 @@ class IncomingMaterialSampleInspection(models.Model):
     approved_by = models.CharField(max_length=255, blank=True, null=True)
     approved_sign_date = models.DateField(blank=True, null=True)
 
-    # Final Decision
-    is_accepted = models.BooleanField(default=False)
+    decision = models.CharField(
+        max_length=20,
+        choices=DECISION_CHOICES,
+        null=True,
+        blank=True
+    )
+
+    accepted_quantity = models.PositiveIntegerField(null=True, blank=True)
+
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

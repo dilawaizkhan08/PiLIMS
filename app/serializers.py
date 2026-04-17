@@ -542,11 +542,15 @@ class AnalysisAttachmentSerializer(serializers.ModelSerializer):
 
 class AnalysisSerializer(serializers.ModelSerializer):
 
-    # ✅ MANY=True but name same "prep"
-    prep = serializers.PrimaryKeyRelatedField(
+    prep = serializers.BooleanField(required=False)
+
+    # =========================
+    # PREP DETAILS (read-only)
+    # =========================
+    prep_details = serializers.PrimaryKeyRelatedField(
         many=True,
-        queryset=models.Preparation.objects.all(),
-        required=False
+        read_only=True,
+        source="prep"
     )
 
     attachments = AnalysisAttachmentSerializer(many=True, read_only=True)
@@ -611,29 +615,38 @@ class AnalysisSerializer(serializers.ModelSerializer):
             "attachment_urls",
             "components",
             "component_ids",
-            "prep",          # ✅ same name
+            "prep",
+            "prep_details",
             "trainings"
         ]
 
+    # =========================
+    # CREATE
+    # =========================
     def create(self, validated_data):
+        prep_flag = validated_data.pop("prep", None)
+
         attachment_urls = validated_data.pop("attachment_urls", [])
         user_groups = validated_data.pop("user_groups", [])
         component_ids = validated_data.pop("component_ids", [])
         trainings = validated_data.pop("trainings", [])
-        preps = validated_data.pop("prep", [])  # ✅ IMPORTANT
 
         analysis = models.Analysis.objects.create(**validated_data)
 
-        # M2M
         analysis.user_groups.set(user_groups)
 
         if trainings:
             analysis.trainings.set(trainings)
 
-        if preps:
-            analysis.prep.set(preps)  # ✅ IMPORTANT (model field bhi prep hona chahiye)
+        # =========================
+        # PREP LOGIC
+        # =========================
+        if prep_flag is True:
+            analysis.prep.set(models.Preparation.objects.all())
+        elif prep_flag is False:
+            analysis.prep.clear()
 
-        # Attach attachments
+        # Attachments
         for url in attachment_urls:
             file_path = url.split('/media/')[-1]
             try:
@@ -645,7 +658,7 @@ class AnalysisSerializer(serializers.ModelSerializer):
             attachment.analysis = analysis
             attachment.save()
 
-        # Attach components
+        # Components
         if component_ids:
             components = models.Component.objects.filter(id__in=component_ids)
             for comp in components:
@@ -654,27 +667,34 @@ class AnalysisSerializer(serializers.ModelSerializer):
 
         return analysis
 
+    # =========================
+    # UPDATE
+    # =========================
     def update(self, instance, validated_data):
+        prep_flag = validated_data.pop("prep", None)
+
         attachment_urls = validated_data.pop("attachment_urls", [])
         user_groups = validated_data.pop("user_groups", [])
         component_ids = validated_data.pop("component_ids", [])
         trainings = validated_data.pop("trainings", None)
-        preps = validated_data.pop("prep", None)  # ✅ IMPORTANT
 
-        # Update fields
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
         instance.save()
 
-        # M2M updates
         if user_groups:
             instance.user_groups.set(user_groups)
 
         if trainings is not None:
             instance.trainings.set(trainings)
 
-        if preps is not None:
-            instance.prep.set(preps)  # ✅ IMPORTANT
+        # =========================
+        # PREP LOGIC
+        # =========================
+        if prep_flag is True:
+            instance.prep.set(models.Preparation.objects.all())
+        elif prep_flag is False:
+            instance.prep.clear()
 
         # Attachments
         if attachment_urls:
@@ -1170,12 +1190,13 @@ class DynamicFormEntrySerializer(serializers.ModelSerializer):
     )
     is_followup = serializers.BooleanField(read_only=True)
     parent_sample_text_id = serializers.SerializerMethodField()
+    reports = serializers.SerializerMethodField()
 
     class Meta:
         model = models.DynamicFormEntry
         fields = [
             "id", "sample_text_id","parent_sample_text_id", "is_followup","comment","form_name", "form_id", "data",
-            "status", "analyses_data", "analyst_id", "analyst_name", "created_at", "logged_by", "logged_by_name", "retaining_sample_location"
+            "status", "analyses_data", "analyst_id", "analyst_name", "created_at", "logged_by", "logged_by_name", "retaining_sample_location", "reports"
         ]
 
     def get_parent_sample_text_id(self, obj):
@@ -1199,8 +1220,36 @@ class DynamicFormEntrySerializer(serializers.ModelSerializer):
         if obj.analyst:
             return f"{obj.analyst.name}".strip()
         return None
+    
+    def get_reports(self, obj):
+        request = self.context.get("request")
 
+        last_release = (
+            obj.status_history
+            .filter(new_status="release")
+            .order_by("-updated_at")
+            .first()
+        )
 
+        if not last_release:
+            return []
+
+        latest_report = (
+            obj.generated_reports
+            .filter(created_at__gte=last_release.updated_at)
+            .order_by("-created_at")
+            .first()
+        )
+
+        if not latest_report:
+            return []
+
+        return [{
+            "id": latest_report.id,
+            "template_name": latest_report.template.name if latest_report.template else None,
+            "pdf_url": request.build_absolute_uri(latest_report.pdf_url) if request else latest_report.pdf_url,
+            "created_at": latest_report.created_at
+        }]
     # -------------------------
     #   Create
     # -------------------------
