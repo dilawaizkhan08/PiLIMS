@@ -876,6 +876,8 @@ class SampleFormSubmitView(APIView):
             "entries": all_entries
         }, status=status.HTTP_201_CREATED)
 
+
+
 from django.db.models import Q
 from .utility import generate_report
 class DynamicSampleFormEntryViewSet(viewsets.ModelViewSet):
@@ -4479,12 +4481,10 @@ class DocumentUploadView(APIView):
         return Response({"attachment": path}, status=status.HTTP_201_CREATED)
 
 
-
 class IncomingMaterialSampleInspectionViewSet(viewsets.ModelViewSet):
     queryset = models.IncomingMaterialSampleInspection.objects.all()
     serializer_class = IncomingMaterialSampleInspectionSerializer
     pagination_class = CustomPageNumberPagination
-
 
     @action(detail=True, methods=['patch'], url_path='update-acceptance')
     def update_acceptance(self, request, pk=None):
@@ -4524,11 +4524,18 @@ class IncomingMaterialSampleInspectionViewSet(viewsets.ModelViewSet):
             instance.decision = decision
             instance.save(update_fields=['decision', 'accepted_quantity'])
 
+            sample_id = None
+
+            if decision in ['accepted', 'partial']:
+                sample_id = self.create_sample_from_inspection(instance, request.user)
+
             return Response({
-                "message": "Inspection decision updated successfully",
+                "message": "Inspection decision updated successfully"
+                           + (f". Sample created with ID {sample_id}" if sample_id else ""),
                 "inspection_sheet_no": instance.inspection_sheet_no,
                 "decision": instance.decision,
-                "accepted_quantity": instance.accepted_quantity
+                "accepted_quantity": instance.accepted_quantity,
+                "sample_id": sample_id
             })
 
         except Exception as e:
@@ -4536,3 +4543,79 @@ class IncomingMaterialSampleInspectionViewSet(viewsets.ModelViewSet):
                 {"error": str(e)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+
+    # =====================================================
+    # SAMPLE CREATION
+    # =====================================================
+    def create_sample_from_inspection(self, inspection, user):
+        try:
+            sample_form = models.SampleForm.objects.get(
+                sample_name__iexact="beyti sample"
+            )
+
+            entry = models.DynamicFormEntry.objects.create(
+                form=sample_form,
+                data={},
+                logged_by=user
+            )
+
+            clean_data = {}
+            auto_analysis_ids = set()
+
+            product = inspection.material
+
+            for field in sample_form.fields.all():
+
+                # 🔹 PRODUCT FIELD
+                if (
+                    field.field_property == "link_to_table"
+                    and field.link_to_table == "app_product"
+                ):
+                    product_id = product.id if product else None
+                    clean_data[field.field_name] = product_id
+
+                    if product_id:
+                        product_analysis_ids = (
+                            models.ProductSamplingGradeAnalysis.objects
+                            .filter(product_sampling_grade__product_id=product_id)
+                            .values_list("analysis_id", flat=True)
+                            .distinct()
+                        )
+                        auto_analysis_ids.update(product_analysis_ids)
+
+                # 🔹 PRODUCT TYPE
+                elif field.field_name.strip().lower() == "product type":
+                    clean_data[field.field_name] = "RAW_MATERIALS"
+
+                # 🔹 DEFAULT
+                else:
+                    clean_data[field.field_name] = None
+
+            # -------------------------
+            # ATTACH ANALYSES
+            # -------------------------
+            if auto_analysis_ids:
+                entry.analyses.set(
+                    models.Analysis.objects.filter(id__in=auto_analysis_ids)
+                )
+                create_entry_analyses(entry, auto_analysis_ids)
+
+            # -------------------------
+            # SAVE ENTRY
+            # -------------------------
+            entry.data = clean_data
+            entry.save()
+
+            return entry.id  # ✅ return sample id
+
+        except models.SampleForm.DoesNotExist:
+            print("❌ 'beyti sample' form not found")
+            return None
+
+        except Exception as e:
+            print(f"❌ Sample creation failed: {str(e)}")
+            return None
+
+
+
+
