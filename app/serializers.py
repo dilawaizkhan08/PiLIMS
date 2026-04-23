@@ -1555,7 +1555,6 @@ class DynamicFormEntrySerializer(serializers.ModelSerializer):
 
 
 class SampleComponentSerializer(serializers.ModelSerializer):
-    # Optional overrides for related objects
     unit_id = serializers.PrimaryKeyRelatedField(
         queryset=models.Unit.objects.all(),
         source="unit",
@@ -1572,14 +1571,17 @@ class SampleComponentSerializer(serializers.ModelSerializer):
     )
     component_name = serializers.CharField(source="component.name", read_only=True)
 
-    # ✅ NEW FIELD
     default_result = serializers.CharField(
         required=False,
         allow_null=True,
         allow_blank=True
     )
 
-    type = serializers.ChoiceField(choices=choices.ComponentTypes.choices, required=False, allow_null=True)
+    type = serializers.ChoiceField(
+        choices=choices.ComponentTypes.choices,
+        required=False,
+        allow_null=True
+    )
 
     function_id = serializers.PrimaryKeyRelatedField(
         queryset=models.CustomFunction.objects.all(),
@@ -1621,9 +1623,10 @@ class SampleComponentSerializer(serializers.ModelSerializer):
             "function_id",
             "function",
             "parameters",
-            "default_result",  # ✅ added here
+            "default_result",
         ]
 
+    # ---------------- VALIDATION ----------------
     def validate(self, attrs):
         comp_obj = attrs.get("component") or getattr(self.instance, "component", None)
 
@@ -1646,116 +1649,102 @@ class SampleComponentSerializer(serializers.ModelSerializer):
                 invalid = [val for val in spec_limits if val not in allowed_values]
                 if invalid:
                     raise serializers.ValidationError({
-                        "spec_limits": f"Invalid values for list '{list_obj.name}': {', '.join(invalid)}"
+                        "spec_limits": f"Invalid values: {', '.join(invalid)}"
                     })
 
         return attrs
 
+    # ---------------- CREATE ----------------
     def create(self, validated_data):
         parameters_data = self.initial_data.get("parameters", [])
 
-        # ✅ Save default_result from payload
-        default_result = validated_data.get("default_result", None)
+        instance = models.SampleComponent.objects.create(**validated_data)
 
-        sample_component = models.SampleComponent.objects.create(
-            **validated_data,
-            default_result=default_result
+        if instance.calculated and instance.custom_function:
+            self._handle_parameters(instance, parameters_data)
+
+        return instance
+
+    # ---------------- UPDATE ----------------
+    def update(self, instance, validated_data):
+        parameters_data = self.initial_data.get("parameters", [])
+
+        instance.default_result = validated_data.get(
+            "default_result",
+            instance.default_result
         )
 
-        if sample_component.calculated and sample_component.custom_function:
-            expected_vars = set(sample_component.custom_function.variables)
-            provided_vars = {p["parameter"] for p in parameters_data}
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
 
-            missing = expected_vars - provided_vars
-            if missing:
-                raise serializers.ValidationError(
-                    {"parameters": f"Missing mappings for variables: {', '.join(missing)}"}
-                )
+        instance.save()
 
-            extra = provided_vars - expected_vars
-            if extra:
-                raise serializers.ValidationError(
-                    {"parameters": f"Unexpected variables: {', '.join(extra)}"}
-                )
+        if instance.calculated and instance.custom_function:
+            self._handle_parameters(instance, parameters_data, update=True)
 
-            for param in parameters_data:
-                var_name = param["parameter"]
-                mapped_id = param["mapped_sample_component"]
+        return instance
 
-                try:
-                    mapped_component = models.SampleComponent.objects.get(id=mapped_id)
-                except models.SampleComponent.DoesNotExist:
-                    raise serializers.ValidationError(
-                        {"parameters": f"SampleComponent {mapped_id} not found"}
-                    )
+    # ---------------- CORE PARAM HANDLER ----------------
+    def _handle_parameters(self, instance, parameters_data, update=False):
+        existing_params = {
+            p.parameter: p for p in instance.function_parameters.all()
+        }
 
+        expected_vars = set(instance.custom_function.variables)
+        provided_vars = {p.get("parameter") for p in parameters_data}
+
+        missing = expected_vars - provided_vars
+        if missing:
+            raise serializers.ValidationError({
+                "parameters": f"Missing mappings: {', '.join(missing)}"
+            })
+
+        extra = provided_vars - expected_vars
+        if extra:
+            raise serializers.ValidationError({
+                "parameters": f"Unexpected variables: {', '.join(extra)}"
+            })
+
+        for param in parameters_data:
+            var_name = param.get("parameter")
+            mapped_id = param.get("mapped_sample_component")
+
+            if not var_name:
+                raise serializers.ValidationError({
+                    "parameters": "Each parameter must include 'parameter'"
+                })
+
+            if mapped_id is None:
+                raise serializers.ValidationError({
+                    "parameters": f"Missing mapped_sample_component for '{var_name}'"
+                })
+
+            try:
+                mapped_component = models.SampleComponent.objects.get(id=mapped_id)
+            except models.SampleComponent.DoesNotExist:
+                raise serializers.ValidationError({
+                    "parameters": f"SampleComponent {mapped_id} not found"
+                })
+
+            if update and var_name in existing_params:
+                fp = existing_params[var_name]
+                fp.mapped_sample_component = mapped_component
+                fp.save()
+            else:
                 models.SampleComponentFunctionParameter.objects.create(
-                    sample_component=sample_component,
+                    sample_component=instance,
                     parameter=var_name,
                     mapped_sample_component=mapped_component
                 )
 
-        return sample_component
-
-    def update(self, instance, validated_data):
-        parameters_data = self.initial_data.get("parameters", [])
-
-        # ✅ Update default_result
-        instance.default_result = validated_data.get("default_result", instance.default_result)
-
-        # Update regular fields
-        for attr, value in validated_data.items():
-            setattr(instance, attr, value)
-        instance.save()
-
-        if instance.calculated and instance.custom_function and parameters_data:
-            existing_params = {p.parameter: p for p in instance.function_parameters.all()}
-
-            expected_vars = set(instance.custom_function.variables)
-            provided_vars = {p["parameter"] for p in parameters_data}
-
-            missing = expected_vars - provided_vars
-            if missing:
-                raise serializers.ValidationError(
-                    {"parameters": f"Missing mappings for variables: {', '.join(missing)}"}
-                )
-
-            extra = provided_vars - expected_vars
-            if extra:
-                raise serializers.ValidationError(
-                    {"parameters": f"Unexpected variables: {', '.join(extra)}"}
-                )
-
-            for param in parameters_data:
-                var_name = param["parameter"]
-                mapped_id = param["mapped_sample_component"]
-
-                try:
-                    mapped_component = models.SampleComponent.objects.get(id=mapped_id)
-                except models.SampleComponent.DoesNotExist:
-                    raise serializers.ValidationError(
-                        {"parameters": f"SampleComponent {mapped_id} not found"}
-                    )
-
-                if var_name in existing_params:
-                    fp = existing_params[var_name]
-                    fp.mapped_sample_component = mapped_component
-                    fp.save()
-                else:
-                    models.SampleComponentFunctionParameter.objects.create(
-                        sample_component=instance,
-                        parameter=var_name,
-                        mapped_sample_component=mapped_component
-                    )
-
-        return instance
-
+    # ---------------- RESPONSE ----------------
     def get_parameters(self, obj):
         if obj.calculated and obj.custom_function:
             var_order = obj.custom_function.variables
             mapping = {p.parameter: p for p in obj.function_parameters.all()}
 
             result = []
+
             for var_name in var_order:
                 param_obj = mapping.get(var_name)
 
@@ -1782,12 +1771,11 @@ class SampleComponentSerializer(serializers.ModelSerializer):
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
-        # ✅ Include default_result fallback from parent Component if empty
+
         if not data.get("default_result") and instance.component:
             data["default_result"] = instance.component.default_result
+
         return data
-
-
 class FileOrURLField(serializers.Field):
     def to_internal_value(self, data):
         # Case 1: Actual file upload (InMemoryUploadedFile, TemporaryUploadedFile)
