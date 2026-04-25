@@ -28,7 +28,7 @@ class BaseModel(models.Model):
 
 
 class User(AbstractUser, BaseModel):
-    username = models.CharField(max_length=150, unique=True, null=False, blank=False)
+    username = models.CharField(max_length=150, unique=True, null=True, blank=True)
     email = models.EmailField(_("Email"), unique=True, null=False, blank=False)
     password = models.CharField(max_length=128, null=False, blank=False)
     name = models.CharField(_("Full Name"), max_length=255, null=False, blank=False)

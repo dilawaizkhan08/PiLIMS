@@ -110,30 +110,40 @@ class RoleSerializer(serializers.ModelSerializer):
 
         return instance
 
-
+import uuid
 class UserSerializer(serializers.ModelSerializer):
-    password = serializers.CharField(write_only=True, required=True, validators=[validate_password])
+    password = serializers.CharField(
+        write_only=True,
+        required=True,
+        validators=[dj_validate_password]
+    )
+
     last_login = serializers.DateTimeField(read_only=True)
 
-    # roles = serializers.StringRelatedField(many=True, read_only=True)
+    username = serializers.CharField(
+        required=False,
+        allow_null=True,
+        allow_blank=True
+    )
+
     user_groups = serializers.StringRelatedField(many=True, read_only=True)
     roles = RoleSerializer(many=True, read_only=True)
-    
 
     class Meta:
         model = models.User
         fields = '__all__'
         read_only_fields = ["groups", "roles", "user_groups"]
 
-
     def create(self, validated_data):
         request = self.context.get('request')
 
-        # Remove fields not allowed in **kwargs
         validated_data.pop("groups", None)
-        # validated_data.pop("user_permissions", None)
 
         password = validated_data.pop("password")
+
+  
+        if not validated_data.get("username"):
+            validated_data["username"] = f"user_{uuid.uuid4().hex[:10]}"
 
         user = models.User(**validated_data)
         user.set_password(password)
@@ -144,11 +154,15 @@ class UserSerializer(serializers.ModelSerializer):
         user.save()
         return user
 
+
     def update(self, instance, validated_data):
         validated_data.pop("groups", None)
-        # validated_data.pop("user_permissions", None)
 
         password = validated_data.pop('password', None)
+
+        username = validated_data.get("username")
+        if username == "" or username is None:
+            validated_data["username"] = instance.username or f"user_{uuid.uuid4().hex[:10]}"
 
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
@@ -159,9 +173,10 @@ class UserSerializer(serializers.ModelSerializer):
         instance.save()
         return instance
 
-    # ---------------- VALIDATIONS ----------------
-
     def validate_username(self, value):
+        if not value:
+            return value
+
         user_id = self.instance.id if self.instance else None
         if models.User.objects.filter(username=value).exclude(id=user_id).exists():
             raise serializers.ValidationError("This username is already taken.")
@@ -212,7 +227,6 @@ class UserSerializer(serializers.ModelSerializer):
             except phonenumbers.NumberParseException:
                 raise serializers.ValidationError("Invalid phone number format.")
         return value
-
 
 
 class UserProfileSerializer(serializers.ModelSerializer):
@@ -1690,34 +1704,45 @@ class SampleComponentSerializer(serializers.ModelSerializer):
             p.parameter: p for p in instance.function_parameters.all()
         }
 
-        expected_vars = set(instance.custom_function.variables)
-        provided_vars = {p.get("parameter") for p in parameters_data}
+        provided_vars = {
+            p.get("parameter")
+            for p in parameters_data
+            if p.get("parameter") is not None
+        }
 
-        missing = expected_vars - provided_vars
-        if missing:
-            raise serializers.ValidationError({
-                "parameters": f"Missing mappings: {', '.join(missing)}"
-            })
+        # ✅ STRICT validation only on CREATE
+        if not update:
+            expected_vars = set(instance.custom_function.variables)
 
-        extra = provided_vars - expected_vars
-        if extra:
-            raise serializers.ValidationError({
-                "parameters": f"Unexpected variables: {', '.join(extra)}"
-            })
+            missing = expected_vars - provided_vars
+            if missing:
+                raise serializers.ValidationError({
+                    "parameters": f"Missing mappings: {', '.join(missing)}"
+                })
+
+            extra = provided_vars - expected_vars
+            if extra:
+                raise serializers.ValidationError({
+                    "parameters": f"Unexpected variables: {', '.join(extra)}"
+                })
 
         for param in parameters_data:
             var_name = param.get("parameter")
-            mapped_id = param.get("mapped_sample_component")
+
+            # ✅ SUPPORT BOTH payload formats
+            mapped_id = (
+                param.get("mapped_sample_component")
+                or param.get("component")
+            )
 
             if not var_name:
                 raise serializers.ValidationError({
                     "parameters": "Each parameter must include 'parameter'"
                 })
 
+            # ✅ PATCH flexibility
             if mapped_id is None:
-                raise serializers.ValidationError({
-                    "parameters": f"Missing mapped_sample_component for '{var_name}'"
-                })
+                continue
 
             try:
                 mapped_component = models.SampleComponent.objects.get(id=mapped_id)
@@ -1737,6 +1762,13 @@ class SampleComponentSerializer(serializers.ModelSerializer):
                     mapped_sample_component=mapped_component
                 )
 
+        # ✅ OPTIONAL: delete removed params (sync behavior)
+        if update:
+            incoming_vars = set(provided_vars)
+            for var in list(existing_params.keys()):
+                if var not in incoming_vars:
+                    existing_params[var].delete()
+
     # ---------------- RESPONSE ----------------
     def get_parameters(self, obj):
         if obj.calculated and obj.custom_function:
@@ -1751,7 +1783,7 @@ class SampleComponentSerializer(serializers.ModelSerializer):
                 if not param_obj:
                     result.append({
                         "parameter": var_name,
-                        "mapped_sample_component": None
+                        "component": None
                     })
                     continue
 
@@ -1759,7 +1791,7 @@ class SampleComponentSerializer(serializers.ModelSerializer):
 
                 result.append({
                     "parameter": var_name,
-                    "mapped_sample_component": {
+                    "component": {
                         "id": mapped.id,
                         "name": mapped.name or mapped.component.name,
                     }
@@ -1776,6 +1808,7 @@ class SampleComponentSerializer(serializers.ModelSerializer):
             data["default_result"] = instance.component.default_result
 
         return data
+
 class FileOrURLField(serializers.Field):
     def to_internal_value(self, data):
         # Case 1: Actual file upload (InMemoryUploadedFile, TemporaryUploadedFile)
