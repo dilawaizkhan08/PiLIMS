@@ -159,9 +159,9 @@ class LoginView(views.APIView):
 class UserViewSet(TrackUserMixin, viewsets.ModelViewSet):
     serializer_class = UserSerializer
     permission_classes = [IsAuthenticated,HasModulePermission]
-    filter_backends = [SearchFilter, DjangoFilterBackend, GenericSearchFilter]
-    search_fields = ['email', 'name']
-    filterset_fields = ['is_active', 'role']
+    # filter_backends = [SearchFilter, DjangoFilterBackend, GenericSearchFilter]
+    # search_fields = ['email', 'name']
+    # filterset_fields = ['is_active', 'role']
     pagination_class = CustomPageNumberPagination
 
     def get_queryset(self):
@@ -3422,204 +3422,6 @@ class AnalyticsAPIView(APIView):
 
 
 
-
-from calendar import month_name
-from django.db.models import Count, Q
-from django.utils.timezone import now
-
-class DashboardAPIView(APIView):
-
-    def get(self, request):
-        today = now().date()
-        current_year = today.year
-        current_month = today.month
-
-        # ====== FILTER PARAMETERS ======
-        date_filter = request.query_params.get("date_filter")  # "day", "month", "year", or "range"
-        start_date_str = request.query_params.get("start_date")
-        end_date_str = request.query_params.get("end_date")
-        module_name = request.query_params.get("module_name")  # "analysis", "product", "sample", "reports"
-
-        # Default filter: current year
-        start_date = datetime(current_year, 1, 1)
-        end_date = datetime(current_year, 12, 31, 23, 59, 59)
-
-        if date_filter == "day":
-            start_date = datetime.combine(today, datetime.min.time())
-            end_date = datetime.combine(today, datetime.max.time())
-        elif date_filter == "month":
-            start_date = datetime(current_year, current_month, 1)
-            if current_month == 12:
-                end_date = datetime(current_year, 12, 31, 23, 59, 59)
-            else:
-                end_date = datetime(current_year, current_month + 1, 1) - timedelta(seconds=1)
-        elif date_filter == "range" and start_date_str and end_date_str:
-            start_date = datetime.fromisoformat(start_date_str)
-            end_date = datetime.fromisoformat(end_date_str)
-
-        # Helper to apply date filter
-        def apply_date_filter(queryset):
-            return queryset.filter(created_at__gte=start_date, created_at__lte=end_date)
-
-        # Helper to format monthly data
-        def format_monthly_data(queryset):
-            data = {month_name[item['month'].month]: item['count'] for item in queryset}
-            return {month_name[i]: data.get(month_name[i], 0) for i in range(1, 13)}
-
-        response_data = {}
-
-        # =========================
-        # ANALYSIS
-        # =========================
-        if module_name in (None, "analysis"):
-            analysis_qs = apply_date_filter(models.Analysis.objects.all())
-            analysis_monthly_qs = (
-                analysis_qs
-                .annotate(month=TruncMonth("created_at"))
-                .values("month")
-                .annotate(count=Count("id"))
-                .order_by("month")
-            )
-            analysis_monthly = format_monthly_data(analysis_monthly_qs)
-
-            analysis_prep_stats = {
-                "with_prep": analysis_qs.filter(prep__isnull=False).count(),
-                "without_prep": analysis_qs.filter(prep__isnull=True).count(),
-            }
-
-            analysis_training_stats = {
-                "with_training": analysis_qs.filter(trainings__isnull=False).count(),
-                "without_training": analysis_qs.filter(trainings__isnull=True).count(),
-            }
-
-            response_data["analysis"] = {
-                "monthly": analysis_monthly,
-                "prep_stats": analysis_prep_stats,
-                "training_stats": analysis_training_stats,
-            }
-
-        # =========================
-        # TRAINING
-        # =========================
-        if module_name in (None, "training"):
-            training_qs = apply_date_filter(models.Training.objects.all())
-            training_count = training_qs.count()
-            response_data["training"] = {
-                "total_count": training_count,
-            }
-
-        # =========================
-        # PREPARATION
-        # =========================
-        if module_name in (None, "preparation"):
-            preparation_qs = apply_date_filter(models.Preparation.objects.all())
-            preparation_count = preparation_qs.count()
-            response_data["preparation"] = {
-                "total_count": preparation_count,
-            }
-
-        # =========================
-        # PRODUCT
-        # =========================
-        if module_name in (None, "product"):
-            product_qs = apply_date_filter(models.Product.objects.all())
-            product_monthly_qs = (
-                product_qs
-                .annotate(month=TruncMonth("created_at"))
-                .values("month")
-                .annotate(count=Count("id"))
-                .order_by("month")
-            )
-            product_monthly = format_monthly_data(product_monthly_qs)
-
-            product_type_count = (
-                product_qs
-                .values("product_type")
-                .annotate(count=Count("id"))
-            )
-
-            product_sampling_grade = (
-                models.ProductSamplingGrade.objects
-                .values("grade__name")
-                .annotate(count=Count("product", distinct=True))
-            )
-
-            response_data["product"] = {
-                "monthly": product_monthly,
-                "type_count": product_type_count,
-                "sampling_grade": product_sampling_grade,
-            }
-
-        # =========================
-        # SAMPLE
-        # =========================
-        if module_name in (None, "sample"):
-            sample_qs = apply_date_filter(models.DynamicFormEntry.objects.all())
-
-            sample_status = (
-                sample_qs
-                .values("status")
-                .annotate(count=Count("id"))
-            )
-
-            sample_monthly_qs = (
-                sample_qs
-                .annotate(month=TruncMonth("created_at"))
-                .values("month")
-                .annotate(count=Count("id"))
-                .order_by("month")
-            )
-            sample_monthly = format_monthly_data(sample_monthly_qs)
-
-            form_usage = (
-                sample_qs
-                .values("form__sample_name")
-                .annotate(count=Count("id"))
-            )
-
-            followup_stats = {
-                "followup": sample_qs.filter(is_followup=True).count(),
-                "normal": sample_qs.filter(is_followup=False).count(),
-            }
-
-            response_data["sample"] = {
-                "status": sample_status,
-                "monthly": sample_monthly,
-                "form_usage": form_usage,
-                "followup": followup_stats,
-            }
-
-        # =========================
-        # REPORTS
-        # =========================
-        if module_name in (None, "reports"):
-            reports_qs = apply_date_filter(models.GeneratedReport.objects.all())
-            reports_monthly_qs = (
-                reports_qs
-                .annotate(month=TruncMonth("created_at"))
-                .values("month")
-                .annotate(count=Count("id"))
-                .order_by("month")
-            )
-            reports_monthly = format_monthly_data(reports_monthly_qs)
-
-            reports_by_template = (
-                reports_qs
-                .annotate(month=TruncMonth("created_at"))
-                .values("month", "template__name")
-                .annotate(count=Count("id"))
-                .order_by("month")
-            )
-            for item in reports_by_template:
-                item['month'] = month_name[item['month'].month]
-
-            response_data["reports"] = {
-                "monthly": reports_monthly,
-                "by_template": list(reports_by_template),
-            }
-
-        return Response(response_data)
-
 @method_decorator(csrf_exempt, name='dispatch')
 class QueryReportTemplateCreateView(APIView):
 
@@ -3685,13 +3487,10 @@ class QueryReportTemplateCreateView(APIView):
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 from django.core.mail import EmailMessage
+
 class QueryReportRenderView(APIView):
     """
     GET /api/reports/render/?template_id=&sample_id=&download=true
-    → Executes SQL with sample_id = DynamicFormEntry.id
-    → Renders SQL result in Jinja2 HTML + CSS → PDF
-    → Saves PDF URL in GeneratedReport model
-    → Sends PDF by email if sample is completed
     """
 
     def get(self, request):
@@ -3711,13 +3510,13 @@ class QueryReportRenderView(APIView):
         except models.QueryReportTemplate.DoesNotExist:
             return Response({"error": "Template not found"}, status=status.HTTP_404_NOT_FOUND)
 
-        # 2️⃣ Check if DynamicFormEntry exists
+        # 2️⃣ Check entry
         try:
             entry = models.DynamicFormEntry.objects.get(id=sample_id)
         except models.DynamicFormEntry.DoesNotExist:
             return Response({"error": f"DynamicFormEntry {sample_id} not found"}, status=status.HTTP_404_NOT_FOUND)
 
-        # 3️⃣ Execute SQL query (pass sample_id to it)
+        # 3️⃣ Execute SQL
         try:
             params = {"sample_id": int(sample_id)}
             result = self.execute_query(template_obj.sql_query, params)
@@ -3726,7 +3525,7 @@ class QueryReportRenderView(APIView):
         except Exception as e:
             return Response({"error": f"SQL execution failed: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        # 4️⃣ Parse JSON field from SQL result
+        # 4️⃣ Parse JSON
         if "data" in result[0]:
             try:
                 parsed_data = json.loads(result[0]["data"])
@@ -3735,7 +3534,7 @@ class QueryReportRenderView(APIView):
         else:
             parsed_data = {}
 
-        # 5️⃣ Prepare context for Jinja2
+        # 5️⃣ Context
         context_data = {
             "rows": result,
             "entry": entry,
@@ -3744,7 +3543,7 @@ class QueryReportRenderView(APIView):
             "created_at": entry.created_at
         }
 
-        # 5️⃣a Generate QR code for this sample
+        # 5️⃣a QR code generate
         qr_url = f"{settings.FRONTEND_BASE_URL}/sample-details/{sample_id}"
         qr = qrcode.QRCode(box_size=3, border=1)
         qr.add_data(qr_url)
@@ -3759,24 +3558,52 @@ class QueryReportRenderView(APIView):
         context_data["qr_code"] = f"data:image/png;base64,{qr_base64}"
         context_data["sample_url"] = qr_url
 
-        # 6️⃣ Render HTML with Jinja2
+        # 6️⃣ Render HTML
         jinja_template = JinjaTemplate(template_obj.jinja_html_content)
         rendered_html = jinja_template.render(context_data)
 
-        # 7️⃣ Add CSS
+        # 7️⃣ CSS (UPDATED)
         default_css = """
         @page { size: A4; margin: 10mm; }
+
         body { font-family: Arial, sans-serif; margin: 10px; }
+
         table { width: 100%; border-collapse: collapse; }
-        th, td { border: 1px solid #000; padding: 6px; text-align: left; font-size: 12px; }
+
+        th, td {
+            border: 1px solid #000;
+            padding: 6px;
+            text-align: left;
+            font-size: 12px;
+        }
+
         th { background-color: #f2f2f2; }
-        .qr-code { position: absolute; top: 10px; right: 10px; width: 80px; height: 80px; }
+
+        /* ✅ QR FOOTER CENTER SMALL */
+        .qr-footer {
+            position: fixed;
+            bottom: 8px;
+            left: 0;
+            right: 0;
+            text-align: center;
+        }
+
+        .qr-footer img {
+            width: 40px;
+            height: 40px;
+        }
         """
+
         combined_css = f"{default_css}\n{template_obj.css_content or ''}"
 
-        # 7️⃣a Inject QR code at top-right
-        qr_html = f'<img class="qr-code" src="{context_data["qr_code"]}" alt="Sample QR">'
-        rendered_html = qr_html + rendered_html
+        # 7️⃣a Inject QR at footer (UPDATED)
+        qr_html = f"""
+        <div class="qr-footer">
+            <img src="{context_data["qr_code"]}" alt="QR Code">
+        </div>
+        """
+
+        rendered_html = rendered_html + qr_html
 
         # 8️⃣ Generate PDF
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_pdf:
@@ -3787,22 +3614,24 @@ class QueryReportRenderView(APIView):
             stylesheets=[CSS(string=combined_css)]
         )
 
-        # 8️⃣a Save PDF to media folder
+        # 8️⃣a Save PDF
         with open(temp_path, "rb") as f:
             file_content = ContentFile(f.read())
+
         pdf_filename = f"report_entry_{sample_id}.pdf"
         pdf_path = default_storage.save(f"reports/{pdf_filename}", file_content)
         pdf_url = default_storage.url(pdf_path)
+
         os.remove(temp_path)
 
-        # 8️⃣b Save GeneratedReport record
+        # 8️⃣b Save record
         models.GeneratedReport.objects.create(
             sample=entry,
             template=template_obj,
             pdf_url=pdf_url
         )
 
-        # 8️⃣c Send PDF to sample creator if completed
+        # 8️⃣c Send email
         if entry.status == "completed" and entry.logged_by and entry.logged_by.email:
             try:
                 subject = f"Report for Sample {entry.sample_text_id}"
@@ -3821,39 +3650,36 @@ class QueryReportRenderView(APIView):
                     to=[entry.logged_by.email],
                 )
 
-                # Attach PDF
                 with default_storage.open(pdf_path, "rb") as f:
                     email.attach(f"report_{entry.sample_text_id}.pdf", f.read(), "application/pdf")
 
-
                 email.send(fail_silently=False)
+
             except Exception as e:
                 print(f"Failed to send email: {e}")
 
-        # 9️⃣ Return PDF response
+        # 9️⃣ Return PDF
         with default_storage.open(pdf_path, "rb") as f:
             pdf_bytes = f.read()
 
         response = HttpResponse(pdf_bytes, content_type="application/pdf")
         filename = f"report_entry_{sample_id}.pdf"
+
         response["Content-Disposition"] = (
-            f'attachment; filename="{filename}"' if download else f'inline; filename="{filename}"'
+            f'attachment; filename="{filename}"'
+            if download else f'inline; filename="{filename}"'
         )
+
         return response
 
-    # -----------------------------------
-    # Helper: Execute SQL safely
-    # -----------------------------------
+    # Helper
     def execute_query(self, sql_query, params):
-        """
-        Execute user-defined SQL safely.
-        SQL must include placeholders like %(sample_id)s
-        """
         with connection.cursor() as cursor:
             cursor.execute(sql_query, params)
             columns = [col[0] for col in cursor.description]
             rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
         return rows
+    
 
 class DatabaseStructureView(APIView):
     def get(self, request):
@@ -4485,6 +4311,7 @@ class IncomingMaterialSampleInspectionViewSet(viewsets.ModelViewSet):
     queryset = models.IncomingMaterialSampleInspection.objects.all()
     serializer_class = IncomingMaterialSampleInspectionSerializer
     pagination_class = CustomPageNumberPagination
+    permission_classes = [IsAuthenticated, HasModulePermission]
 
     @action(detail=True, methods=['patch'], url_path='update-acceptance')
     def update_acceptance(self, request, pk=None):
@@ -4618,4 +4445,94 @@ class IncomingMaterialSampleInspectionViewSet(viewsets.ModelViewSet):
 
 
 
+class ControlChartFilteredAPIView(APIView):
+
+    def get(self, request):
+
+        product_type = request.GET.get("product_type")
+        product_id = request.GET.get("product_id")
+        analysis_id = request.GET.get("analysis_id")
+        component_id = request.GET.get("component_id")
+
+        products = models.Product.objects.all()
+
+        if product_type:
+            products = products.filter(product_type=product_type)
+
+        if product_id:
+            products = products.filter(id=product_id)
+
+        if not products.exists():
+            return Response({"detail": "No products found"}, status=404)
+
+        analyses = models.Analysis.objects.filter(
+            id__in=models.ProductSamplingGradeAnalysis.objects.filter(
+                product_sampling_grade__product__in=products
+            ).values_list("analysis_id", flat=True)
+        ).distinct()
+
+        if analysis_id:
+            analyses = analyses.filter(id=analysis_id)
+
+        if not analyses.exists():
+            return Response({"detail": "No analysis found"}, status=404)
+
+        sample_components = models.SampleComponent.objects.filter(
+            entry_analysis__analysis__in=analyses
+        ).select_related("component")
+
+        if component_id:
+            sample_components = sample_components.filter(component_id=component_id)
+
+        if not sample_components.exists():
+            return Response({"detail": "No sample components found"}, status=404)
+
+        # =========================
+        # 🔥 GROUP BY COMPONENT
+        # =========================
+        grouped = {}
+
+        for sc in sample_components:
+
+            comp_id = sc.component_id
+            comp_name = sc.component.name if sc.component else None
+
+            if comp_id not in grouped:
+                grouped[comp_id] = {
+                    "component_id": comp_id,
+                    "component_name": comp_name,
+                    "sample_component_ids": [],
+                    "labels": [],
+                    "values": [],
+                    "min_line": [],
+                    "max_line": [],
+                }
+
+            results = models.ComponentResult.objects.filter(
+                sample_component=sc,
+                numeric_value__isnull=False
+            ).order_by("created_at")
+
+            for r in results:
+                grouped[comp_id]["sample_component_ids"].append(sc.id)
+                grouped[comp_id]["labels"].append(r.created_at)
+                grouped[comp_id]["values"].append(r.numeric_value)
+
+                grouped[comp_id]["min_line"].append(
+                    sc.minimum if sc.minimum is not None else sc.component.minimum
+                )
+
+                grouped[comp_id]["max_line"].append(
+                    sc.maximum if sc.maximum is not None else sc.component.maximum
+                )
+
+        return Response({
+            "filters": {
+                "product_type": product_type,
+                "product_id": product_id,
+                "analysis_id": analysis_id,
+                "component_id": component_id,
+            },
+            "components": list(grouped.values())
+        })    
 
