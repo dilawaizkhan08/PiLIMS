@@ -3562,38 +3562,35 @@ class QueryReportRenderView(APIView):
         jinja_template = JinjaTemplate(template_obj.jinja_html_content)
         rendered_html = jinja_template.render(context_data)
 
-        # 7️⃣ CSS (UPDATED)
         default_css = """
-        @page { size: A4; margin: 10mm; }
+            @page { size: A4; margin: 10mm; }
 
-        body { font-family: Arial, sans-serif; margin: 10px; }
+            body { font-family: Arial, sans-serif; margin: 10px; }
 
-        table { width: 100%; border-collapse: collapse; }
+            table { width: 100%; border-collapse: collapse; }
 
-        th, td {
-            border: 1px solid #000;
-            padding: 6px;
-            text-align: left;
-            font-size: 12px;
-        }
+            th, td {
+                border: 1px solid #000;
+                padding: 6px;
+                text-align: left;
+                font-size: 12px;
+            }
 
-        th { background-color: #f2f2f2; }
+            th { background-color: #f2f2f2; }
 
-        /* ✅ QR FOOTER CENTER SMALL */
-        .qr-footer {
-            position: fixed;
-            bottom: 8px;
-            left: 0;
-            right: 0;
-            text-align: center;
-        }
+            
+            .qr-footer {
+                position: fixed;
+                bottom: 2px;          
+                left: 55%;           
+                transform: translateX(-50%);
+            }
 
-        .qr-footer img {
-            width: 40px;
-            height: 40px;
-        }
-        """
-
+            .qr-footer img {
+                width: 40px;
+                height: 40px;
+            }
+            """
         combined_css = f"{default_css}\n{template_obj.css_content or ''}"
 
         # 7️⃣a Inject QR at footer (UPDATED)
