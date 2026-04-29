@@ -3578,17 +3578,16 @@ class QueryReportRenderView(APIView):
 
             th { background-color: #f2f2f2; }
 
-            
+            /* ✅ QR bottom-right exact corner */
             .qr-footer {
                 position: fixed;
-                bottom: 2px;          
-                left: 55%;           
-                transform: translateX(-50%);
+                bottom: 0px;     /* bilkul bottom */
+                right: 0px;      /* bilkul right */
             }
 
             .qr-footer img {
-                width: 40px;
-                height: 40px;
+                width: 35px;
+                height: 35px;
             }
             """
         combined_css = f"{default_css}\n{template_obj.css_content or ''}"
