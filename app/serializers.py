@@ -382,25 +382,59 @@ class CustomFunctionSerializer(serializers.ModelSerializer):
 
 class TestMethodSerializer(serializers.ModelSerializer):
     user_groups = UserGroupSerializer(many=True, read_only=True)
+
     user_groups_ids = serializers.PrimaryKeyRelatedField(
-        many=True, queryset=models.UserGroup.objects.all(), write_only=True, required=False
+        many=True,
+        queryset=models.UserGroup.objects.all(),
+        write_only=True,
+        required=False
     )
+
+    attachment = serializers.FileField(required=False, allow_null=True)
 
     class Meta:
         model = models.TestMethod
-        fields = ['id', 'name', 'description', 'user_groups', 'user_groups_ids']
+        fields = [
+            'id',
+            'name',
+            'description',
+            'user_groups',
+            'user_groups_ids',
+            'attachment'
+        ]
 
     def create(self, validated_data):
         user_groups = validated_data.pop('user_groups_ids', [])
-        test_method = super().create(validated_data)
-        test_method.user_groups.set(user_groups)  # set M2M relationship
+        attachment = validated_data.pop('attachment', None)
+
+        test_method = models.TestMethod.objects.create(**validated_data)
+
+        if attachment:
+            test_method.attachment = attachment
+            test_method.save()
+
+        if user_groups:
+            test_method.user_groups.set(user_groups)
+
         return test_method
+
 
     def update(self, instance, validated_data):
         user_groups = validated_data.pop('user_groups_ids', None)
+        attachment = validated_data.pop('attachment', None)
+
+        # update normal fields
         instance = super().update(instance, validated_data)
+
+        # update attachment (replace if provided)
+        if attachment is not None:
+            instance.attachment = attachment
+            instance.save()
+
+        # update M2M
         if user_groups is not None:
             instance.user_groups.set(user_groups)
+
         return instance
 
     def to_representation(self, instance):
@@ -1612,15 +1646,14 @@ class DynamicFormEntrySerializer(serializers.ModelSerializer):
 
             attachments_data = []
 
-            if ea.analysis:
-                for attachment in ea.analysis.attachments.all():
-                    attachments_data.append({
-                        "id": attachment.id,
-                        "file": request.build_absolute_uri(
-                            attachment.file.url
-                        ) if request else attachment.file.url,
-                        "name": attachment.file.name.split('/')[-1]
-                    })
+            if ea.analysis and ea.analysis.test_method and ea.analysis.test_method.attachment:
+                attachment = ea.analysis.test_method.attachment
+
+                attachments_data.append({
+                    "id": ea.analysis.test_method.id,
+                    "file": request.build_absolute_uri(attachment.url) if request else attachment.url,
+                    "name": attachment.name.split('/')[-1]
+                })
 
             analyses_data.append({
                 "analysis_id": ea.analysis.id if ea.analysis else None,

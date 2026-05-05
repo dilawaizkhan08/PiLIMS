@@ -85,6 +85,7 @@ class TestMethod(BaseModel):
     name = models.CharField(max_length=255)
     user_groups = models.ManyToManyField(UserGroup, blank=True, related_name='test_methods')
     description = models.TextField(blank=True, null=True)
+    attachment = models.FileField(upload_to="test_methods/", null=True, blank=True)
 
     def __str__(self):
         return self.name
