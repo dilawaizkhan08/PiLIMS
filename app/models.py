@@ -110,20 +110,6 @@ class List(BaseModel):
         return self.name
 
 
-MAIN_PREPARATION_CHOICES = [
-    ('MPA', 'Phase A'),
-    ('MPB', 'Phase B'),
-    ('MPC', 'Phase C'),
-    ('MPS', 'Solvent and Solution'),  
-]
-
-# Sub-types for Solvent/Solution
-SOLVENT_SUB_CHOICES = [
-    ('NSS', 'Nicotine Standard Solution'),
-    ('PSS', 'Solvent Solution'),
-]
-
-# Nicotine Standard Types
 NICOTINE_STANDARD_CHOICES = [
     ('NSA', 'Nicotine Standard A'),
     ('NSB', 'Nicotine Standard B'),
@@ -164,8 +150,7 @@ class NicotineAssayReport(models.Model):
         related_name="reports", null=True, blank=True
     )
 
-    prep_type = models.CharField(max_length=3, choices=MAIN_PREPARATION_CHOICES)
-    prep_sub_type = models.CharField(max_length=3, choices=SOLVENT_SUB_CHOICES, blank=True, null=True)
+    prep_type = models.CharField(max_length=10)
     prep_id = models.CharField(max_length=50, unique=True, null=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
@@ -181,7 +166,6 @@ class NicotineAssayReport(models.Model):
     water_weight = models.FloatField(blank=True, null=True)
     methanol_weight = models.FloatField(blank=True, null=True)
 
-    # Nicotine Standard
     nicotine_standard_type = models.CharField(
         max_length=3,
         choices=NICOTINE_STANDARD_CHOICES,
@@ -190,19 +174,6 @@ class NicotineAssayReport(models.Model):
     )
 
     def save(self, *args, **kwargs):
-
-        if self.preparation:
-            existing_report = NicotineAssayReport.objects.filter(
-                preparation=self.preparation
-            ).exclude(id=self.id).first()
-
-            if existing_report:
-                if existing_report.prep_type != self.prep_type:
-                    raise ValidationError(
-                        f"All nicotine entries for this preparation must be of type '{existing_report.prep_type}'"
-                    )
-
-        # 🔽 Existing logic (same as yours)
         if self.preparation:
             NicotineAssayReport.objects.filter(
                 preparation=self.preparation,
@@ -212,15 +183,13 @@ class NicotineAssayReport(models.Model):
             )
 
         if not self.prep_id:
-            if self.prep_type == 'MPS' and self.prep_sub_type:
-                prefix = self.prep_sub_type
-            elif self.nicotine_standard_type:
+            prefix = self.prep_type
+            if self.prep_type == "NSS" and self.nicotine_standard_type:
                 prefix = self.nicotine_standard_type
-            else:
-                prefix = self.prep_type
 
             self.prep_id = generate_preparation_id(prefix)
 
+        # expiry
         if self.expiry_days and not self.expiry_date:
             self.expiry_date = timezone.now().date() + timedelta(days=self.expiry_days)
 
@@ -300,6 +269,11 @@ class Analysis(BaseModel):
         related_name="analyses",
         blank=True,
         null=True,
+    )
+    instruments = models.ManyToManyField(
+        "Instrument",
+        related_name="analyses",
+        blank=True
     )
     def __str__(self):
         return self.name
@@ -396,6 +370,13 @@ class CustomFunction(BaseModel):
 # =============  Instruments ==============
 
 class Instrument(BaseModel):
+    STATUS_IN_SERVICE = "in_service"
+    STATUS_OUT_OF_SERVICE = "out_of_service"
+
+    STATUS_CHOICES = [
+        (STATUS_IN_SERVICE, "In Service"),
+        (STATUS_OUT_OF_SERVICE, "Out of Service"),
+    ]
     name = models.CharField(max_length=255)
     user_groups = models.ManyToManyField(UserGroup, blank=True, null=True,related_name='instruments_as_user_group')
     vendor = models.CharField(max_length=255)
@@ -407,6 +388,11 @@ class Instrument(BaseModel):
     next_calibration_date = models.DateField(blank=True, null=True)
     prevention_period = models.IntegerField(blank=True, null=True)   # in days
     next_prevention_date = models.DateField(blank=True, null=True)
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default=STATUS_IN_SERVICE
+    )
 
     def __str__(self):
         return self.name
@@ -868,6 +854,12 @@ class Product(BaseModel):
         UserGroup,
         blank=True,
         related_name="products"
+    )
+    document_code = models.CharField(
+        max_length=100,
+        unique=True,
+        null=True,
+        blank=True
     )
     def __str__(self):
         return self.name

@@ -2368,6 +2368,26 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
                         },
                         status=status.HTTP_400_BAD_REQUEST
                     )
+
+            # ---------------------------
+            #  Instrument Status Check
+            # ---------------------------
+            instruments = entry_analysis.analysis.instruments.all()
+
+            out_of_service_instruments = instruments.filter(
+                status=models.Instrument.STATUS_OUT_OF_SERVICE
+            )
+
+            if out_of_service_instruments.exists():
+                return Response(
+                    {
+                        "error": f"Cannot enter results for analysis '{entry_analysis.analysis.name}' because linked instrument(s) are out of service.",
+                        "instruments": list(
+                            out_of_service_instruments.values("id", "name")
+                        )
+                    },
+                    status=status.HTTP_400_BAD_REQUEST
+                )
             # ---------------------------
             # Save regular results
             # ---------------------------
@@ -3487,7 +3507,6 @@ class QueryReportTemplateCreateView(APIView):
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 from django.core.mail import EmailMessage
-
 class QueryReportRenderView(APIView):
     """
     GET /api/reports/render/?template_id=&sample_id=&download=true
@@ -4136,6 +4155,14 @@ class PreparationViewSet(viewsets.ModelViewSet):
         return Response({
             "message": "New nicotine added. Old automatically expired."
         })
+
+    @action(detail=False, methods=["get"])
+    def prep_type_choices(self, request):
+        values = Value.objects.filter(
+            list__name="MAIN_PREPARATION_CHOICES"
+        ).values_list("value", flat=True)
+
+        return Response(list(values))
 
 
 class PreparationLabelPDFView(APIView):

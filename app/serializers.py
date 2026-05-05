@@ -191,28 +191,41 @@ class UserSerializer(serializers.ModelSerializer):
         return value
 
     def validate_password(self, value):
+        import re
+
         min_length = int(get_config("min_password_length", 10))
+
         if len(value) < min_length:
             raise serializers.ValidationError(
                 f"Password must be at least {min_length} characters long."
             )
 
-        if not re.search(r"[A-Z]", value):
-            raise serializers.ValidationError("Password must contain at least one uppercase letter.")
-        if not re.search(r"[a-z]", value):
-            raise serializers.ValidationError("Password must contain at least one lowercase letter.")
-        if not re.search(r"[0-9]", value):
-            raise serializers.ValidationError("Password must contain at least one number.")
-        if not re.search(r"[!@#$%^&*(),.?\":{}|<>_\-+=]", value):
-            raise serializers.ValidationError("Password must contain at least one special character.")
+        if get_config("require_uppercase", "true") == "true":
+            if not re.search(r"[A-Z]", value):
+                raise serializers.ValidationError(
+                    "Password must contain at least one uppercase letter."
+                )
 
-        try:
-            dj_validate_password(value)
-        except ValidationError as e:
-            raise serializers.ValidationError(e.messages)
+        if get_config("require_lowercase", "true") == "true":
+            if not re.search(r"[a-z]", value):
+                raise serializers.ValidationError(
+                    "Password must contain at least one lowercase letter."
+                )
+
+        if get_config("require_number", "true") == "true":
+            if not re.search(r"[0-9]", value):
+                raise serializers.ValidationError(
+                    "Password must contain at least one number."
+                )
+
+        if get_config("require_special_char", "true") == "true":
+            if not re.search(r"[!@#$%^&*(),.?\":{}|<>_\-+=]", value):
+                raise serializers.ValidationError(
+                    "Password must contain at least one special character."
+                )
 
         return value
-
+    
     def validate_dob(self, value):
         if value and value > timezone.now().date():
             raise serializers.ValidationError("Date of Birth cannot be in the future.")
@@ -520,9 +533,26 @@ class ComponentSerializer(serializers.ModelSerializer):
         return component
 
     def update(self, instance, validated_data):
-        # ✅ make sure default_result can be updated
-        instance.default_result = validated_data.get("default_result", instance.default_result)
-        return super().update(instance, validated_data)
+        instance = super().update(instance, validated_data)
+
+        models.SampleComponent.objects.filter(component=instance).update(
+            type=instance.type,
+            name=instance.name,
+            unit=instance.unit,
+            minimum=instance.minimum,
+            maximum=instance.maximum,
+            decimal_places=instance.decimal_places,
+            rounding=instance.rounding,
+            spec_limits=instance.spec_limits,
+            description=instance.description,
+            optional=instance.optional,
+            calculated=instance.calculated,
+            custom_function=instance.custom_function,
+            default_result=instance.default_result,
+        )
+
+        return instance
+
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
@@ -554,183 +584,6 @@ class AnalysisAttachmentSerializer(serializers.ModelSerializer):
 
 
 
-class AnalysisSerializer(serializers.ModelSerializer):
-
-    prep = serializers.BooleanField(required=False)
-
-    # =========================
-    # PREP DETAILS (read-only)
-    # =========================
-    prep_details = serializers.PrimaryKeyRelatedField(
-        many=True,
-        read_only=True,
-        source="prep"
-    )
-
-    attachments = AnalysisAttachmentSerializer(many=True, read_only=True)
-
-    attachment_urls = serializers.ListField(
-        child=serializers.URLField(),
-        write_only=True,
-        required=False
-    )
-
-    component_ids = serializers.ListField(
-        child=serializers.IntegerField(),
-        write_only=True,
-        required=False
-    )
-
-    components = ComponentSerializer(many=True, read_only=True)
-
-    user_groups_ids = serializers.PrimaryKeyRelatedField(
-        many=True,
-        queryset=models.UserGroup.objects.all(),
-        write_only=True,
-        source="user_groups",
-        required=True
-    )
-
-    user_groups = UserGroupSerializer(many=True, read_only=True)
-
-    version = serializers.IntegerField(required=False, allow_null=True)
-
-    test_method_id = serializers.PrimaryKeyRelatedField(
-        queryset=models.TestMethod.objects.all(),
-        source="test_method",
-        write_only=True,
-        required=False,
-        allow_null=True
-    )
-
-    test_method = TestMethodSerializer(read_only=True)
-
-    trainings = serializers.PrimaryKeyRelatedField(
-        many=True,
-        queryset=models.Training.objects.all(),
-        required=False
-    )
-
-    class Meta:
-        model = models.Analysis
-        fields = [
-            "id",
-            "name",
-            "version",
-            "alias_name",
-            "user_groups",
-            "user_groups_ids",
-            "type",
-            "test_method",
-            "test_method_id",
-            "price",
-            "description",
-            "attachments",
-            "attachment_urls",
-            "components",
-            "component_ids",
-            "prep",
-            "prep_details",
-            "trainings"
-        ]
-
-    # =========================
-    # CREATE
-    # =========================
-    def create(self, validated_data):
-        prep_flag = validated_data.pop("prep", None)
-
-        attachment_urls = validated_data.pop("attachment_urls", [])
-        user_groups = validated_data.pop("user_groups", [])
-        component_ids = validated_data.pop("component_ids", [])
-        trainings = validated_data.pop("trainings", [])
-
-        analysis = models.Analysis.objects.create(**validated_data)
-
-        analysis.user_groups.set(user_groups)
-
-        if trainings:
-            analysis.trainings.set(trainings)
-
-        # =========================
-        # PREP LOGIC
-        # =========================
-        if prep_flag is True:
-            analysis.prep.set(models.Preparation.objects.all())
-        elif prep_flag is False:
-            analysis.prep.clear()
-
-        # Attachments
-        for url in attachment_urls:
-            file_path = url.split('/media/')[-1]
-            try:
-                attachment = models.AnalysisAttachment.objects.get(file=file_path)
-            except models.AnalysisAttachment.DoesNotExist:
-                raise serializers.ValidationError(
-                    {"attachment_urls": f"Attachment not found for URL: {url}"}
-                )
-            attachment.analysis = analysis
-            attachment.save()
-
-        # Components
-        if component_ids:
-            components = models.Component.objects.filter(id__in=component_ids)
-            for comp in components:
-                comp.analysis = analysis
-                comp.save()
-
-        return analysis
-
-    # =========================
-    # UPDATE
-    # =========================
-    def update(self, instance, validated_data):
-        prep_flag = validated_data.pop("prep", None)
-
-        attachment_urls = validated_data.pop("attachment_urls", [])
-        user_groups = validated_data.pop("user_groups", [])
-        component_ids = validated_data.pop("component_ids", [])
-        trainings = validated_data.pop("trainings", None)
-
-        for attr, value in validated_data.items():
-            setattr(instance, attr, value)
-        instance.save()
-
-        if user_groups:
-            instance.user_groups.set(user_groups)
-
-        if trainings is not None:
-            instance.trainings.set(trainings)
-
-        # =========================
-        # PREP LOGIC
-        # =========================
-        if prep_flag is True:
-            instance.prep.set(models.Preparation.objects.all())
-        elif prep_flag is False:
-            instance.prep.clear()
-
-        # Attachments
-        if attachment_urls:
-            for url in attachment_urls:
-                file_path = url.split('/media/')[-1]
-                try:
-                    attachment = models.AnalysisAttachment.objects.get(file=file_path)
-                except models.AnalysisAttachment.DoesNotExist:
-                    raise serializers.ValidationError(
-                        {"attachment_urls": f"Attachment not found for URL: {url}"}
-                    )
-                attachment.analysis = instance
-                attachment.save()
-
-        # Components
-        if component_ids:
-            components = models.Component.objects.filter(id__in=component_ids)
-            for comp in components:
-                comp.analysis = instance
-                comp.save()
-
-        return instance
 
 class InstrumentHistorySerializer(serializers.ModelSerializer):
     id = serializers.IntegerField(required=False)  # Allow PATCH with ID
@@ -777,7 +630,7 @@ class InstrumentSerializer(serializers.ModelSerializer):
             'prevention_period', 'next_prevention_date',
             'user_groups',
             'user_groups_ids',
-            'history'
+            'history','status'
         ]
 
 
@@ -838,6 +691,219 @@ class InstrumentSerializer(serializers.ModelSerializer):
                     hist_obj.delete()
 
         return instance
+
+class InstrumentLiteSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = models.Instrument
+        fields = ["id", "name"]
+
+class AnalysisSerializer(serializers.ModelSerializer):
+
+    prep = serializers.SerializerMethodField()
+    prep_flag = serializers.BooleanField(write_only=True, required=False)
+
+    prep_details = serializers.PrimaryKeyRelatedField(
+        many=True,
+        read_only=True,
+        source="prep"
+    )
+
+    attachments = AnalysisAttachmentSerializer(many=True, read_only=True)
+
+    attachment_urls = serializers.ListField(
+        child=serializers.URLField(),
+        write_only=True,
+        required=False
+    )
+
+    component_ids = serializers.ListField(
+        child=serializers.IntegerField(),
+        write_only=True,
+        required=False
+    )
+
+    components = ComponentSerializer(many=True, read_only=True)
+
+    user_groups_ids = serializers.PrimaryKeyRelatedField(
+        many=True,
+        queryset=models.UserGroup.objects.all(),
+        write_only=True,
+        source="user_groups",
+        required=True
+    )
+
+    user_groups = UserGroupSerializer(many=True, read_only=True)
+
+    version = serializers.IntegerField(required=False, allow_null=True)
+
+    test_method_id = serializers.PrimaryKeyRelatedField(
+        queryset=models.TestMethod.objects.all(),
+        source="test_method",
+        write_only=True,
+        required=False,
+        allow_null=True
+    )
+
+    test_method = TestMethodSerializer(read_only=True)
+
+    trainings = serializers.PrimaryKeyRelatedField(
+        many=True,
+        queryset=models.Training.objects.all(),
+        required=False
+    )
+
+    instrument_ids = serializers.PrimaryKeyRelatedField(
+        many=True,
+        queryset=models.Instrument.objects.filter(
+            status=models.Instrument.STATUS_IN_SERVICE 
+        ),
+        write_only=True,
+        source="instruments",
+        required=False
+    )
+
+    instruments = InstrumentLiteSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = models.Analysis
+        fields = [
+            "id",
+            "name",
+            "version",
+            "alias_name",
+            "user_groups",
+            "user_groups_ids",
+            "type",
+            "test_method",
+            "test_method_id",
+            "price",
+            "description",
+            "attachments",
+            "attachment_urls",
+            "components",
+            "component_ids",
+            "prep",
+            "prep_flag",
+            "prep_details",
+            "trainings",
+            # ✅ NEW
+            "instruments",
+            "instrument_ids",
+        ]
+
+    # =========================
+    # GET PREP BOOLEAN
+    # =========================
+    def get_prep(self, obj):
+        return obj.prep.count() > 0   
+
+    # =========================
+    # CREATE
+    # =========================
+    def create(self, validated_data):
+        prep_flag = validated_data.pop("prep_flag", None)
+
+        attachment_urls = validated_data.pop("attachment_urls", [])
+        user_groups = validated_data.pop("user_groups", [])
+        component_ids = validated_data.pop("component_ids", [])
+        trainings = validated_data.pop("trainings", [])
+        instruments = validated_data.pop("instruments", [])  # ✅ NEW
+
+        analysis = models.Analysis.objects.create(**validated_data)
+
+        # M2M
+        analysis.user_groups.set(user_groups)
+
+        if trainings:
+            analysis.trainings.set(trainings)
+
+        if instruments:
+            analysis.instruments.set(instruments)  # ✅ NEW
+
+        # PREP LOGIC
+        if prep_flag is True:
+            analysis.prep.set(models.Preparation.objects.all())
+        elif prep_flag is False:
+            analysis.prep.clear()
+
+        # ATTACHMENTS
+        for url in attachment_urls:
+            file_path = url.split('/media/')[-1]
+            try:
+                attachment = models.AnalysisAttachment.objects.get(file=file_path)
+            except models.AnalysisAttachment.DoesNotExist:
+                raise serializers.ValidationError(
+                    {"attachment_urls": f"Attachment not found for URL: {url}"}
+                )
+            attachment.analysis = analysis
+            attachment.save()
+
+        # COMPONENTS
+        if component_ids:
+            components = models.Component.objects.filter(id__in=component_ids)
+            for comp in components:
+                comp.analysis = analysis
+                comp.save()
+
+        analysis.refresh_from_db()
+        return analysis
+
+    # =========================
+    # UPDATE
+    # =========================
+    def update(self, instance, validated_data):
+        prep_flag = validated_data.pop("prep_flag", None)
+
+        attachment_urls = validated_data.pop("attachment_urls", [])
+        user_groups = validated_data.pop("user_groups", [])
+        component_ids = validated_data.pop("component_ids", [])
+        trainings = validated_data.pop("trainings", None)
+        instruments = validated_data.pop("instruments", None)  # ✅ NEW
+
+        # Update fields
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+
+        # M2M
+        if user_groups:
+            instance.user_groups.set(user_groups)
+
+        if trainings is not None:
+            instance.trainings.set(trainings)
+
+        if instruments is not None:
+            instance.instruments.set(instruments)  # ✅ NEW
+
+        # PREP LOGIC
+        if prep_flag is True:
+            instance.prep.set(models.Preparation.objects.all())
+        elif prep_flag is False:
+            instance.prep.clear()
+
+        # ATTACHMENTS
+        if attachment_urls:
+            for url in attachment_urls:
+                file_path = url.split('/media/')[-1]
+                try:
+                    attachment = models.AnalysisAttachment.objects.get(file=file_path)
+                except models.AnalysisAttachment.DoesNotExist:
+                    raise serializers.ValidationError(
+                        {"attachment_urls": f"Attachment not found for URL: {url}"}
+                    )
+                attachment.analysis = instance
+                attachment.save()
+
+        # COMPONENTS
+        if component_ids:
+            components = models.Component.objects.filter(id__in=component_ids)
+            for comp in components:
+                comp.analysis = instance
+                comp.save()
+
+        instance.refresh_from_db()
+        return instance
+
 
 class StockConsumptionSerializer(serializers.ModelSerializer):
     consumed_by_name = serializers.CharField(source="consumed_by.name", read_only=True)
@@ -2182,6 +2248,7 @@ class ProductSerializer(serializers.ModelSerializer):
             "description",
             "user_groups",
             "user_groups_ids",
+            "document_code",
             "analyses_data",
             "product_type",
         ]
@@ -2470,10 +2537,40 @@ class InvestigationSerializer(serializers.ModelSerializer):
         fields = "__all__"
 
 
+from rest_framework.exceptions import ValidationError
+from .models import Value, NicotineAssayReport
+
+
 class NicotineAssayReportSerializer(serializers.ModelSerializer):
     class Meta:
-        model = models.NicotineAssayReport
+        model = NicotineAssayReport
         exclude = ["preparation"]
+
+    def validate(self, data):
+        prep_type = data.get("prep_type")
+
+        valid_values = Value.objects.filter(
+            list__name="MAIN_PREPARATION_CHOICES"
+        ).values_list("value", flat=True)
+
+        if prep_type not in valid_values:
+            raise ValidationError({
+                "prep_type": "Invalid type. Must come from MAIN_PREPARATION_CHOICES list."
+            })
+
+        if NicotineAssayReport.objects.filter(prep_type=prep_type).exists():
+            raise ValidationError({
+                "prep_type": f"{prep_type} already exists"
+            })
+
+        total_allowed = len(valid_values)
+        total_existing = NicotineAssayReport.objects.count()
+
+        if total_existing >= total_allowed:
+            raise ValidationError("All preparation types already used")
+
+        return data
+
 
 
 class PreparationSerializer(serializers.ModelSerializer):
@@ -2481,30 +2578,17 @@ class PreparationSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = models.Preparation
-        fields = ["id", "prep_id", "details", "reports"] 
+        fields = ["id", "prep_id", "details", "reports"]
         read_only_fields = ["prep_id"]
 
     def validate(self, data):
-        reports = data.get("reports", None)
+        reports = data.get("reports")
 
         if self.instance is None:
-
             if not reports or len(reports) != 1:
                 raise ValidationError(
                     "Exactly ONE nicotine assay is required during creation."
                 )
-
-            prep_type = reports[0].get("prep_type")
-
-            if prep_type:
-                exists = models.NicotineAssayReport.objects.filter(
-                    prep_type=prep_type
-                ).exists()
-
-                if exists:
-                    raise ValidationError({
-                        "prep_type": f"{prep_type} already exists in another preparation."
-                    })
 
         return data
 
@@ -2513,10 +2597,10 @@ class PreparationSerializer(serializers.ModelSerializer):
 
         preparation = models.Preparation.objects.create(
             prepared_by=self.context["request"].user,
-            details=validated_data.get("details") 
+            details=validated_data.get("details")
         )
 
-        models.NicotineAssayReport.objects.create(
+        NicotineAssayReport.objects.create(
             preparation=preparation,
             **reports_data[0]
         )
@@ -2524,10 +2608,8 @@ class PreparationSerializer(serializers.ModelSerializer):
         return preparation
 
     def update(self, instance, validated_data):
-
         instance.details = validated_data.get("details", instance.details)
         instance.save()
-
         return instance
     
 class UserTrainingSerializer(serializers.ModelSerializer):
