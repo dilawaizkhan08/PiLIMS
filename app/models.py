@@ -203,6 +203,17 @@ class NicotineAssayReport(models.Model):
     def __str__(self):
         return self.prep_id
 
+class PreparationAttachment(models.Model):
+    preparation = models.ForeignKey(
+        "Preparation",
+        on_delete=models.CASCADE,
+        related_name="attachments",
+        null=True,
+        blank=True
+    )
+    file = models.FileField(upload_to="preparations/")
+    created_at = models.DateTimeField(auto_now_add=True)
+
 class Training(BaseModel):
     training_id = models.CharField(max_length=100, unique=True, editable=False)
     description = models.TextField()

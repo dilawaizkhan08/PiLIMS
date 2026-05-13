@@ -126,8 +126,24 @@ class UserSerializer(serializers.ModelSerializer):
         allow_blank=True
     )
 
+    # ✅ READ (for response)
     user_groups = serializers.StringRelatedField(many=True, read_only=True)
     roles = RoleSerializer(many=True, read_only=True)
+
+    # ✅ WRITE (for input)
+    user_group_ids = serializers.PrimaryKeyRelatedField(
+        queryset=models.UserGroup.objects.all(),
+        many=True,
+        write_only=True,
+        required=False
+    )
+
+    role_ids = serializers.PrimaryKeyRelatedField(
+        queryset=models.Role.objects.all(),
+        many=True,
+        write_only=True,
+        required=False
+    )
 
     class Meta:
         model = models.User
@@ -140,8 +156,10 @@ class UserSerializer(serializers.ModelSerializer):
         validated_data.pop("groups", None)
 
         password = validated_data.pop("password")
+        user_groups = validated_data.pop("user_group_ids", [])
+        roles = validated_data.pop("role_ids", [])
 
-  
+        # username fallback
         if not validated_data.get("username"):
             validated_data["username"] = f"user_{uuid.uuid4().hex[:10]}"
 
@@ -152,13 +170,22 @@ class UserSerializer(serializers.ModelSerializer):
             user.created_by = request.user
 
         user.save()
-        return user
 
+        # ✅ Assign relations
+        if user_groups:
+            user.user_groups.set(user_groups)
+
+        if roles:
+            user.roles.set(roles)
+
+        return user
 
     def update(self, instance, validated_data):
         validated_data.pop("groups", None)
 
         password = validated_data.pop('password', None)
+        user_groups = validated_data.pop("user_group_ids", None)
+        roles = validated_data.pop("role_ids", None)
 
         username = validated_data.get("username")
         if username == "" or username is None:
@@ -171,8 +198,17 @@ class UserSerializer(serializers.ModelSerializer):
             instance.set_password(password)
 
         instance.save()
+
+        # ✅ Update relations (only if provided)
+        if user_groups is not None:
+            instance.user_groups.set(user_groups)
+
+        if roles is not None:
+            instance.roles.set(roles)
+
         return instance
 
+        
     def validate_username(self, value):
         if not value:
             return value
@@ -733,8 +769,8 @@ class InstrumentLiteSerializer(serializers.ModelSerializer):
 
 class AnalysisSerializer(serializers.ModelSerializer):
 
-    prep = serializers.SerializerMethodField()
-    prep_flag = serializers.BooleanField(write_only=True, required=False)
+    # prep = serializers.SerializerMethodField()
+    prep_flag = serializers.BooleanField(required=False)
 
     prep_details = serializers.PrimaryKeyRelatedField(
         many=True,
@@ -937,6 +973,11 @@ class AnalysisSerializer(serializers.ModelSerializer):
 
         instance.refresh_from_db()
         return instance
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        data["prep_flag"] = instance.prep.count() > 0
+        return data
 
 
 class StockConsumptionSerializer(serializers.ModelSerializer):
@@ -2587,64 +2628,96 @@ class NicotineAssayReportSerializer(serializers.ModelSerializer):
         ).values_list("value", flat=True)
 
         if prep_type not in valid_values:
-            raise ValidationError({
+            raise serializers.ValidationError({
                 "prep_type": "Invalid type. Must come from MAIN_PREPARATION_CHOICES list."
             })
 
-        if NicotineAssayReport.objects.filter(prep_type=prep_type).exists():
-            raise ValidationError({
-                "prep_type": f"{prep_type} already exists"
-            })
-
-        total_allowed = len(valid_values)
-        total_existing = NicotineAssayReport.objects.count()
-
-        if total_existing >= total_allowed:
-            raise ValidationError("All preparation types already used")
+        # ❌ REMOVE ALL DUPLICATE CHECKS
+        # (you want multiple same type allowed)
 
         return data
 
 
 
 class PreparationSerializer(serializers.ModelSerializer):
-    reports = NicotineAssayReportSerializer(many=True)
+    reports = NicotineAssayReportSerializer(many=True, required=False)
+
+    attachment_paths = serializers.SerializerMethodField()
 
     class Meta:
         model = models.Preparation
-        fields = ["id", "prep_id", "details", "reports"]
+        fields = ["id", "prep_id", "details", "reports", "attachment_paths"]
         read_only_fields = ["prep_id"]
 
-    def validate(self, data):
-        reports = data.get("reports")
+    def get_attachment_paths(self, instance):
+        request = self.context.get("request")
 
-        if self.instance is None:
-            if not reports or len(reports) != 1:
-                raise ValidationError(
-                    "Exactly ONE nicotine assay is required during creation."
-                )
+        base_url = ""
+        if request:
+            base_url = request.build_absolute_uri("/").rstrip("/")
 
-        return data
+        return [
+            f"{base_url}/media/{obj.file.name}"
+            for obj in instance.attachments.all()
+        ]
 
+    # -------------------------
+    # CREATE
+    # -------------------------
     def create(self, validated_data):
-        reports_data = validated_data.pop("reports")
+        reports_data = validated_data.pop("reports", [])
+        attachments = self.initial_data.get("attachments", [])
 
         preparation = models.Preparation.objects.create(
             prepared_by=self.context["request"].user,
             details=validated_data.get("details")
         )
 
-        NicotineAssayReport.objects.create(
-            preparation=preparation,
-            **reports_data[0]
-        )
+        # create ALL reports
+        for report in reports_data:
+            NicotineAssayReport.objects.create(
+                preparation=preparation,
+                **report
+            )
+
+        # attachments
+        for att in attachments:
+            models.PreparationAttachment.objects.create(
+                preparation=preparation,
+                file=att
+            )
 
         return preparation
 
+    # -------------------------
+    # UPDATE (IMPORTANT: ADD ONLY)
+    # -------------------------
     def update(self, instance, validated_data):
+        reports_data = validated_data.pop("reports", [])
+        attachments = self.initial_data.get("attachments", None)
+
         instance.details = validated_data.get("details", instance.details)
         instance.save()
+
+        for report in reports_data:
+            NicotineAssayReport.objects.create(
+                preparation=instance,
+                **report
+            )
+
+        # attachments (optional replace behavior)
+        if attachments is not None:
+            instance.attachments.all().delete()
+
+            for att in attachments:
+                models.PreparationAttachment.objects.create(
+                    preparation=instance,
+                    file=att
+                )
+
         return instance
     
+
 class UserTrainingSerializer(serializers.ModelSerializer):
     user = serializers.StringRelatedField(read_only=True)
     user_id = serializers.IntegerField(write_only=True, required=True)

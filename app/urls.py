@@ -91,5 +91,6 @@ urlpatterns = [
     path('samples/qc-label-pdf/', views.DynamicFormEntryQCReportPDFView.as_view(),),
     path("preparations/label-pdf/", views.PreparationLabelPDFView.as_view(), name='preparations-label-pdf'),
     path("upload-doc/", views.DocumentUploadView.as_view(), name="upload-doc"),
+    path("upload-prep-file/", views.AttachmentUploadView.as_view(), name="upload-prep-file"),
 
 ]

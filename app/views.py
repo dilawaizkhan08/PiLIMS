@@ -4559,3 +4559,25 @@ class ControlChartFilteredAPIView(APIView):
             "components": list(grouped.values())
         })    
 
+
+
+class AttachmentUploadView(APIView):
+    permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def post(self, request):
+        file = request.FILES.get("file")
+
+        if not file:
+            return Response({"error": "file required"}, status=400)
+
+        attachment = models.PreparationAttachment.objects.create(
+            file=file
+        )
+
+        return Response({
+            "id": attachment.id,
+            "path": attachment.file.name 
+        })
+
+
