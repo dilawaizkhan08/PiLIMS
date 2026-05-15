@@ -2850,10 +2850,26 @@ class TrainingSerializer(serializers.ModelSerializer):
     
 class IncomingMaterialSampleInspectionSerializer(serializers.ModelSerializer):
     material_name = serializers.CharField(source='material.name', read_only=True)
+
     class Meta:
         model = models.IncomingMaterialSampleInspection
         fields = '__all__'
 
+    def create(self, validated_data):
+        material = validated_data.get('material')
+
+        if material:
+            validated_data['material_type'] = material.product_type
+
+        return super().create(validated_data)
+
+    def update(self, instance, validated_data):
+        material = validated_data.get('material', instance.material)
+
+        if material:
+            validated_data['material_type'] = material.product_type
+
+        return super().update(instance, validated_data)
 
 
 
