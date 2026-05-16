@@ -4581,3 +4581,149 @@ class AttachmentUploadView(APIView):
         })
 
 
+
+import re
+import base64
+import requests
+import xml.etree.ElementTree as ET
+
+
+class FetchBatchView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    ORACLE_URL = settings.ORACLE_CONFIG["URL"]
+    ORACLE_USER = settings.ORACLE_CONFIG["USER"]
+    ORACLE_PASS = settings.ORACLE_CONFIG["PASSWORD"]
+    REPORT_PATH = settings.ORACLE_CONFIG["REPORT_PATH"]
+
+    def get(self, request):
+        batch_number_query = request.GET.get("batchNumber")
+
+        if not batch_number_query:
+            return Response(
+                {"success": False, "message": "batchNumber parameter is required"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # return Response(
+        #                 {
+        #                     "success": True,
+        #                     "data": {
+        #                         "batch_number": batch_number_query,
+        #                         "item_number": "Flavour Materials",
+        #                         "item_description": "Pasteurized Milk",
+        #                         "origination_date":"2025-10-10",
+        #                         "expiry_date": "2026-10-10",
+        #                     }
+        #                 },
+        #                 status=status.HTTP_200_OK
+        #             )
+
+        try:
+            # 1. Prepare Payload
+            payload = self._generate_payload(batch_number_query)
+            headers = {
+                'Content-Type': 'text/xml;charset=UTF-8',
+                'SOAPAction': ''
+            }
+
+            # 2. Execute Request with timeout
+            response = requests.post(
+                self.ORACLE_URL,
+                data=payload,
+                headers=headers,
+                timeout=30
+            )
+            response.raise_for_status()
+
+            # 3. Extract and Decode reportBytes
+            match = re.search(r'<reportBytes>(.*?)</reportBytes>', response.text)
+            if not match:
+                return Response(
+                    {"success": False, "message": "Invalid response structure from Oracle BI"},
+                    status=status.HTTP_502_BAD_GATEWAY
+                )
+
+            decoded_xml = base64.b64decode(match.group(1)).decode('utf-8')
+
+            # 4. Parse XML Data
+            parsed_data = self._parse_oracle_xml(decoded_xml)
+
+            if not parsed_data:
+                return Response(
+                    {"success": False, "message": f"No records found for batch: {batch_number_query}"},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+
+            return Response({
+                "success": True,
+                "data": parsed_data
+            }, status=status.HTTP_200_OK)
+
+        except requests.exceptions.Timeout:
+            return Response(
+                {"success": False, "message": "Oracle service timed out"},
+                status=status.HTTP_504_GATEWAY_TIMEOUT
+            )
+        except requests.exceptions.RequestException as e:
+            return Response(
+                {"success": False, "message": f"Oracle connection error: {str(e)}"},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE
+            )
+        except Exception as e:
+            return Response(
+                {"success": False, "message": f"Internal Server Error: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+    def _generate_payload(self, batch_number):
+        """Generates the SOAP XML envelope."""
+        return f"""<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:pub="http://xmlns.oracle.com/oxp/service/PublicReportService">
+           <soapenv:Header/>
+           <soapenv:Body>
+              <pub:runReport>
+                 <pub:reportRequest>
+                    <pub:parameterNameValues>
+                        <pub:item>
+                          <pub:name>P_ORGANIZATION</pub:name>
+                          <pub:values><pub:item></pub:item></pub:values>
+                       </pub:item>
+                       <pub:item>
+                          <pub:name>P_BATCH_NUMBER</pub:name>
+                          <pub:values><pub:item>{batch_number}</pub:item></pub:values>
+                       </pub:item>
+                    </pub:parameterNameValues>
+                    <pub:attributeFormat>xml</pub:attributeFormat>
+                    <pub:reportAbsolutePath>{self.REPORT_PATH}</pub:reportAbsolutePath>
+                    <pub:sizeOfDataChunkDownload>-1</pub:sizeOfDataChunkDownload>
+                 </pub:reportRequest>
+                 <pub:userID>{self.ORACLE_USER}</pub:userID>
+                 <pub:password>{self.ORACLE_PASS}</pub:password>
+              </pub:runReport>
+           </soapenv:Body>
+        </soapenv:Envelope>"""
+
+    def _parse_oracle_xml(self, xml_string):
+        """Parses the decoded XML and returns a clean dictionary."""
+        try:
+            root = ET.fromstring(xml_string)
+            first_row = root.find('G_1')
+
+            if first_row is None:
+                return None
+
+            raw_orig = first_row.findtext('ORIGI_DATE')
+            raw_exp = first_row.findtext('EXPIRY_DATE')
+
+            return {
+                "batch_number": root.findtext('P_BATCH_NUMBER'),
+                "item_number": first_row.findtext('ITEM_NUMBER'),
+                "item_description": first_row.findtext('ITEM_DESCRIPTION'),
+                "origination_date": raw_orig[:10] if raw_orig else None,
+                "expiry_date": raw_exp[:10] if raw_exp else None,
+            }
+        except Exception:
+            return None
+        
+
+        

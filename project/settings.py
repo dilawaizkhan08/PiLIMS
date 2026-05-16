@@ -224,6 +224,16 @@ if not DEBUG:
 # ======================
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
+# settings.py
+
+ORACLE_CONFIG = {
+    "URL": "https://fa-exto-test-saasfaprod1.fa.ocs.oraclecloud.com/xmlpserver/services/PublicReportService",
+    "USER": "aps.consultant",
+    "PASSWORD": "APS@22334455",
+    "REPORT_PATH": "/Custom/Custom Report/Inventory/New Report/BADAEL_INV_BATCH_DETAILS/BADAEL_INV_BATCH_DETAILS_REP.xdo"
+}
+
+
 os.environ["SSL_CERT_FILE"] = certifi.where()
 
 # DATABASES = {

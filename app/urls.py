@@ -92,5 +92,6 @@ urlpatterns = [
     path("preparations/label-pdf/", views.PreparationLabelPDFView.as_view(), name='preparations-label-pdf'),
     path("upload-doc/", views.DocumentUploadView.as_view(), name="upload-doc"),
     path("upload-prep-file/", views.AttachmentUploadView.as_view(), name="upload-prep-file"),
+    path("fetch-oracle-batch/", views.FetchBatchView.as_view(), name="fetch-oracle-batch"),
 
 ]
