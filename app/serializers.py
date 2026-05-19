@@ -2650,15 +2650,10 @@ class PreparationSerializer(serializers.ModelSerializer):
         read_only_fields = ["prep_id"]
 
     def get_attachment_paths(self, instance):
-        request = self.context.get("request")
-
-        base_url = ""
-        if request:
-            base_url = request.build_absolute_uri("/").rstrip("/")
-
         return [
-            f"{base_url}/media/{obj.file.name}"
+            obj.file.name
             for obj in instance.attachments.all()
+            if obj.file
         ]
 
     # -------------------------
@@ -2850,6 +2845,7 @@ class TrainingSerializer(serializers.ModelSerializer):
     
 class IncomingMaterialSampleInspectionSerializer(serializers.ModelSerializer):
     material_name = serializers.CharField(source='material.name', read_only=True)
+    inspection_id = serializers.CharField(source='inspection.inspection_sheet_no', read_only=True)
 
     class Meta:
         model = models.IncomingMaterialSampleInspection

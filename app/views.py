@@ -61,6 +61,7 @@ from datetime import datetime, timedelta
 import qrcode
 import base64
 from io import BytesIO
+from .utility import parse_blend_report
 import logging
 logger = logging.getLogger(__name__)
 
@@ -4406,7 +4407,8 @@ class IncomingMaterialSampleInspectionViewSet(viewsets.ModelViewSet):
             entry = models.DynamicFormEntry.objects.create(
                 form=sample_form,
                 data={},
-                logged_by=user
+                logged_by=user,
+                inspection=inspection
             )
 
             clean_data = {}
@@ -4724,6 +4726,37 @@ class FetchBatchView(APIView):
             }
         except Exception:
             return None
-        
 
+
+class UploadBlendReportView(APIView):
+    def post(self, request):
+        uploaded_file = request.FILES.get("file")
+
+        if not uploaded_file:
+            return Response(
+                {"error": "File is required"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            # Save temp file
+            with tempfile.NamedTemporaryFile(delete=False) as tmp:
+                for chunk in uploaded_file.chunks():
+                    tmp.write(chunk)
+
+                file_path = tmp.name
+
+            # Parse + store data
+            parse_blend_report(file_path)
+
+            return Response(
+                {"message": "File uploaded and data stored successfully"},
+                status=status.HTTP_200_OK
+            )
+
+        except Exception as e:
+            return Response(
+                {"error": str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
         

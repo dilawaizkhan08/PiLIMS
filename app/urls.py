@@ -94,4 +94,6 @@ urlpatterns = [
     path("upload-prep-file/", views.AttachmentUploadView.as_view(), name="upload-prep-file"),
     path("fetch-oracle-batch/", views.FetchBatchView.as_view(), name="fetch-oracle-batch"),
 
+    path("upload-instrument-blend-report/", views.UploadBlendReportView.as_view(), name="upload-instrument-blend-report"),
+
 ]

@@ -17,6 +17,9 @@ from django.core.files.storage import default_storage
 
 from jinja2 import Template as JinjaTemplate
 from weasyprint import HTML
+import re
+from datetime import datetime
+
 
 
 
@@ -168,3 +171,96 @@ def generate_report(template_id, sample_id, request):
     except Exception as e:
         print(f"Report generation failed: {e}")
         return None
+
+
+
+
+def parse_blend_report(file_path):
+    with open(file_path, "r") as file:
+        content = file.read()
+
+    # Clean quotes
+    content = content.replace("'", "")
+
+    lines = [line.strip() for line in content.splitlines() if line.strip()]
+
+    instrument_name = "Blend Report"
+
+    records_saved = 0
+
+    for line in lines:
+        try:
+            # Split and clean
+            parts = [p.strip() for p in line.split(",")]
+            parts = [p for p in parts if p]  # remove empty
+
+            # Skip non-data lines
+            if len(parts) < 6:
+                continue
+
+            if parts[0] == "#":
+                parts.pop(0)
+
+            # After cleanup, we expect:
+            # [index, sample_id, result_set_id, sample_name, full_name, date]
+
+            if len(parts) < 6:
+                continue
+
+            index = parts[0]
+
+            # Skip header rows like: ['#', '#', 'Sample Set Id', ...]
+            if not index.isdigit():
+                continue
+
+            sample_id = parts[1]
+            sample_name = parts[3]
+            parameter_name = "Nicotine" 
+            date_str = parts[5]
+
+            # Parse date
+            date = datetime.strptime(
+                date_str.split(" +")[0],
+                "%m/%d/%Y %I:%M:%S %p"
+            )
+
+            result = extract_result_for_sample(content, sample_name)
+
+            # Save to DB
+            models.BlendReport.objects.create(
+                sample_id=sample_id,
+                parameter_name=parameter_name,
+                result=result,
+                date=date,
+                instrument_name=instrument_name
+            )
+
+            records_saved += 1
+
+        except Exception as e:
+            print("❌ Skipping line:", line)
+            print("Error:", e)
+            continue
+
+    print(f"✅ Total records saved: {records_saved}")
+
+
+# Helper to map result with sample
+def extract_result_for_sample(content, sample_name):
+    try:
+        content = content.replace("'", "")
+        lines = content.splitlines()
+
+        for line in lines:
+            if sample_name in line and "Nicotine" in line:
+                parts = [p.strip() for p in line.split(",") if p.strip()]
+
+                # Last value is Blend_Amount (result)
+                return float(parts[-1])
+
+    except:
+        pass
+
+    return 0.0  # fallback
+
+
