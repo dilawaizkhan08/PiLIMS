@@ -93,15 +93,85 @@ class RegisterView(views.APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
-class LoginView(views.APIView):
+# class LoginView(views.APIView):
+#     permission_classes = [AllowAny]
+
+#     def post(self, request, *args, **kwargs):
+#         serializer = LoginSerializer(data=request.data)
+#         serializer.is_valid(raise_exception=True)
+
+#         email = serializer.validated_data["email"]
+#         password = serializer.validated_data["password"]
+
+#         try:
+#             user = User.objects.get(email=email)
+#         except User.DoesNotExist:
+#             return Response({"error": "Invalid credentials"}, status=401)
+
+#         if not user.is_active:
+#             return Response(
+#                 {"error": "Your account is deactivated. Please contact admin."},
+#                 status=403,
+#             )
+
+#         max_attempts = int(get_config("max_wrong_password_attempts", 5))
+#         user_auth = authenticate(request, email=email, password=password)
+
+#         if user_auth:
+#             # Reset failed login attempts
+#             user_auth.failed_login_attempts = 0
+#             user_auth.last_activity = timezone.now()
+#             user_auth.save(update_fields=["failed_login_attempts", "last_activity"])
+
+#             # Safe token handling
+#             token = Token.objects.filter(user=user_auth).first()
+#             if not token:
+#                 try:
+#                     token = Token.objects.create(user=user_auth)
+#                 except IntegrityError:
+#                     token = Token.objects.get(user=user_auth)
+
+#             update_last_login(None, user_auth)
+#             user_data = UserSerializer(user_auth, context={"request": request}).data
+#             return Response({"token": token.key, "user": user_data}, status=200)
+
+#         # Wrong password handling
+#         user.failed_login_attempts = F("failed_login_attempts") + 1
+#         user.save(update_fields=["failed_login_attempts"])
+#         user.refresh_from_db()
+
+#         if user.failed_login_attempts >= max_attempts:
+#             user.is_active = False
+#             user.save(update_fields=["is_active"])
+#             return Response(
+#                 {
+#                     "error": "Your account has been locked due to too many failed login attempts."
+#                 },
+#                 status=403,
+#             )
+
+#         remaining = max_attempts - user.failed_login_attempts
+#         return Response(
+#             {"error": f"Invalid credentials. You have {remaining} attempts left."},
+#             status=401,
+#         )
+
+
+
+class LoginView(APIView):
     permission_classes = [AllowAny]
 
-    def post(self, request, *args, **kwargs):
-        serializer = LoginSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
+    def post(self, request):
+        email = request.data.get("email")
+        password = request.data.get("password")
+        step = request.data.get("step")
+        otp = request.data.get("otp")
+        session_id = request.data.get("session_id")
 
-        email = serializer.validated_data["email"]
-        password = serializer.validated_data["password"]
+        if not email:
+            return Response({"error": "Email is required"}, status=400)
+
+        email = email.strip().lower()
 
         try:
             user = User.objects.get(email=email)
@@ -115,47 +185,145 @@ class LoginView(views.APIView):
             )
 
         max_attempts = int(get_config("max_wrong_password_attempts", 5))
-        user_auth = authenticate(request, email=email, password=password)
 
-        if user_auth:
-            # Reset failed login attempts
-            user_auth.failed_login_attempts = 0
-            user_auth.last_activity = timezone.now()
-            user_auth.save(update_fields=["failed_login_attempts", "last_activity"])
+        # =====================================================
+        # ✅ STEP 1 → PASSWORD VERIFY
+        # =====================================================
+        if step == "1":
+            if not password:
+                return Response({"error": "Password is required"}, status=400)
 
-            # Safe token handling
-            token = Token.objects.filter(user=user_auth).first()
-            if not token:
-                try:
-                    token = Token.objects.create(user=user_auth)
-                except IntegrityError:
-                    token = Token.objects.get(user=user_auth)
+            user_auth = authenticate(request, email=email, password=password)
 
-            update_last_login(None, user_auth)
-            user_data = UserSerializer(user_auth, context={"request": request}).data
-            return Response({"token": token.key, "user": user_data}, status=200)
+            # ❌ WRONG PASSWORD
+            if not user_auth:
+                user.failed_login_attempts = F("failed_login_attempts") + 1
+                user.save(update_fields=["failed_login_attempts"])
+                user.refresh_from_db()
 
-        # Wrong password handling
-        user.failed_login_attempts = F("failed_login_attempts") + 1
-        user.save(update_fields=["failed_login_attempts"])
-        user.refresh_from_db()
+                if user.failed_login_attempts >= max_attempts:
+                    user.is_active = False
+                    user.save(update_fields=["is_active"])
+                    return Response(
+                        {"error": "Your account has been locked due to too many failed login attempts."},
+                        status=403,
+                    )
 
-        if user.failed_login_attempts >= max_attempts:
-            user.is_active = False
-            user.save(update_fields=["is_active"])
-            return Response(
+                remaining = max_attempts - user.failed_login_attempts
+
+                return Response(
+                    {"error": f"Invalid credentials. You have {remaining} attempts left."},
+                    status=401,
+                )
+
+            # ✅ RESET attempts
+            user.failed_login_attempts = 0
+            user.save(update_fields=["failed_login_attempts"])
+
+            # =====================================================
+            # 🚀 IF 2FA DISABLED → DIRECT LOGIN
+            # =====================================================
+            if not user.two_factor_enabled:
+                user.last_activity = timezone.now()
+                user.save(update_fields=["last_activity"])
+
+                token = Token.objects.filter(user=user).first()
+                if not token:
+                    try:
+                        token = Token.objects.create(user=user)
+                    except IntegrityError:
+                        token = Token.objects.get(user=user)
+
+                update_last_login(None, user)
+
+                user_data = UserSerializer(user, context={"request": request}).data
+
+                return Response({
+                    "token": token.key,
+                    "user": user_data,
+                    "2fa": False
+                }, status=200)
+
+            # =====================================================
+            # 🔐 IF 2FA ENABLED → SEND OTP
+            # =====================================================
+            otp_code = str(random.randint(100000, 999999))
+            session_id = str(uuid.uuid4())
+
+            cache.set(
+                f"otp:{session_id}",
                 {
-                    "error": "Your account has been locked due to too many failed login attempts."
+                    "otp": otp_code,
+                    "email": email
                 },
-                status=403,
+                timeout=300  # 5 min
             )
 
-        remaining = max_attempts - user.failed_login_attempts
-        return Response(
-            {"error": f"Invalid credentials. You have {remaining} attempts left."},
-            status=401,
-        )
+            try:
+                subject = "Your Login OTP"
+                body = f"Your OTP is: {otp_code}"
 
+                email_msg = EmailMessage(
+                    subject=subject,
+                    body=body,
+                    from_email=settings.DEFAULT_FROM_EMAIL,
+                    to=[email]
+                )
+                email_msg.send(fail_silently=False)
+
+            except Exception as e:
+                return Response({"error": str(e)}, status=500)
+
+            return Response({
+                "message": "OTP sent successfully",
+                "session_id": session_id,
+                "step": "2",
+                "2fa": True
+            }, status=200)
+
+        # =====================================================
+        # ✅ STEP 2 → OTP VERIFY
+        # =====================================================
+        if step == "2":
+            if not session_id or not otp:
+                return Response({"error": "OTP & session_id required"}, status=400)
+
+            cache_key = f"otp:{session_id}"
+            cached_data = cache.get(cache_key)
+
+            if not cached_data:
+                return Response({"error": "OTP expired"}, status=400)
+
+            if str(cached_data["otp"]) != str(otp):
+                return Response({"error": "Invalid OTP"}, status=400)
+
+            if cached_data["email"] != email:
+                return Response({"error": "Session mismatch"}, status=400)
+
+            cache.delete(cache_key)
+
+            user.failed_login_attempts = 0
+            user.last_activity = timezone.now()
+            user.save(update_fields=["failed_login_attempts", "last_activity"])
+
+            token = Token.objects.filter(user=user).first()
+            if not token:
+                try:
+                    token = Token.objects.create(user=user)
+                except IntegrityError:
+                    token = Token.objects.get(user=user)
+
+            update_last_login(None, user)
+
+            user_data = UserSerializer(user, context={"request": request}).data
+
+            return Response({
+                "token": token.key,
+                "user": user_data,
+                "2fa": True
+            }, status=200)
+
+        return Response({"error": "Invalid step"}, status=400)
 
 class UserViewSet(TrackUserMixin, viewsets.ModelViewSet):
     serializer_class = UserSerializer

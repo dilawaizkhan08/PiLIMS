@@ -54,6 +54,7 @@ class User(AbstractUser, BaseModel):
     failed_login_attempts = models.PositiveIntegerField(default=0)
     last_activity = models.DateTimeField(null=True, blank=True)
     signature = models.ImageField(upload_to="signatures/", null=True, blank=True)
+    two_factor_enabled = models.BooleanField(default=False)
     
     
 
