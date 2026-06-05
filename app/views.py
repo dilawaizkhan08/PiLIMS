@@ -2290,6 +2290,7 @@ class EntryAnalysesSchemaView(APIView):
                     "authorization_flag": result.authorization_flag if result else None,
                     "remarks": result.remarks if result else None,
                     "authorization_remark": result.authorization_remark if result else None,
+                    "acceptance_criteria": sc.acceptance_criteria,
                 })
 
             # ---------------------------
