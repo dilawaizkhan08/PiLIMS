@@ -2283,7 +2283,6 @@ class EntryAnalysesSchemaView(APIView):
                     "required": not sc.optional,
                     "choices": choices,
                     "specifications": sc.spec_limits,
-                    "acceptance_criteria": getattr(sc, "acceptance_criteria", None),
                     "calculated": comp.calculated,
                     "default_result": default_result, 
                     "value": result.value if result else None,
