@@ -514,7 +514,6 @@ class ComponentSerializer(serializers.ModelSerializer):
         required=False
     )
 
-    # ✅ NEW FIELD
     default_result = serializers.CharField(
         required=False,
         allow_null=True,
@@ -523,6 +522,11 @@ class ComponentSerializer(serializers.ModelSerializer):
 
     rounding_display = serializers.CharField(source='get_rounding_display', read_only=True)
     parameters = ParameterMappingSerializer(many=True, required=False)
+    acceptance_criteria = serializers.CharField(
+        required=False,
+        allow_null=True,
+        allow_blank=True
+    )
 
     class Meta:
         model = models.Component
@@ -535,7 +539,8 @@ class ComponentSerializer(serializers.ModelSerializer):
             'minimum', 'maximum', 'rounding', 'rounding_display',
             'decimal_places', 'list_id', 'listname',
             'default_result',  # ✅ include here
-            'parameters'
+            'parameters',
+            'acceptance_criteria',
         ]
 
     def validate(self, attrs):
@@ -619,6 +624,7 @@ class ComponentSerializer(serializers.ModelSerializer):
             calculated=instance.calculated,
             custom_function=instance.custom_function,
             default_result=instance.default_result,
+            acceptance_criteria=instance.acceptance_criteria, 
         )
 
         return instance
@@ -1753,6 +1759,11 @@ class SampleComponentSerializer(serializers.ModelSerializer):
 
     rounding_display = serializers.CharField(source="get_rounding_display", read_only=True)
     parameters = serializers.SerializerMethodField()
+    acceptance_criteria = serializers.CharField(
+        required=False,
+        allow_null=True,
+        allow_blank=True
+    )
 
     class Meta:
         model = models.SampleComponent
@@ -1778,6 +1789,7 @@ class SampleComponentSerializer(serializers.ModelSerializer):
             "function",
             "parameters",
             "default_result",
+            "acceptance_criteria"
         ]
 
     # ---------------- VALIDATION ----------------
@@ -2421,6 +2433,7 @@ class ProductSerializer(serializers.ModelSerializer):
                 calculated=real.calculated,
                 spec_limits=real.spec_limits,
                 custom_function=real.custom_function if real.calculated else None,
+                acceptance_criteria=real.acceptance_criteria,
             )
             replica_map[real.id] = replica
 

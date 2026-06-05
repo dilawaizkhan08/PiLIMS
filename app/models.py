@@ -333,6 +333,7 @@ class Component(BaseModel):
     listname = models.ForeignKey(List, on_delete=models.SET_NULL, null=True, blank=True, related_name="components")
 
     custom_function = models.ForeignKey('CustomFunction',on_delete=models.SET_NULL,null=True,blank=True,related_name='components')
+    acceptance_criteria = models.CharField(max_length=255, null=True, blank=True, help_text="Acceptance criteria for this component")
 
     def __str__(self):
         return f"{self.name}"
@@ -950,6 +951,7 @@ class SampleComponent(models.Model):
         blank=True,
         help_text="Default result value that appears in result entry screen"
     )
+    acceptance_criteria = models.CharField(max_length=255, null=True, blank=True, help_text="Acceptance criteria for this component")
 
     def __str__(self):
         return f"{self.name or self.component.name} (Sample Component)"
@@ -1307,11 +1309,28 @@ class Investigation(models.Model):
 
 
 class BlendReport(models.Model):
-    sample_id = models.CharField(max_length=100)
-    parameter_name = models.CharField(max_length=100)
-    result = models.FloatField()
-    date = models.DateTimeField()
-    instrument_name = models.CharField(max_length=100)
+    sample_set_id = models.CharField(max_length=100)
+    result_set_id = models.CharField(max_length=100)
+
+    sample_name = models.CharField(max_length=255)
+    compound_name = models.CharField(max_length=100)  # "Nicotine"
+
+    time = models.FloatField(null=True, blank=True)  # (min)
+    sample_weight = models.FloatField(null=True, blank=True)
+    sku_strength = models.FloatField(null=True, blank=True)
+    area = models.FloatField(null=True, blank=True)
+    blend_amount = models.FloatField(null=True, blank=True)
+
+    # Authorship & Approval
+    authored_by = models.CharField(max_length=255, null=True, blank=True)
+    authored_at = models.DateTimeField(null=True, blank=True)
+
+    approved_by = models.CharField(max_length=255, null=True, blank=True)
+    approved_at = models.DateTimeField(null=True, blank=True)
+
+    instrument_name = models.CharField(max_length=100, default="Blend Report")
+
+    created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
-        return f"{self.sample_id} - {self.parameter_name}"
+        return self.sample_name

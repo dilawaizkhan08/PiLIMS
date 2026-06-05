@@ -1013,7 +1013,6 @@ class SampleFormSubmitView(APIView):
                     models.Analysis.objects.filter(id__in=final_analysis_ids)
                 )
 
-                # 🔥 AUTO CREATE entry_analyses + sample_components
                 create_entry_analyses(entry, final_analysis_ids)
 
             # ----------------------------------
@@ -4907,18 +4906,16 @@ class UploadBlendReportView(APIView):
             )
 
         try:
-            # Save temp file
             with tempfile.NamedTemporaryFile(delete=False) as tmp:
                 for chunk in uploaded_file.chunks():
                     tmp.write(chunk)
 
                 file_path = tmp.name
 
-            # Parse + store data
             parse_blend_report(file_path)
 
             return Response(
-                {"message": "File uploaded and data stored successfully"},
+                {"message": "File processed successfully"},
                 status=status.HTTP_200_OK
             )
 
@@ -4927,4 +4924,5 @@ class UploadBlendReportView(APIView):
                 {"error": str(e)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
-        
+
+

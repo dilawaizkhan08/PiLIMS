@@ -66,6 +66,7 @@ def create_entry_analyses(entry, analysis_ids):
                 optional=comp.optional,
                 calculated=comp.calculated,
                 custom_function=comp.custom_function if comp.calculated else None,
+                acceptance_criteria=comp.acceptance_criteria,
             )
             old_to_new_map[comp.id] = sc
 
@@ -175,92 +176,163 @@ def generate_report(template_id, sample_id, request):
 
 
 
+from datetime import datetime
+from app import models
+
+
+def clean(line):
+    return line.replace("'", "").strip()
+
+
+def split(line):
+    return [p.strip() for p in line.split(",")]
+
+
+def parse_date(date_str):
+    return datetime.strptime(
+        date_str.split(" +")[0].strip(),
+        "%m/%d/%Y %I:%M:%S %p"
+    )
+
+
 def parse_blend_report(file_path):
-    with open(file_path, "r") as file:
-        content = file.read()
 
-    # Clean quotes
-    content = content.replace("'", "")
+    with open(file_path, "r") as f:
+        lines = [clean(l) for l in f if l.strip()]
 
-    lines = [line.strip() for line in content.splitlines() if line.strip()]
-
-    instrument_name = "Blend Report"
-
-    records_saved = 0
+    # =========================
+    # 1. PEAK RESULTS
+    # =========================
+    peak_records = []
+    peak_section = False
 
     for line in lines:
-        try:
-            # Split and clean
-            parts = [p.strip() for p in line.split(",")]
-            parts = [p for p in parts if p]  # remove empty
 
-            # Skip non-data lines
-            if len(parts) < 6:
-                continue
-
-            if parts[0] == "#":
-                parts.pop(0)
-
-            # After cleanup, we expect:
-            # [index, sample_id, result_set_id, sample_name, full_name, date]
-
-            if len(parts) < 6:
-                continue
-
-            index = parts[0]
-
-            # Skip header rows like: ['#', '#', 'Sample Set Id', ...]
-            if not index.isdigit():
-                continue
-
-            sample_id = parts[1]
-            sample_name = parts[3]
-            parameter_name = "Nicotine" 
-            date_str = parts[5]
-
-            # Parse date
-            date = datetime.strptime(
-                date_str.split(" +")[0],
-                "%m/%d/%Y %I:%M:%S %p"
-            )
-
-            result = extract_result_for_sample(content, sample_name)
-
-            # Save to DB
-            models.BlendReport.objects.create(
-                sample_id=sample_id,
-                parameter_name=parameter_name,
-                result=result,
-                date=date,
-                instrument_name=instrument_name
-            )
-
-            records_saved += 1
-
-        except Exception as e:
-            print("❌ Skipping line:", line)
-            print("Error:", e)
+        if "Peak Results" in line:
+            peak_section = True
             continue
 
-    print(f"✅ Total records saved: {records_saved}")
+        if peak_section:
 
+            if "Result Sign Off" in line:
+                break
 
-# Helper to map result with sample
-def extract_result_for_sample(content, sample_name):
-    try:
-        content = content.replace("'", "")
-        lines = content.splitlines()
+            parts = split(line)
 
-        for line in lines:
-            if sample_name in line and "Nicotine" in line:
-                parts = [p.strip() for p in line.split(",") if p.strip()]
+            if not parts:
+                continue
 
-                # Last value is Blend_Amount (result)
-                return float(parts[-1])
+            if not parts[0].isdigit():
+                continue
 
-    except:
-        pass
+            try:
+                clean_parts = [p for p in parts if p != ""]
 
-    return 0.0  # fallback
+                if len(clean_parts) < 10:
+                    continue
 
+                peak_records.append({
+                    "sample_set_id": clean_parts[1],
+                    "result_set_id": clean_parts[2],
+                    "sample_name": clean_parts[3],
+                    "compound_name": clean_parts[4],
+                    "time": float(clean_parts[5]),
+                    "sample_weight": float(clean_parts[6]),
+                    "sku_strength": float(clean_parts[7]),
+                    "area": float(clean_parts[8]),
+                    "blend_amount": float(clean_parts[9]),
+                })
+
+            except Exception as e:
+                print("❌ Peak error:", parts, e)
+
+    # =========================
+    # 2. SIGNOFF (FINAL FIXED)
+    # =========================
+    signoff_map = {}
+    signoff_section = False
+
+    for line in lines:
+
+        if (
+            "Full Name" in line and
+            "Date" in line and
+            "Sample Set Id" in line
+        ):
+            signoff_section = True
+            continue
+
+        if signoff_section:
+
+            if "Project Name" in line:
+                break
+
+            parts = split(line)
+
+            if not parts:
+                continue
+
+            # 🔥 REMOVE HASH ROW PROPERLY
+            while parts and parts[0].strip() == "#":
+                parts.pop(0)
+
+            if len(parts) < 6:
+                continue
+
+            try:
+                clean_parts = [p for p in parts if p != ""]
+
+                sample_name = clean_parts[3]
+                full_name = clean_parts[4]
+                date = parse_date(clean_parts[5])
+
+                if sample_name not in signoff_map:
+                    signoff_map[sample_name] = []
+
+                signoff_map[sample_name].append({
+                    "name": full_name,
+                    "date": date
+                })
+
+            except Exception as e:
+                print("❌ Signoff error:", parts, e)
+
+    print("✅ SIGNOFF MAP SIZE:", len(signoff_map))
+
+    # =========================
+    # 3. SAVE DATA
+    # =========================
+    for record in peak_records:
+
+        sample = record["sample_name"]
+        signoffs = signoff_map.get(sample, [])
+
+        authored_by = authored_at = None
+        approved_by = approved_at = None
+
+        if len(signoffs) >= 1:
+            authored_by = signoffs[0]["name"]
+            authored_at = signoffs[0]["date"]
+
+        if len(signoffs) >= 2:
+            approved_by = signoffs[1]["name"]
+            approved_at = signoffs[1]["date"]
+
+        models.BlendReport.objects.create(
+            sample_set_id=record["sample_set_id"],
+            result_set_id=record["result_set_id"],
+            sample_name=sample,
+            compound_name=record["compound_name"],
+            time=record["time"],
+            sample_weight=record["sample_weight"],
+            sku_strength=record["sku_strength"],
+            area=record["area"],
+            blend_amount=record["blend_amount"],
+            authored_by=authored_by,
+            authored_at=authored_at,
+            approved_by=approved_by,
+            approved_at=approved_at,
+        )
+
+    print("✅ DONE SUCCESSFULLY")
 
