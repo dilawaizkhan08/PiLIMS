@@ -62,8 +62,13 @@ import qrcode
 import base64
 from io import BytesIO
 from .utility import parse_blend_report
+import pyotp
+import qrcode
+import io
+import base64
 import logging
 logger = logging.getLogger(__name__)
+from django.contrib.sessions.models import Session
 
 
 
@@ -93,85 +98,15 @@ class RegisterView(views.APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
-# class LoginView(views.APIView):
-#     permission_classes = [AllowAny]
-
-#     def post(self, request, *args, **kwargs):
-#         serializer = LoginSerializer(data=request.data)
-#         serializer.is_valid(raise_exception=True)
-
-#         email = serializer.validated_data["email"]
-#         password = serializer.validated_data["password"]
-
-#         try:
-#             user = User.objects.get(email=email)
-#         except User.DoesNotExist:
-#             return Response({"error": "Invalid credentials"}, status=401)
-
-#         if not user.is_active:
-#             return Response(
-#                 {"error": "Your account is deactivated. Please contact admin."},
-#                 status=403,
-#             )
-
-#         max_attempts = int(get_config("max_wrong_password_attempts", 5))
-#         user_auth = authenticate(request, email=email, password=password)
-
-#         if user_auth:
-#             # Reset failed login attempts
-#             user_auth.failed_login_attempts = 0
-#             user_auth.last_activity = timezone.now()
-#             user_auth.save(update_fields=["failed_login_attempts", "last_activity"])
-
-#             # Safe token handling
-#             token = Token.objects.filter(user=user_auth).first()
-#             if not token:
-#                 try:
-#                     token = Token.objects.create(user=user_auth)
-#                 except IntegrityError:
-#                     token = Token.objects.get(user=user_auth)
-
-#             update_last_login(None, user_auth)
-#             user_data = UserSerializer(user_auth, context={"request": request}).data
-#             return Response({"token": token.key, "user": user_data}, status=200)
-
-#         # Wrong password handling
-#         user.failed_login_attempts = F("failed_login_attempts") + 1
-#         user.save(update_fields=["failed_login_attempts"])
-#         user.refresh_from_db()
-
-#         if user.failed_login_attempts >= max_attempts:
-#             user.is_active = False
-#             user.save(update_fields=["is_active"])
-#             return Response(
-#                 {
-#                     "error": "Your account has been locked due to too many failed login attempts."
-#                 },
-#                 status=403,
-#             )
-
-#         remaining = max_attempts - user.failed_login_attempts
-#         return Response(
-#             {"error": f"Invalid credentials. You have {remaining} attempts left."},
-#             status=401,
-#         )
-
-
-
-class LoginView(APIView):
+class LoginView(views.APIView):
     permission_classes = [AllowAny]
 
-    def post(self, request):
-        email = request.data.get("email")
-        password = request.data.get("password")
-        step = request.data.get("step")
-        otp = request.data.get("otp")
-        session_id = request.data.get("session_id")
+    def post(self, request, *args, **kwargs):
+        serializer = LoginSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
 
-        if not email:
-            return Response({"error": "Email is required"}, status=400)
-
-        email = email.strip().lower()
+        email = serializer.validated_data["email"]
+        password = serializer.validated_data["password"]
 
         try:
             user = User.objects.get(email=email)
@@ -185,145 +120,366 @@ class LoginView(APIView):
             )
 
         max_attempts = int(get_config("max_wrong_password_attempts", 5))
+        user_auth = authenticate(request, email=email, password=password)
 
-        # =====================================================
-        # ✅ STEP 1 → PASSWORD VERIFY
-        # =====================================================
-        if step == "1":
-            if not password:
-                return Response({"error": "Password is required"}, status=400)
+        if user_auth:
+            # Reset failed login attempts
+            user_auth.failed_login_attempts = 0
+            user_auth.last_activity = timezone.now()
+            user_auth.save(update_fields=["failed_login_attempts", "last_activity"])
 
-            user_auth = authenticate(request, email=email, password=password)
-
-            # ❌ WRONG PASSWORD
-            if not user_auth:
-                user.failed_login_attempts = F("failed_login_attempts") + 1
-                user.save(update_fields=["failed_login_attempts"])
-                user.refresh_from_db()
-
-                if user.failed_login_attempts >= max_attempts:
-                    user.is_active = False
-                    user.save(update_fields=["is_active"])
-                    return Response(
-                        {"error": "Your account has been locked due to too many failed login attempts."},
-                        status=403,
-                    )
-
-                remaining = max_attempts - user.failed_login_attempts
+            # 🔐 CHECK 2FA
+            if user_auth.is_2fa_enabled:
+                # Store user in session for verification
+                request.session["pending_2fa_user_id"] = user_auth.id
+                request.session.save()
 
                 return Response(
-                    {"error": f"Invalid credentials. You have {remaining} attempts left."},
-                    status=401,
+                    {
+                        "message": "2FA required",
+                        "requires_2fa": True,
+                        "session_key": request.session.session_key,
+                    },
+                    status=200,
                 )
 
-            # ✅ RESET attempts
-            user.failed_login_attempts = 0
-            user.save(update_fields=["failed_login_attempts"])
-
-            # =====================================================
-            # 🚀 IF 2FA DISABLED → DIRECT LOGIN
-            # =====================================================
-            if not user.two_factor_enabled:
-                user.last_activity = timezone.now()
-                user.save(update_fields=["last_activity"])
-
-                token = Token.objects.filter(user=user).first()
-                if not token:
-                    try:
-                        token = Token.objects.create(user=user)
-                    except IntegrityError:
-                        token = Token.objects.get(user=user)
-
-                update_last_login(None, user)
-
-                user_data = UserSerializer(user, context={"request": request}).data
-
-                return Response({
-                    "token": token.key,
-                    "user": user_data,
-                    "2fa": False
-                }, status=200)
-
-            # =====================================================
-            # 🔐 IF 2FA ENABLED → SEND OTP
-            # =====================================================
-            otp_code = str(random.randint(100000, 999999))
-            session_id = str(uuid.uuid4())
-
-            cache.set(
-                f"otp:{session_id}",
-                {
-                    "otp": otp_code,
-                    "email": email
-                },
-                timeout=300  # 5 min
-            )
-
-            try:
-                subject = "Your Login OTP"
-                body = f"Your OTP is: {otp_code}"
-
-                email_msg = EmailMessage(
-                    subject=subject,
-                    body=body,
-                    from_email=settings.DEFAULT_FROM_EMAIL,
-                    to=[email]
-                )
-                email_msg.send(fail_silently=False)
-
-            except Exception as e:
-                return Response({"error": str(e)}, status=500)
-
-            return Response({
-                "message": "OTP sent successfully",
-                "session_id": session_id,
-                "step": "2",
-                "2fa": True
-            }, status=200)
-
-        # =====================================================
-        # ✅ STEP 2 → OTP VERIFY
-        # =====================================================
-        if step == "2":
-            if not session_id or not otp:
-                return Response({"error": "OTP & session_id required"}, status=400)
-
-            cache_key = f"otp:{session_id}"
-            cached_data = cache.get(cache_key)
-
-            if not cached_data:
-                return Response({"error": "OTP expired"}, status=400)
-
-            if str(cached_data["otp"]) != str(otp):
-                return Response({"error": "Invalid OTP"}, status=400)
-
-            if cached_data["email"] != email:
-                return Response({"error": "Session mismatch"}, status=400)
-
-            cache.delete(cache_key)
-
-            user.failed_login_attempts = 0
-            user.last_activity = timezone.now()
-            user.save(update_fields=["failed_login_attempts", "last_activity"])
-
-            token = Token.objects.filter(user=user).first()
+            # ✅ Normal login (2FA disabled)
+            token = Token.objects.filter(user=user_auth).first()
             if not token:
                 try:
-                    token = Token.objects.create(user=user)
+                    token = Token.objects.create(user=user_auth)
                 except IntegrityError:
-                    token = Token.objects.get(user=user)
+                    token = Token.objects.get(user=user_auth)
 
+            update_last_login(None, user_auth)
+            user_data = UserSerializer(user_auth, context={"request": request}).data
+
+            return Response(
+                {
+                    "token": token.key,
+                    "user": user_data,
+                    "requires_2fa": False,
+                },
+                status=200,
+            )
+
+        # ❌ Wrong password handling (UNCHANGED)
+        user.failed_login_attempts = F("failed_login_attempts") + 1
+        user.save(update_fields=["failed_login_attempts"])
+        user.refresh_from_db()
+
+        if user.failed_login_attempts >= max_attempts:
+            user.is_active = False
+            user.save(update_fields=["is_active"])
+            return Response(
+                {
+                    "error": "Your account has been locked due to too many failed login attempts."
+                },
+                status=403,
+            )
+
+        remaining = max_attempts - user.failed_login_attempts
+        return Response(
+            {"error": f"Invalid credentials. You have {remaining} attempts left."},
+            status=401,
+        )
+
+class TwoFactorSetupView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+
+        if user.is_2fa_enabled:
+            return Response({"error": "2FA already enabled"}, status=400)
+
+        if not user.twofa_secret:
+            user.generate_2fa_secret()
+
+        totp_uri = user.get_totp_uri()
+
+        # QR generate
+        qr = qrcode.QRCode(version=1, box_size=10, border=5)
+        qr.add_data(totp_uri)
+        qr.make(fit=True)
+        img = qr.make_image(fill_color="black", back_color="white")
+
+        buffer = io.BytesIO()
+        img.save(buffer, format="PNG")
+        buffer.seek(0)
+
+        # base64 for frontend preview
+        qr_code_base64 = base64.b64encode(buffer.getvalue()).decode()
+
+        file_name = f"twofa_qr_{user.id}.png"
+        file_path = os.path.join("qr_codes", file_name)
+
+        user.profile_picture.save(file_path, ContentFile(buffer.getvalue()), save=True)
+
+        image_url = request.build_absolute_uri(
+            settings.MEDIA_URL + user.profile_picture.name
+        )
+        return Response(
+            {
+                "qr_code": qr_code_base64,
+                "totp_uri": totp_uri,
+                "image_url": image_url,
+                "message": "Scan QR in your Authenticator app and verify OTP.",
+            },
+            status=200,
+        )
+
+
+
+
+#  ENABLE 2FA (after scanning QR — verify OTP for own account)
+class TwoFactorEnableView(APIView):
+    """Authenticated user submits OTP to enable 2FA"""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        otp = request.data.get("otp")
+        if not otp:
+            return Response({"error": "OTP required"}, status=400)
+
+        user = request.user
+        if not user.twofa_secret:
+            return Response({"error": "2FA not initialized"}, status=400)
+
+        totp = pyotp.TOTP(user.twofa_secret)
+        if totp.verify(otp, valid_window=1):
+            user.is_2fa_enabled = True
+            user.save()
+            return Response({"message": "✅ 2FA successfully enabled"}, status=200)
+        else:
+            return Response({"error": "Invalid OTP"}, status=401)
+
+
+# VERIFY 2FA DURING LOGIN (with session key)
+class TwoFactorVerifyView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        otp = request.data.get("otp")
+        session_key = request.headers.get("Session-Key")
+
+        if not session_key or not otp:
+            return Response({"error": "OTP and Session key are required"}, status=400)
+
+        session = Session.objects.filter(session_key=session_key).first()
+        if not session:
+            return Response({"error": "Invalid session key"}, status=400)
+
+        user_id = session.get_decoded().get("pending_2fa_user_id")
+        if not user_id:
+            return Response({"error": "No pending 2FA verification"}, status=400)
+
+        user = User.objects.filter(id=user_id).first()
+        if not user:
+            return Response({"error": "Invalid user"}, status=400)
+
+        totp = pyotp.TOTP(user.twofa_secret)
+        if totp.verify(otp, valid_window=1):
+
+            token, _ = Token.objects.get_or_create(user=user)
             update_last_login(None, user)
+            session.delete()
 
             user_data = UserSerializer(user, context={"request": request}).data
 
-            return Response({
-                "token": token.key,
-                "user": user_data,
-                "2fa": True
-            }, status=200)
+            return Response(
+                {
+                    "message": "OTP verified successfully",
+                    "token": token.key,
+                    "user": user_data,
+                },
+                status=200,
+            )
 
-        return Response({"error": "Invalid step"}, status=400)
+        return Response({"error": "Invalid OTP"}, status=401)
+
+
+
+class TwoFactorDisableView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        user = request.user
+        user.is_2fa_enabled = False
+        user.twofa_secret = ""
+        user.save()
+        return Response({"message": "2FA disabled successfully"}, status=status.HTTP_200_OK)
+
+
+
+
+# class LoginView(APIView):
+#     permission_classes = [AllowAny]
+
+#     def post(self, request):
+#         email = request.data.get("email")
+#         password = request.data.get("password")
+#         step = request.data.get("step")
+#         otp = request.data.get("otp")
+#         session_id = request.data.get("session_id")
+
+#         if not email:
+#             return Response({"error": "Email is required"}, status=400)
+
+#         email = email.strip().lower()
+
+#         try:
+#             user = User.objects.get(email=email)
+#         except User.DoesNotExist:
+#             return Response({"error": "Invalid credentials"}, status=401)
+
+#         if not user.is_active:
+#             return Response(
+#                 {"error": "Your account is deactivated. Please contact admin."},
+#                 status=403,
+#             )
+
+#         max_attempts = int(get_config("max_wrong_password_attempts", 5))
+
+#         # =====================================================
+#         # ✅ STEP 1 → PASSWORD VERIFY
+#         # =====================================================
+#         if step == "1":
+#             if not password:
+#                 return Response({"error": "Password is required"}, status=400)
+
+#             user_auth = authenticate(request, email=email, password=password)
+
+#             # ❌ WRONG PASSWORD
+#             if not user_auth:
+#                 user.failed_login_attempts = F("failed_login_attempts") + 1
+#                 user.save(update_fields=["failed_login_attempts"])
+#                 user.refresh_from_db()
+
+#                 if user.failed_login_attempts >= max_attempts:
+#                     user.is_active = False
+#                     user.save(update_fields=["is_active"])
+#                     return Response(
+#                         {"error": "Your account has been locked due to too many failed login attempts."},
+#                         status=403,
+#                     )
+
+#                 remaining = max_attempts - user.failed_login_attempts
+
+#                 return Response(
+#                     {"error": f"Invalid credentials. You have {remaining} attempts left."},
+#                     status=401,
+#                 )
+
+#             # ✅ RESET attempts
+#             user.failed_login_attempts = 0
+#             user.save(update_fields=["failed_login_attempts"])
+
+#             # =====================================================
+#             # 🚀 IF 2FA DISABLED → DIRECT LOGIN
+#             # =====================================================
+#             if not user.two_factor_enabled:
+#                 user.last_activity = timezone.now()
+#                 user.save(update_fields=["last_activity"])
+
+#                 token = Token.objects.filter(user=user).first()
+#                 if not token:
+#                     try:
+#                         token = Token.objects.create(user=user)
+#                     except IntegrityError:
+#                         token = Token.objects.get(user=user)
+
+#                 update_last_login(None, user)
+
+#                 user_data = UserSerializer(user, context={"request": request}).data
+
+#                 return Response({
+#                     "token": token.key,
+#                     "user": user_data,
+#                     "2fa": False
+#                 }, status=200)
+
+#             # =====================================================
+#             # 🔐 IF 2FA ENABLED → SEND OTP
+#             # =====================================================
+#             otp_code = str(random.randint(100000, 999999))
+#             session_id = str(uuid.uuid4())
+
+#             cache.set(
+#                 f"otp:{session_id}",
+#                 {
+#                     "otp": otp_code,
+#                     "email": email
+#                 },
+#                 timeout=300  # 5 min
+#             )
+
+#             try:
+#                 subject = "Your Login OTP"
+#                 body = f"Your OTP is: {otp_code}"
+
+#                 email_msg = EmailMessage(
+#                     subject=subject,
+#                     body=body,
+#                     from_email=settings.DEFAULT_FROM_EMAIL,
+#                     to=[email]
+#                 )
+#                 email_msg.send(fail_silently=False)
+
+#             except Exception as e:
+#                 return Response({"error": str(e)}, status=500)
+
+#             return Response({
+#                 "message": "OTP sent successfully",
+#                 "session_id": session_id,
+#                 "step": "2",
+#                 "2fa": True
+#             }, status=200)
+
+#         # =====================================================
+#         # ✅ STEP 2 → OTP VERIFY
+#         # =====================================================
+#         if step == "2":
+#             if not session_id or not otp:
+#                 return Response({"error": "OTP & session_id required"}, status=400)
+
+#             cache_key = f"otp:{session_id}"
+#             cached_data = cache.get(cache_key)
+
+#             if not cached_data:
+#                 return Response({"error": "OTP expired"}, status=400)
+
+#             if str(cached_data["otp"]) != str(otp):
+#                 return Response({"error": "Invalid OTP"}, status=400)
+
+#             if cached_data["email"] != email:
+#                 return Response({"error": "Session mismatch"}, status=400)
+
+#             cache.delete(cache_key)
+
+#             user.failed_login_attempts = 0
+#             user.last_activity = timezone.now()
+#             user.save(update_fields=["failed_login_attempts", "last_activity"])
+
+#             token = Token.objects.filter(user=user).first()
+#             if not token:
+#                 try:
+#                     token = Token.objects.create(user=user)
+#                 except IntegrityError:
+#                     token = Token.objects.get(user=user)
+
+#             update_last_login(None, user)
+
+#             user_data = UserSerializer(user, context={"request": request}).data
+
+#             return Response({
+#                 "token": token.key,
+#                 "user": user_data,
+#                 "2fa": True
+#             }, status=200)
+
+#         return Response({"error": "Invalid step"}, status=400)
 
 class UserViewSet(TrackUserMixin, viewsets.ModelViewSet):
     serializer_class = UserSerializer

@@ -14,6 +14,7 @@ import phonenumbers
 from django.core.exceptions import ValidationError
 from django.db.models import Sum
 from datetime import timedelta
+import pyotp
 
 
 class BaseModel(models.Model):
@@ -54,17 +55,16 @@ class User(AbstractUser, BaseModel):
     failed_login_attempts = models.PositiveIntegerField(default=0)
     last_activity = models.DateTimeField(null=True, blank=True)
     signature = models.ImageField(upload_to="signatures/", null=True, blank=True)
-    two_factor_enabled = models.BooleanField(default=False)
+    is_2fa_enabled = models.BooleanField(default=False)
+    twofa_secret = models.CharField(max_length=255, null=True, blank=True)
     
     
 
     def clean(self):
         super().clean()
-        # ✅ DOB validation
         if self.dob and self.dob > timezone.now().date():
             raise ValidationError({"dob": "Date of Birth cannot be in the future."})
 
-        # ✅ Phone number validation
         if self.phone_number:
             try:
                 parsed = phonenumbers.parse(self.phone_number, None)  # None = allow any country code
@@ -73,6 +73,16 @@ class User(AbstractUser, BaseModel):
             except phonenumbers.NumberParseException:
                 raise ValidationError({"phone_number": "Invalid phone number format. Use international format like +14155552671."})
 
+    
+    def generate_2fa_secret(self):
+        self.twofa_secret = pyotp.random_base32()
+        self.save(update_fields=["twofa_secret"])
+
+    def get_totp_uri(self):
+        return pyotp.totp.TOTP(self.twofa_secret).provisioning_uri(
+            name=self.email,
+            issuer_name="YourAppName"
+        )
 
 class UserGroup(BaseModel):
     name = models.CharField(max_length=255, unique=True)
@@ -592,6 +602,13 @@ class Product(BaseModel):
         related_name="products"
     )
     document_code = models.CharField(
+        max_length=100,
+        unique=True,
+        null=True,
+        blank=True
+    )
+
+    erp_code = models.CharField(
         max_length=100,
         unique=True,
         null=True,
@@ -1129,6 +1146,8 @@ class ProductSamplingGradeAnalysis(BaseModel):
 
     def __str__(self):
         return f"{self.product_sampling_grade} → {self.analysis}"
+
+
 
 # class ProductAnalysis(BaseModel):
 #     product = models.ForeignKey(Product, on_delete=models.CASCADE)

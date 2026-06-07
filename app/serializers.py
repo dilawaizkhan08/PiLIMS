@@ -2335,6 +2335,7 @@ class ProductSerializer(serializers.ModelSerializer):
             "user_groups",
             "user_groups_ids",
             "document_code",
+            "erp_code", 
             "analyses_data",
             "product_type",
         ]
