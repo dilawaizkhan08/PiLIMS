@@ -255,17 +255,15 @@ class TwoFactorEnableView(APIView):
         else:
             return Response({"error": "Invalid OTP"}, status=401)
 
-
-# VERIFY 2FA DURING LOGIN (with session key)
 class TwoFactorVerifyView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
         otp = request.data.get("otp")
-        session_key = request.headers.get("Session-Key")
+        session_key = request.data.get("session_key")
 
         if not session_key or not otp:
-            return Response({"error": "OTP and Session key are required"}, status=400)
+            return Response({"error": "OTP and session_key are required"}, status=400)
 
         session = Session.objects.filter(session_key=session_key).first()
         if not session:
@@ -1138,6 +1136,7 @@ class SampleFormSubmitView(APIView):
                     clean_data[field.field_name] = value
                     try:
                         product = models.Product.objects.get(id=value)
+                        product_id = product.id
 
                         product_analysis_ids = (
                             models.ProductSamplingGradeAnalysis.objects
@@ -1169,7 +1168,7 @@ class SampleFormSubmitView(APIView):
                     models.Analysis.objects.filter(id__in=final_analysis_ids)
                 )
 
-                create_entry_analyses(entry, final_analysis_ids)
+                create_entry_analyses(entry, final_analysis_ids, product_id)
 
             # ----------------------------------
             #  SAVE ENTRY DATA (RESPONSE SAME)
@@ -2417,7 +2416,12 @@ class EntryAnalysesSchemaView(APIView):
                 if not comp:
                     continue  # skip if component is missing
 
-                choices = sc.spec_limits if comp.type.lower() == "list" else None
+                choices = None
+
+                if comp.type and comp.type.lower() == "list" and comp.listname:
+                    choices = list(
+                        comp.listname.values.values_list("value", flat=True)
+                    )
 
                 # Get result if exists
                 result = models.ComponentResult.objects.filter(
@@ -4739,6 +4743,7 @@ class IncomingMaterialSampleInspectionViewSet(viewsets.ModelViewSet):
             auto_analysis_ids = set()
 
             product = inspection.material
+            product_id = product.id if product else None
 
             for field in sample_form.fields.all():
 
@@ -4774,7 +4779,7 @@ class IncomingMaterialSampleInspectionViewSet(viewsets.ModelViewSet):
                 entry.analyses.set(
                     models.Analysis.objects.filter(id__in=auto_analysis_ids)
                 )
-                create_entry_analyses(entry, auto_analysis_ids)
+                create_entry_analyses(entry, auto_analysis_ids,product_id)
 
             # -------------------------
             # SAVE ENTRY

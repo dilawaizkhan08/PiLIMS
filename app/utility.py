@@ -33,63 +33,8 @@ def paginate_queryset(request, view, queryset, serializer_class):
     return Response(serializer.data)
 
 
-# def create_entry_analyses(entry, analysis_ids):
-#     from app import models
 
-#     for analysis in models.Analysis.objects.filter(id__in=analysis_ids):
-
-#         ea, _ = models.DynamicFormEntryAnalysis.objects.get_or_create(
-#             entry=entry,
-#             analysis=analysis
-#         )
-
-#         components = analysis.components.all()
-#         ea.components.set(components)
-
-#         # delete old
-#         models.SampleComponent.objects.filter(entry_analysis=ea).delete()
-
-#         old_to_new_map = {}
-
-#         for comp in components:
-#             sc = models.SampleComponent.objects.create(
-#                 entry_analysis=ea,
-#                 component=comp,
-#                 name=comp.name,
-#                 unit=comp.unit,
-#                 minimum=comp.minimum,
-#                 maximum=comp.maximum,
-#                 decimal_places=comp.decimal_places,
-#                 rounding=comp.rounding,
-#                 spec_limits=comp.spec_limits,
-#                 description=comp.description,
-#                 optional=comp.optional,
-#                 calculated=comp.calculated,
-#                 custom_function=comp.custom_function if comp.calculated else None,
-#                 acceptance_criteria=comp.acceptance_criteria,
-#             )
-#             old_to_new_map[comp.id] = sc
-
-#         # clone parameters for calculated components
-#         for comp in components:
-#             if not comp.calculated:
-#                 continue
-
-#             new_sc = old_to_new_map.get(comp.id)
-#             if not new_sc:
-#                 continue
-
-#             for param in comp.function_parameters.all():
-#                 mapped_sc = old_to_new_map.get(param.mapped_component.id)
-#                 if mapped_sc:
-#                     models.SampleComponentFunctionParameter.objects.create(
-#                         sample_component=new_sc,
-#                         parameter=param.parameter,
-#                         mapped_sample_component=mapped_sc
-#                     )
-
-
-def create_entry_analyses(entry, analysis_ids):
+def create_entry_analyses(entry, analysis_ids, product_id):
     from app import models
 
     for analysis in models.Analysis.objects.filter(id__in=analysis_ids):
@@ -100,40 +45,114 @@ def create_entry_analyses(entry, analysis_ids):
         )
 
         # ---------------------------------------------------
-        # STEP 1: GET PRODUCT SAMPLE COMPONENTS ONLY
+        # GET PRODUCT SAMPLE COMPONENTS (TEMPLATE)
         # ---------------------------------------------------
         product_components = models.SampleComponent.objects.filter(
+            product_sampling_grade_analyses__product_sampling_grade__product_id=product_id,
             product_sampling_grade_analyses__analysis=analysis
         ).distinct()
 
+        ea.components.set(product_components.values_list("component", flat=True))
+
+        old_to_new_map = {}
+
         # ---------------------------------------------------
-        # STEP 2: LINK TO ENTRY (NO CREATION)
+        # ALWAYS CLONE NEW SAMPLE COMPONENTS
         # ---------------------------------------------------
-        ea.sample_components.set(product_components)
+        for comp in product_components:
 
-        # also keep old structure consistent (if needed for frontend)
-        ea.components.set(
-            product_components.values_list("component", flat=True)
-        )
+            sc = models.SampleComponent.objects.create(
+                entry_analysis=ea,
+                component=comp.component,
 
-        old_to_new_map = {
-            sc.component_id: sc for sc in product_components
-        }
+                type=comp.type,
+                name=comp.name,
+                unit=comp.unit,
+                minimum=comp.minimum,
+                maximum=comp.maximum,
+                decimal_places=comp.decimal_places,
+                rounding=comp.rounding,
+                spec_limits=comp.spec_limits,
+                description=comp.description,
+                optional=comp.optional,
+                calculated=comp.calculated,
+                custom_function=comp.custom_function,
+                acceptance_criteria=comp.acceptance_criteria,
+            )
 
-        for sc in product_components:
-            comp = sc.component
-            if not comp or not comp.calculated:
+            old_to_new_map[comp.id] = sc
+
+        # ---------------------------------------------------
+        # CLONE FUNCTION PARAMETERS
+        # ---------------------------------------------------
+        for comp in product_components:
+
+            if not comp.calculated:
                 continue
 
-            for param in comp.function_parameters.all():
+            new_sc = old_to_new_map.get(comp.id)
+
+            if not new_sc:
+                continue
+
+            for param in comp.component.function_parameters.all():
+
                 mapped_sc = old_to_new_map.get(param.mapped_component.id)
 
                 if mapped_sc:
-                    models.SampleComponentFunctionParameter.objects.get_or_create(
-                        sample_component=sc,
+                    models.SampleComponentFunctionParameter.objects.create(
+                        sample_component=new_sc,
                         parameter=param.parameter,
                         mapped_sample_component=mapped_sc
                     )
+
+
+
+# def create_entry_analyses(entry, analysis_ids):
+#     from app import models
+
+#     for analysis in models.Analysis.objects.filter(id__in=analysis_ids):
+
+#         ea, _ = models.DynamicFormEntryAnalysis.objects.get_or_create(
+#             entry=entry,
+#             analysis=analysis
+#         )
+
+#         # ---------------------------------------------------
+#         # STEP 1: GET PRODUCT SAMPLE COMPONENTS ONLY
+#         # ---------------------------------------------------
+#         product_components = models.SampleComponent.objects.filter(
+#             product_sampling_grade_analyses__analysis=analysis
+#         ).distinct()
+
+#         # ---------------------------------------------------
+#         # STEP 2: LINK TO ENTRY (NO CREATION)
+#         # ---------------------------------------------------
+#         ea.sample_components.set(product_components)
+
+#         # also keep old structure consistent (if needed for frontend)
+#         ea.components.set(
+#             product_components.values_list("component", flat=True)
+#         )
+
+#         old_to_new_map = {
+#             sc.component_id: sc for sc in product_components
+#         }
+
+#         for sc in product_components:
+#             comp = sc.component
+#             if not comp or not comp.calculated:
+#                 continue
+
+#             for param in comp.function_parameters.all():
+#                 mapped_sc = old_to_new_map.get(param.mapped_component.id)
+
+#                 if mapped_sc:
+#                     models.SampleComponentFunctionParameter.objects.get_or_create(
+#                         sample_component=sc,
+#                         parameter=param.parameter,
+#                         mapped_sample_component=mapped_sc
+#                     )
 
 
 def update_status_with_history(entry, new_status, user,reason=None):
