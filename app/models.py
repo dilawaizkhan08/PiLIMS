@@ -81,7 +81,7 @@ class User(AbstractUser, BaseModel):
     def get_totp_uri(self):
         return pyotp.totp.TOTP(self.twofa_secret).provisioning_uri(
             name=self.email,
-            issuer_name="YourAppName"
+            issuer_name="PiLIMS"
         )
 
 class UserGroup(BaseModel):
