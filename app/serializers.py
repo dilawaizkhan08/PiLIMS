@@ -553,19 +553,18 @@ class ComponentSerializer(serializers.ModelSerializer):
                     {"list_id": "List is required when type is 'List'."}
                 )
 
-            allowed_values = set(list_obj.values.values_list("value", flat=True))
             spec_limits = attrs.get("spec_limits")
 
-            if not spec_limits:
-                attrs["spec_limits"] = list(allowed_values)
-            else:
+            if spec_limits:
+                allowed_values = set(list_obj.values.values_list("value", flat=True))
                 invalid = [val for val in spec_limits if val not in allowed_values]
+
                 if invalid:
                     raise serializers.ValidationError({
                         "spec_limits": f"Invalid values for list '{list_obj.name}': {', '.join(invalid)}"
                     })
-
         return attrs
+
 
     def create(self, validated_data):
         parameters_data = validated_data.pop("parameters", [])
@@ -2367,12 +2366,12 @@ class ProductSerializer(serializers.ModelSerializer):
         if user_groups is not None:
             instance.user_groups.set(user_groups)
 
-        if analyses_data is not None:
-            for psg in instance.sampling_grades.all():
-                for pa in psg.analyses.all():
-                    pa.sample_components.clear()
-                    pa.delete()
-                psg.delete()
+        # if analyses_data is not None:
+        #     for psg in instance.sampling_grades.all():
+        #         for pa in psg.analyses.all():
+        #             pa.sample_components.clear()
+        #             pa.delete()
+        #         psg.delete()
 
             self._save_sampling_grade_analyses(instance, analyses_data)
 
@@ -2389,7 +2388,8 @@ class ProductSerializer(serializers.ModelSerializer):
             sampling_point = models.SamplingPoint.objects.get(id=sampling_point_id) if sampling_point_id else None
             grade = models.Grade.objects.get(id=grade_id) if grade_id else None
 
-            psg = models.ProductSamplingGrade.objects.create(
+            # ✅ reuse existing PSG instead of deleting
+            psg, _ = models.ProductSamplingGrade.objects.get_or_create(
                 product=product,
                 sampling_point=sampling_point,
                 grade=grade,
@@ -2399,18 +2399,18 @@ class ProductSerializer(serializers.ModelSerializer):
                 self._save_analysis(psg, analysis_item)
 
     def _save_analysis(self, psg, analysis_item):
-        analysis = models.Analysis.objects.get(
-            id=analysis_item["analysis_id"]
-        )
+        analysis = models.Analysis.objects.get(id=analysis_item["analysis_id"])
 
-        pa = models.ProductSamplingGradeAnalysis.objects.create(
+        # ✅ reuse instead of always create
+        pa, created = models.ProductSamplingGradeAnalysis.objects.get_or_create(
             product_sampling_grade=psg,
             analysis=analysis
         )
 
-        component_ids = analysis_item.get("component_ids", [])
-        if component_ids:
-            self._create_sample_component_replicas(pa, component_ids)
+        if created:
+            component_ids = analysis_item.get("component_ids", [])
+            if component_ids:
+                self._create_sample_component_replicas(pa, component_ids)
 
     # ----------------------------
     # CREATE SampleComponent replicas
@@ -2420,6 +2420,7 @@ class ProductSerializer(serializers.ModelSerializer):
 
         for cid in component_ids:
             real = models.Component.objects.get(id=cid)
+
             replica = models.SampleComponent.objects.create(
                 entry_analysis=None,
                 component=real,
@@ -2435,6 +2436,7 @@ class ProductSerializer(serializers.ModelSerializer):
                 spec_limits=real.spec_limits,
                 custom_function=real.custom_function if real.calculated else None,
                 acceptance_criteria=real.acceptance_criteria,
+                type=real.type,
             )
             replica_map[real.id] = replica
 
@@ -2449,7 +2451,7 @@ class ProductSerializer(serializers.ModelSerializer):
                         parameter=fp.parameter,
                         mapped_sample_component=mapped_replica,
                     )
-
+                    
         pa.sample_components.set(replica_map.values())
 
     # ----------------------------
