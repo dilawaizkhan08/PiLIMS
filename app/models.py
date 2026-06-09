@@ -603,7 +603,6 @@ class Product(BaseModel):
     )
     document_code = models.CharField(
         max_length=100,
-        unique=True,
         null=True,
         blank=True
     )
