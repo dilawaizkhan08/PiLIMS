@@ -43,7 +43,7 @@ INSTALLED_APPS = [
     "crispy_forms",
     "storages",
     "csp",
-    "django_celery_beat",
+    # "django_celery_beat",
 
     # project apps
     "app.apps.AppConfig",
