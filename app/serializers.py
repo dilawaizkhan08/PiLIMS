@@ -496,7 +496,7 @@ class ComponentSerializer(serializers.ModelSerializer):
     list_id = serializers.PrimaryKeyRelatedField(
         queryset=models.List.objects.all(),
         source="listname",
-        write_only=True,
+        # write_only=True,
         required=False
     )
     listname = serializers.StringRelatedField(read_only=True)
@@ -658,8 +658,6 @@ class AnalysisAttachmentSerializer(serializers.ModelSerializer):
         return None
 
 
-
-
 class InstrumentHistorySerializer(serializers.ModelSerializer):
     id = serializers.IntegerField(required=False)  # Allow PATCH with ID
 
@@ -683,15 +681,9 @@ class NullableDateField(serializers.DateField):
 
 class InstrumentSerializer(serializers.ModelSerializer):
     history = InstrumentHistorySerializer(many=True, required=False)
-
-    # ✅ Date fields should allow null
     next_calibration_date = NullableDateField(required=False, allow_null=True)
     next_prevention_date = NullableDateField(required=False, allow_null=True)
-
-    # ✅ Nested serializer for GET
     user_groups = UserGroupSerializer(many=True, read_only=True)
-
-    # ✅ Accept IDs for write
     user_groups_ids = serializers.PrimaryKeyRelatedField(
         many=True, queryset=models.UserGroup.objects.all(), required=False
     )
@@ -861,7 +853,6 @@ class AnalysisSerializer(serializers.ModelSerializer):
             "prep_flag",
             "prep_details",
             "trainings",
-            # ✅ NEW
             "instruments",
             "instrument_ids",
         ]
@@ -882,7 +873,7 @@ class AnalysisSerializer(serializers.ModelSerializer):
         user_groups = validated_data.pop("user_groups", [])
         component_ids = validated_data.pop("component_ids", [])
         trainings = validated_data.pop("trainings", [])
-        instruments = validated_data.pop("instruments", [])  # ✅ NEW
+        instruments = validated_data.pop("instruments", [])
 
         analysis = models.Analysis.objects.create(**validated_data)
 
@@ -893,7 +884,7 @@ class AnalysisSerializer(serializers.ModelSerializer):
             analysis.trainings.set(trainings)
 
         if instruments:
-            analysis.instruments.set(instruments)  # ✅ NEW
+            analysis.instruments.set(instruments) 
 
         # PREP LOGIC
         if prep_flag is True:
@@ -2334,7 +2325,7 @@ class ProductSerializer(serializers.ModelSerializer):
             "user_groups",
             "user_groups_ids",
             "document_code",
-            "erp_code", 
+            "erp_code",
             "analyses_data",
             "product_type",
         ]
@@ -2361,18 +2352,13 @@ class ProductSerializer(serializers.ModelSerializer):
 
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
+
         instance.save()
 
         if user_groups is not None:
             instance.user_groups.set(user_groups)
 
-        # if analyses_data is not None:
-        #     for psg in instance.sampling_grades.all():
-        #         for pa in psg.analyses.all():
-        #             pa.sample_components.clear()
-        #             pa.delete()
-        #         psg.delete()
-
+        if analyses_data is not None:
             self._save_sampling_grade_analyses(instance, analyses_data)
 
         return instance
@@ -2385,10 +2371,16 @@ class ProductSerializer(serializers.ModelSerializer):
             sampling_point_id = sg.get("sampling_point_id")
             grade_id = sg.get("grade_id")
 
-            sampling_point = models.SamplingPoint.objects.get(id=sampling_point_id) if sampling_point_id else None
-            grade = models.Grade.objects.get(id=grade_id) if grade_id else None
+            sampling_point = (
+                models.SamplingPoint.objects.get(id=sampling_point_id)
+                if sampling_point_id else None
+            )
 
-            # ✅ reuse existing PSG instead of deleting
+            grade = (
+                models.Grade.objects.get(id=grade_id)
+                if grade_id else None
+            )
+
             psg, _ = models.ProductSamplingGrade.objects.get_or_create(
                 product=product,
                 sampling_point=sampling_point,
@@ -2398,28 +2390,48 @@ class ProductSerializer(serializers.ModelSerializer):
             for analysis_item in sg.get("analyses", []):
                 self._save_analysis(psg, analysis_item)
 
+    # ----------------------------
+    # SAVE ANALYSIS
+    # ----------------------------
     def _save_analysis(self, psg, analysis_item):
-        analysis = models.Analysis.objects.get(id=analysis_item["analysis_id"])
+        analysis = models.Analysis.objects.get(
+            id=analysis_item["analysis_id"]
+        )
 
-        # ✅ reuse instead of always create
-        pa, created = models.ProductSamplingGradeAnalysis.objects.get_or_create(
+        pa, _ = models.ProductSamplingGradeAnalysis.objects.get_or_create(
             product_sampling_grade=psg,
             analysis=analysis
         )
 
-        if created:
-            component_ids = analysis_item.get("component_ids", [])
-            if component_ids:
-                self._create_sample_component_replicas(pa, component_ids)
+        # 🔥 FIX: remove duplicates from payload
+        component_ids = list(dict.fromkeys(
+            analysis_item.get("component_ids", [])
+        ))
+
+        # existing components (per product context)
+        existing_component_ids = set(
+            pa.sample_components.values_list("component_id", flat=True)
+        )
+
+        new_component_ids = [
+            cid for cid in component_ids
+            if cid not in existing_component_ids
+        ]
+
+        if new_component_ids:
+            self._create_sample_component_replicas(pa, new_component_ids)
 
     # ----------------------------
-    # CREATE SampleComponent replicas
+    # CREATE SAMPLE COMPONENTS
     # ----------------------------
     def _create_sample_component_replicas(self, pa, component_ids):
-        replica_map = {}
-
         for cid in component_ids:
             real = models.Component.objects.get(id=cid)
+
+            existing = pa.sample_components.filter(component=real).first()
+
+            if existing:
+                continue
 
             replica = models.SampleComponent.objects.create(
                 entry_analysis=None,
@@ -2438,24 +2450,29 @@ class ProductSerializer(serializers.ModelSerializer):
                 acceptance_criteria=real.acceptance_criteria,
                 type=real.type,
             )
-            replica_map[real.id] = replica
 
-        for real in models.Component.objects.filter(id__in=component_ids):
-            replica = replica_map[real.id]
+            pa.sample_components.add(replica)
+
+            # function parameters mapping
             for fp in real.function_parameters.all():
                 mapped_real = fp.mapped_component
-                mapped_replica = replica_map.get(mapped_real.id) if mapped_real else None
-                if mapped_real and mapped_replica:
+
+                if not mapped_real:
+                    continue
+
+                mapped_replica = pa.sample_components.filter(
+                    component=mapped_real
+                ).first()
+
+                if mapped_replica:
                     models.SampleComponentFunctionParameter.objects.create(
                         sample_component=replica,
                         parameter=fp.parameter,
                         mapped_sample_component=mapped_replica,
                     )
-                    
-        pa.sample_components.set(replica_map.values())
 
     # ----------------------------
-    # GET RESPONSE
+    # RESPONSE
     # ----------------------------
     def to_representation(self, instance):
         data = super().to_representation(instance)
@@ -2476,15 +2493,20 @@ class ProductSerializer(serializers.ModelSerializer):
                     "grade_name": psg.grade.name if psg.grade else None,
 
                     "analysis_id": pa.analysis.id,
-                    "analysis_name": pa.analysis.name if hasattr(pa.analysis, 'name') else str(pa.analysis),
-                    "component_ids": list(pa.sample_components.values_list("component_id", flat=True)),
-                    "sample_component_ids": list(pa.sample_components.values_list("id", flat=True))
-                })
+                    "analysis_name": getattr(pa.analysis, "name", str(pa.analysis)),
 
+                    "component_ids": list(
+                        pa.sample_components.values_list("component_id", flat=True)
+                    ),
+
+                    "sample_component_ids": list(
+                        pa.sample_components.values_list("id", flat=True)
+                    )
+                })
 
         data["analyses_data"] = analyses_output
         return data
-
+    
 
 
 class AnalysisSchemaSerializer(serializers.ModelSerializer):

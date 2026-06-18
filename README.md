@@ -24,8 +24,11 @@ venv\Scripts\activate
 ```bash
 pip install -r requirements.txt
 ```
-
-
+```bash
+mkdir celery_in
+mkdir celery_out
+mkdir celery_processed
+```
 ### 4. Run migrations
 ```bash
 python manage.py makemigrations

@@ -95,6 +95,7 @@ urlpatterns = [
     path("fetch-oracle-batch/", views.FetchBatchView.as_view(), name="fetch-oracle-batch"),
 
     path("upload-instrument-blend-report/", views.UploadBlendReportView.as_view(), name="upload-instrument-blend-report"),
+    path("upload-sample-excel/<int:form_id>/",views.ExcelSampleUploadView.as_view(),name="upload-sample-excel"),
 
     path("2fa/setup/", views.TwoFactorSetupView.as_view(), name="2fa-setup"),
     path("2fa/enable/",  views.TwoFactorEnableView.as_view(), name="2fa-enable"),

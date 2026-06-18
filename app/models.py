@@ -615,9 +615,6 @@ class Product(BaseModel):
     def __str__(self):
         return self.name
 
-
-
-
 class IncomingMaterialSampleInspection(models.Model):
     CLARITY_CHOICES = [
         ('clear', 'Clear'),
@@ -785,9 +782,6 @@ class IncomingMaterialSampleInspection(models.Model):
         if self.material and not self.material_type:
             self.material_type = self.material.product_type
         super().save(*args, **kwargs)
-
-
-
 
 class DynamicFormEntryAnalysis(BaseModel):
     entry = models.ForeignKey("DynamicFormEntry", on_delete=models.CASCADE, null=True, blank=True)
@@ -1319,10 +1313,6 @@ class Investigation(models.Model):
 
     def __str__(self):
         return f"Investigation for Sample {self.sample.id}"
-
-
-
-
 
 
 class BlendReport(models.Model):

@@ -402,3 +402,152 @@ def parse_blend_report(file_path):
 
     print("✅ DONE SUCCESSFULLY")
 
+
+
+
+import pandas as pd
+def to_float(value):
+    try:
+        return float(value)
+    except:
+        return None
+    
+def normalize(col):
+    if not col:
+        return ""
+    return str(col).strip().lower()
+
+def get_product(product_name):
+    if not product_name:
+        return None
+
+    return models.Product.objects.filter(
+        name__iexact=str(product_name).strip()
+    ).first()
+
+def build_entry_data(row, product):
+
+    clean_data = {}
+
+    # Product ID
+    if product:
+        clean_data["Product"] = product.id
+        clean_data["Product Type"] = product.product_type
+
+    # Batch
+    clean_data["Batch Number"] = row.get("Batch#") or row.get("Batch Number")
+
+    # Date fix (IMPORTANT)
+    date_val = row.get("Date")
+    clean_data["Manufacturing Date"] = (
+        date_val.strftime("%Y-%m-%d") if hasattr(date_val, "strftime") else str(date_val)
+    )
+
+    return clean_data
+
+
+def process_excel_file(file, user, sample_form):
+
+    sheets = pd.read_excel(file, sheet_name=None)
+
+    all_entries = []
+
+    for sheet_name, df in sheets.items():
+
+        df.columns = [str(c).strip() for c in df.columns]
+        df = df.fillna("")
+
+        for _, row in df.iterrows():
+
+            product_name = row.get("Product Name")
+            product = get_product(product_name)
+
+            entry = models.DynamicFormEntry.objects.create(
+                form=sample_form,
+                data={},
+                logged_by=user
+            )
+
+            # -------------------------
+            # CLEAN DATA BUILD
+            # -------------------------
+            clean_data = build_entry_data(row, product)
+
+            entry.data = clean_data
+            entry.save()
+
+            # -------------------------
+            # ANALYSIS PROCESSING
+            # -------------------------
+            handle_analyses(entry, row)
+
+            all_entries.append({
+                "entry_id": entry.id,
+                "data": clean_data
+            })
+
+    return {"created_entries": all_entries}
+
+def handle_analyses(entry, row):
+
+    analysis_cache = {}
+
+    for column, value in row.items():
+
+        col = str(column).strip()
+
+        if col in ["Sr.", "Product Name", "Batch#", "Date"]:
+            continue
+
+        if not col:
+            continue
+
+        analysis = models.Analysis.objects.filter(name__iexact=col).first()
+
+        if not analysis:
+            continue
+
+        if analysis.id not in analysis_cache:
+            entry.analyses.add(analysis)
+
+            entry_analysis, _ = models.DynamicFormEntryAnalysis.objects.get_or_create(
+                entry=entry,
+                analysis=analysis
+            )
+
+            analysis_cache[analysis.id] = entry_analysis
+        else:
+            entry_analysis = analysis_cache[analysis.id]
+
+        # -------------------------
+        # COMPONENTS
+        # -------------------------
+        for component in analysis.components.all():
+
+            sample_component = models.SampleComponent.objects.create(
+                entry_analysis=entry_analysis,
+                component=component,
+                name=component.name,
+                type=component.type,
+                unit=component.unit,
+                minimum=component.minimum,
+                maximum=component.maximum,
+                decimal_places=component.decimal_places,
+                rounding=component.rounding,
+                spec_limits=component.spec_limits,
+                optional=component.optional,
+                calculated=component.calculated,
+                default_result=component.default_result,
+                acceptance_criteria=component.acceptance_criteria,
+            )
+
+            numeric = to_float(value)
+            text_value = value if value != "" else None
+
+            models.ComponentResult.objects.create(
+                entry=entry,
+                sample_component=sample_component,
+                value=str(text_value),
+                numeric_value=numeric
+            )
+

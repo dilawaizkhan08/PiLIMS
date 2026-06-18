@@ -1388,7 +1388,8 @@ class DynamicSampleFormEntryViewSet(viewsets.ModelViewSet):
                 if new_status == "release":
 
                     coa_templates = models.QueryReportTemplate.objects.filter(
-                        name__icontains="coa"
+                        # name__icontains="coa"
+                        name__iexact="COA New"
                     )
 
                     for template in coa_templates:
@@ -5088,3 +5089,33 @@ class UploadBlendReportView(APIView):
             )
 
 
+import pandas as pd
+from django.http import JsonResponse
+from app.utility import process_excel_file
+from django.utils.decorators import method_decorator
+from django.views.decorators.csrf import csrf_exempt
+
+
+@method_decorator(csrf_exempt, name="dispatch")
+class ExcelSampleUploadView(APIView):
+
+    def post(self, request, form_id):
+
+        file = request.FILES.get("file")
+
+        if not file:
+            return JsonResponse({"error": "Excel file is required"}, status=400)
+
+        sample_form = get_object_or_404(models.SampleForm, id=form_id)
+
+        try:
+            with transaction.atomic():
+                result = process_excel_file(file, request.user, sample_form)
+
+            return JsonResponse({
+                "message": "File processed successfully",
+                "data": result
+            }, status=201)
+
+        except Exception as e:
+            return JsonResponse({"error": str(e)}, status=500)
