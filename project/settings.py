@@ -287,29 +287,29 @@ from celery.schedules import crontab
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-CELERY_BROKER_URL = "redis://127.0.0.1:6379/0"
-CELERY_RESULT_BACKEND = "redis://127.0.0.1:6379/0"
+# CELERY_BROKER_URL = "redis://127.0.0.1:6379/0"
+# CELERY_RESULT_BACKEND = "redis://127.0.0.1:6379/0"
 
-# CELERY_BROKER_URL = "filesystem://"
-# CELERY_RESULT_BACKEND = "rpc://" 
+# # CELERY_BROKER_URL = "filesystem://"
+# # CELERY_RESULT_BACKEND = "rpc://" 
 
-CELERY_ACCEPT_CONTENT = ["json"]
-CELERY_TASK_SERIALIZER = "json"
+# CELERY_ACCEPT_CONTENT = ["json"]
+# CELERY_TASK_SERIALIZER = "json"
 
-CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers:DatabaseScheduler"
+# CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers:DatabaseScheduler"
 
-CELERY_BROKER_TRANSPORT_OPTIONS = {
-    "data_folder_in": os.path.join(BASE_DIR, "blend_report_in"),
-    "data_folder_out": os.path.join(BASE_DIR, "blend_report_out"),
-    "data_folder_processed": os.path.join(BASE_DIR, "cblend_report_processed"),
-}
+# CELERY_BROKER_TRANSPORT_OPTIONS = {
+#     "data_folder_in": os.path.join(BASE_DIR, "blend_report_in"),
+#     "data_folder_out": os.path.join(BASE_DIR, "blend_report_out"),
+#     "data_folder_processed": os.path.join(BASE_DIR, "cblend_report_processed"),
+# }
 
-CELERY_BEAT_SCHEDULE = {
-    "blend-report-daily-2am": {
-        "task": "app.tasks.process_blend_reports",
-        "schedule": crontab(hour=17, minute=59),
-    },
-}
+# CELERY_BEAT_SCHEDULE = {
+#     "blend-report-daily-2am": {
+#         "task": "app.tasks.process_blend_reports",
+#         "schedule": crontab(hour=17, minute=59),
+#     },
+# }
 
 # DATABASES = {
 #     "default": {
