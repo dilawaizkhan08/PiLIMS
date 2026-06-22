@@ -2415,27 +2415,71 @@ class ProductSerializer(serializers.ModelSerializer):
             analysis=analysis
         )
 
-        component_ids = list(dict.fromkeys(
+        incoming_component_ids = list(dict.fromkeys(
             analysis_item.get("component_ids", [])
         ))
 
+        # 🔹 Existing components map
         existing_components = {
-            sc.component_id: sc for sc in pa.sample_components.all()
+            sc.component_id: sc
+            for sc in pa.sample_components.all()
         }
 
+        # ----------------------------
+        # ❌ DELETE missing
+        # ----------------------------
         for cid, sc in existing_components.items():
-            if cid not in component_ids:
+            if cid not in incoming_component_ids:
                 pa.sample_components.remove(sc)
                 sc.delete()
 
-        # ADD new ones
-        new_component_ids = [
-            cid for cid in component_ids
-            if cid not in existing_components
-        ]
+        # ----------------------------
+        # ➕ ADD new only
+        # ----------------------------
+        for cid in incoming_component_ids:
+            if cid in existing_components:
+                continue  # ✅ reuse (IMPORTANT)
 
-        if new_component_ids:
-            self._create_sample_component_replicas(pa, new_component_ids)
+            real = models.Component.objects.get(id=cid)
+
+            # ✅ CREATE only for new ones
+            replica = models.SampleComponent.objects.create(
+                entry_analysis=None,
+                component=real,
+                name=real.name,
+                unit=real.unit,
+                minimum=real.minimum,
+                maximum=real.maximum,
+                decimal_places=real.decimal_places,
+                rounding=real.rounding,
+                description=real.description,
+                optional=real.optional,
+                calculated=real.calculated,
+                spec_limits=real.spec_limits,
+                custom_function=real.custom_function if real.calculated else None,
+                acceptance_criteria=real.acceptance_criteria,
+                type=real.type,
+            )
+
+            pa.sample_components.add(replica)
+
+            # function param mapping
+            for fp in real.function_parameters.all():
+                mapped_real = fp.mapped_component
+                if not mapped_real:
+                    continue
+
+                mapped_replica = pa.sample_components.filter(
+                    component=mapped_real
+                ).first()
+
+                if mapped_replica:
+                    models.SampleComponentFunctionParameter.objects.create(
+                        sample_component=replica,
+                        parameter=fp.parameter,
+                        mapped_sample_component=mapped_replica,
+                    )
+        
     # ----------------------------
     # CREATE SAMPLE COMPONENTS
     # ----------------------------
