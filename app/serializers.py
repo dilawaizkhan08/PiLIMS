@@ -2367,6 +2367,8 @@ class ProductSerializer(serializers.ModelSerializer):
     # SAVE STRUCTURE
     # ----------------------------
     def _save_sampling_grade_analyses(self, product, analyses_data):
+        incoming_map = set()
+
         for sg in analyses_data:
             sampling_point_id = sg.get("sampling_point_id")
             grade_id = sg.get("grade_id")
@@ -2388,8 +2390,18 @@ class ProductSerializer(serializers.ModelSerializer):
             )
 
             for analysis_item in sg.get("analyses", []):
+                analysis_id = analysis_item["analysis_id"]
+
+                incoming_map.add((psg.id, analysis_id))
+
                 self._save_analysis(psg, analysis_item)
 
+        for psg in product.sampling_grades.all():
+            for pa in psg.analyses.all():
+                key = (psg.id, pa.analysis.id)
+
+                if key not in incoming_map:
+                    pa.delete()
     # ----------------------------
     # SAVE ANALYSIS
     # ----------------------------
@@ -2403,24 +2415,27 @@ class ProductSerializer(serializers.ModelSerializer):
             analysis=analysis
         )
 
-        # 🔥 FIX: remove duplicates from payload
         component_ids = list(dict.fromkeys(
             analysis_item.get("component_ids", [])
         ))
 
-        # existing components (per product context)
-        existing_component_ids = set(
-            pa.sample_components.values_list("component_id", flat=True)
-        )
+        existing_components = {
+            sc.component_id: sc for sc in pa.sample_components.all()
+        }
 
+        for cid, sc in existing_components.items():
+            if cid not in component_ids:
+                pa.sample_components.remove(sc)
+                sc.delete()
+
+        # ADD new ones
         new_component_ids = [
             cid for cid in component_ids
-            if cid not in existing_component_ids
+            if cid not in existing_components
         ]
 
         if new_component_ids:
             self._create_sample_component_replicas(pa, new_component_ids)
-
     # ----------------------------
     # CREATE SAMPLE COMPONENTS
     # ----------------------------
