@@ -55,7 +55,7 @@ AUTH_USER_MODEL = "app.User"
 # MIDDLEWARE
 # ======================
 MIDDLEWARE = [
-    "corsheaders.middleware.CorsMiddleware",  # MUST be first
+    "corsheaders.middleware.CorsMiddleware",  
     "django.middleware.security.SecurityMiddleware",
     'csp.middleware.CSPMiddleware', 
     "whitenoise.middleware.WhiteNoiseMiddleware",
@@ -66,6 +66,7 @@ MIDDLEWARE = [
     "app.middleware.CurrentUserMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
+    "project.translation.middleware.LanguageMiddleware",
 ]
 
 # ======================
@@ -136,6 +137,16 @@ CONTENT_SECURITY_POLICY = {
     }
 }
 
+CACHES = {
+    "default": {
+        "BACKEND": "django_redis.cache.RedisCache",
+        "LOCATION": "redis://127.0.0.1:6379/1",
+        "OPTIONS": {
+            "CLIENT_CLASS": "django_redis.client.DefaultClient"
+        }
+    }
+}
+
 # ======================
 # URLS / TEMPLATES
 # ======================
@@ -201,9 +212,10 @@ REST_FRAMEWORK = {
         "rest_framework.filters.OrderingFilter",
     ],
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
-    # 'DEFAULT_RENDERER_CLASSES': [
-    #     'rest_framework.renderers.JSONRenderer',
-    # ]
+    'DEFAULT_RENDERER_CLASSES': [
+        'project.translation.renderer.ArabicJSONRenderer',
+        'rest_framework.renderers.JSONRenderer',
+    ]
 }
 
 SPECTACULAR_SETTINGS = {

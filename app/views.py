@@ -4226,74 +4226,126 @@ class DynamicFormEntryCompactTicketPDFView(APIView):
 from .models import DynamicFormEntry, Product 
 
 class DynamicFormEntryQCReportPDFView(APIView):
+
     def get_template_config(self, status):
         configs = {
-            "initiated": {"title": "Sample Label Template", "doc_no": "BC-GRC-IMS-SOP-25-F-01", "color": "transparent"},
-            "release": {"title": "Released Label Template", "doc_no": "BC-GRC-IMS-SOP-25-F-02", "color": "#28a745"}, 
-            "rejected": {"title": "Rejected Label Template", "doc_no": "BC-GRC-IMS-SOP-25-F-03", "color": "#dc3545"}, 
-            "hold": {"title": "Hold Label Template", "doc_no": "BC-GRC-IMS-SOP-25-F-04", "color": "#ffc107"}, 
-            "in_progress": {"title": "Sampled Label Template", "doc_no": "BC-GRC-IMS-SOP-25-F-07", "color": "transparent"},
+            "initiated": {
+                "title": "Sample Label Template",
+                "doc_no": "BC-GRC-IMS-SOP-25-F-01",
+                "color": "transparent",
+            },
+            "release": {
+                "title": "Released Label Template",
+                "doc_no": "BC-GRC-IMS-SOP-25-F-02",
+                "color": "#28a745",
+            },
+            "rejected": {
+                "title": "Rejected Label Template",
+                "doc_no": "BC-GRC-IMS-SOP-25-F-03",
+                "color": "#dc3545",
+            },
+            "hold": {
+                "title": "Hold Label Template",
+                "doc_no": "BC-GRC-IMS-SOP-25-F-04",
+                "color": "#ffc107",
+            },
+            "in_progress": {
+                "title": "Sampled Label Template",
+                "doc_no": "BC-GRC-IMS-SOP-25-F-07",
+                "color": "transparent",
+            },
         }
-        return configs.get(status, {"title": "Sample Label Template", "doc_no": "BC-GRC-IMS-SOP-25-F-05", "color": "transparent"})
+
+        return configs.get(
+            status,
+            {
+                "title": "Sample Label Template",
+                "doc_no": "BC-GRC-IMS-SOP-25-F-05",
+                "color": "transparent",
+            },
+        )
 
     def get(self, request):
         sample_id = request.query_params.get("sample_id")
         status_param = request.query_params.get("status")
-        
+
         if not sample_id:
             return Response({"error": "sample_id required"}, status=400)
 
         entry = get_object_or_404(DynamicFormEntry, id=sample_id)
+
         current_status = status_param if status_param else entry.status
         config = self.get_template_config(current_status)
+
+        # -----------------------------------------
+        # Dynamic Page Size (Same as Label Size)
+        # -----------------------------------------
+        if current_status in ["rejected", "hold"]:
+            page_width = "10.1cm"
+            page_height = "10.1cm"
+        else:
+            page_width = "15.2cm"
+            page_height = "15.2cm"
+
         data = entry.data
 
-        # URLs for Logos
-        badael_logo_url = "https://media.licdn.com/dms/image/v2/D4D0BAQFUUVon6pRWBg/company-logo_200_200/company-logo_200_200/0/1726468408029/badaelco_logo?e=2147483647&v=beta&t=NkWnD-j3U4_uL2BK-IKTjHMINxnaOmCWwMLSkhCHRkg"
-        pif_logo_url = "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcS8ufvCrOWQsqXNOzpcgs77H-G588886PIcXA&s"
-
-        # Product Name Logic
-        product_id = data.get("Product")
+        # Product Name
         product_display_name = "---"
+        product_id = data.get("Product")
+
         if product_id:
             try:
-                product_obj = Product.objects.get(id=product_id)
-                product_display_name = product_obj.name
+                product_display_name = Product.objects.get(id=product_id).name
             except (Product.DoesNotExist, ValueError):
                 product_display_name = entry.form.sample_name
 
-        current_date = timezone.now().strftime("%Y-%m-%d") 
-        mfg_date = data.get("Manufacturing Date", "---").split('T')[0]
-        exp_date = data.get("Expiry Date", "---").split('T')[0]
+        mfg_date = data.get("Manufacturing Date", "---").split("T")[0]
+        exp_date = data.get("Expiry Date", "---").split("T")[0]
 
         html_content = f"""
-            <html>
-            <head>
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="UTF-8">
+
             <style>
-                @page {{ size: A4; margin: 0; }}
-                body {{
-                    font-family: 'Arial', sans-serif;
+
+                @page {{
+                    size: {page_width} {page_height};
+                    margin: 0;
+                }}
+
+                html {{
+                    width: {page_width};
+                    height: {page_height};
                     margin: 0;
                     padding: 0;
-                    height: 100vh;
-                    display: flex;
-                    justify-content: center;  /* horizontal center */
-                    align-items: flex-start;  /* start from top */
-                    background-color: #fff;
+                }}
+
+                body {{
+                    width: {page_width};
+                    height: {page_height};
+                    margin: 0;
+                    padding: 0;
+                    font-family: Arial, sans-serif;
                 }}
 
                 .label-outer-box {{
+                    width: 100%;
+                    height: 100%;
+                    box-sizing: border-box;
+
                     border: 2px solid #5599FF;
-                    border-radius: 35px;
-                    padding: 30px 40px;
-                    width: 60%;
-                    min-height: 350px;
-                    background-color: {config['color']};
-                    color: #000;
+                    border-radius: 18px;
+
+                    background-color: {config["color"]};
+                    color: black;
+
+                    padding: 12mm;
+
                     display: flex;
                     flex-direction: column;
                     justify-content: space-between;
-                    margin-top: 200px;
                 }}
 
                 .label-title {{
@@ -4301,76 +4353,92 @@ class DynamicFormEntryQCReportPDFView(APIView):
                     font-size: 18px;
                     font-weight: bold;
                     text-decoration: underline;
-                    margin-bottom: 25px;
+                    margin-bottom: 20px;
                 }}
 
                 .data-row {{
-                    margin-bottom: 15px;
                     display: flex;
-                    font-size: 13px;
                     align-items: baseline;
+                    margin-bottom: 14px;
+                    font-size: 13px;
                 }}
 
                 .data-label {{
+                    width: 120px;
                     font-weight: bold;
-                    width: 130px;
+                    flex-shrink: 0;
                 }}
 
                 .data-value {{
-                    flex-grow: 1;
-                    padding-left: 8px;
-                    border-bottom: 1px solid #000;
+                    flex: 1;
+                    border-bottom: 1px solid black;
                     min-height: 18px;
+                    padding-left: 8px;
+                    word-break: break-word;
                 }}
+
+                .footer {{
+                    text-align: right;
+                    font-size: 10px;
+                    font-weight: bold;
+                    margin-top: 10px;
+                }}
+
             </style>
-            </head>
+        </head>
 
-            <body>
+        <body>
 
-                <div class="label-outer-box">
-                    <div>
-                        <div class="label-title">{config['title'].replace(' Template', '')}</div>
-                        
-                        <div class="data-row">
-                            <span class="data-label">Product name:</span>
-                            <span class="data-value">{product_display_name}</span>
-                        </div>
+            <div class="label-outer-box">
 
-                        <div class="data-row">
-                            <span class="data-label">Batch number:</span>
-                            <span class="data-value">{data.get("Batch Number", "---")}</span>
-                        </div>
+                <div>
 
-                        <div class="data-row">
-                            <span class="data-label">Mfg. Date:</span>
-                            <span class="data-value">{mfg_date}</span>
-                        </div>
-
-                        <div class="data-row">
-                            <span class="data-label">Exp. Date:</span>
-                            <span class="data-value">{exp_date}</span>
-                        </div>
-
-                        <div class="data-row">
-                            <span class="data-label">Quantity:</span>
-                            <span class="data-value">{data.get("Quantity", "---")}</span>
-                        </div>
-
-                        <div class="data-row" style="margin-top: 35px;">
-                            <span class="data-label" style="width: 100px;">Sign by/date:</span>
-                            <span class="data-value"></span>
-                        </div>
+                    <div class="label-title">
+                        {config["title"].replace(" Template", "")}
                     </div>
 
-                    <div style="text-align: right; font-weight: bold; font-size: 10px;">
-                        {config['doc_no']}
+                    <div class="data-row">
+                        <span class="data-label">Product name:</span>
+                        <span class="data-value">{product_display_name}</span>
                     </div>
+
+                    <div class="data-row">
+                        <span class="data-label">Batch number:</span>
+                        <span class="data-value">{data.get("Batch Number", "---")}</span>
+                    </div>
+
+                    <div class="data-row">
+                        <span class="data-label">Mfg. Date:</span>
+                        <span class="data-value">{mfg_date}</span>
+                    </div>
+
+                    <div class="data-row">
+                        <span class="data-label">Exp. Date:</span>
+                        <span class="data-value">{exp_date}</span>
+                    </div>
+
+                    <div class="data-row">
+                        <span class="data-label">Quantity:</span>
+                        <span class="data-value">{data.get("Quantity", "---")}</span>
+                    </div>
+
+                    <div class="data-row" style="margin-top:30px;">
+                        <span class="data-label">Sign by/date:</span>
+                        <span class="data-value"></span>
+                    </div>
+
                 </div>
 
-            </body>
-            </html>
-            """
-        
+                <div class="footer">
+                    {config["doc_no"]}
+                </div>
+
+            </div>
+
+        </body>
+        </html>
+        """
+
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp:
             temp_path = temp.name
 
@@ -4378,13 +4446,16 @@ class DynamicFormEntryQCReportPDFView(APIView):
 
         with open(temp_path, "rb") as f:
             pdf = f.read()
+
         os.remove(temp_path)
 
         response = HttpResponse(pdf, content_type="application/pdf")
-        filename = f"QC_Report_{entry.sample_text_id}.pdf"
+        filename = f'QC_Report_{entry.sample_text_id}.pdf'
         response["Content-Disposition"] = f'inline; filename="{filename}"'
+
         return response
 
+        
 class GeneratedReportViewSet(viewsets.ModelViewSet):
     """
     API endpoint to view or edit generated reports
