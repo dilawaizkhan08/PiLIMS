@@ -4737,6 +4737,12 @@ class IncomingMaterialSampleInspectionViewSet(viewsets.ModelViewSet):
     pagination_class = CustomPageNumberPagination
     permission_classes = [IsAuthenticated, HasModulePermission]
 
+    def perform_create(self, serializer):
+        serializer.save(
+            checked_by=self.request.user.get_full_name() or self.request.user.username
+        )
+
+    from django.utils import timezone
     @action(detail=True, methods=['patch'], url_path='update-acceptance')
     def update_acceptance(self, request, pk=None):
         try:
@@ -4758,13 +4764,15 @@ class IncomingMaterialSampleInspectionViewSet(viewsets.ModelViewSet):
                 instance.accepted_quantity = 0
 
             elif decision == 'partial':
-                if not accepted_quantity:
+                if accepted_quantity is None:
                     return Response(
                         {"error": "accepted_quantity is required for partial acceptance"},
                         status=status.HTTP_400_BAD_REQUEST
                     )
 
-                if int(accepted_quantity) > instance.received_total_number:
+                accepted_quantity = int(accepted_quantity)
+
+                if accepted_quantity > instance.received_total_number:
                     return Response(
                         {"error": "Accepted quantity cannot exceed received quantity"},
                         status=status.HTTP_400_BAD_REQUEST
@@ -4772,8 +4780,25 @@ class IncomingMaterialSampleInspectionViewSet(viewsets.ModelViewSet):
 
                 instance.accepted_quantity = accepted_quantity
 
+            # Update decision
             instance.decision = decision
-            instance.save(update_fields=['decision', 'accepted_quantity'])
+
+            # Update approved_by and approved_sign_date
+            if decision in ['accepted', 'partial']:
+                instance.approved_by = (
+                    request.user.get_full_name() or request.user.username
+                )
+                instance.approved_sign_date = timezone.now().date()
+            else:
+                instance.approved_by = None
+                instance.approved_sign_date = None
+
+            instance.save(update_fields=[
+                'decision',
+                'accepted_quantity',
+                'approved_by',
+                'approved_sign_date',
+            ])
 
             sample_id = None
 
@@ -4782,10 +4807,12 @@ class IncomingMaterialSampleInspectionViewSet(viewsets.ModelViewSet):
 
             return Response({
                 "message": "Inspection decision updated successfully"
-                           + (f". Sample created with ID {sample_id}" if sample_id else ""),
+                        + (f". Sample created with ID {sample_id}" if sample_id else ""),
                 "inspection_sheet_no": instance.inspection_sheet_no,
                 "decision": instance.decision,
                 "accepted_quantity": instance.accepted_quantity,
+                "approved_by": instance.approved_by,
+                "approved_sign_date": instance.approved_sign_date,
                 "sample_id": sample_id
             })
 
@@ -4794,7 +4821,7 @@ class IncomingMaterialSampleInspectionViewSet(viewsets.ModelViewSet):
                 {"error": str(e)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
-
+    
     # =====================================================
     # SAMPLE CREATION
     # =====================================================
