@@ -4898,98 +4898,291 @@ class IncomingMaterialSampleInspectionViewSet(viewsets.ModelViewSet):
 
 
 
-class ControlChartFilteredAPIView(APIView):
+class ControlChartAPIView(APIView):
+
+    def get(self, request):
+
+        sample_component_id = request.GET.get("sample_component_id")
+
+        if not sample_component_id:
+            return Response(
+                {"detail": "sample_component_id is required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        sample_component = (
+            models.SampleComponent.objects
+            .select_related("component")
+            .filter(id=sample_component_id)
+            .first()
+        )
+
+        if not sample_component:
+            return Response(
+                {"detail": "Sample Component not found."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        results = (
+            models.ComponentResult.objects
+            .filter(
+                sample_component=sample_component,
+                numeric_value__isnull=False
+            )
+            .order_by("created_at")
+        )
+
+        minimum = (
+            sample_component.minimum
+            if sample_component.minimum is not None
+            else (
+                sample_component.component.minimum
+                if sample_component.component else None
+            )
+        )
+
+        maximum = (
+            sample_component.maximum
+            if sample_component.maximum is not None
+            else (
+                sample_component.component.maximum
+                if sample_component.component else None
+            )
+        )
+
+        labels = []
+        values = []
+        min_line = []
+        max_line = []
+
+        for result in results:
+
+            labels.append(result.created_at.strftime("%Y-%m-%d %H:%M"))
+
+            values.append(result.numeric_value)
+
+            min_line.append(minimum)
+
+            max_line.append(maximum)
+
+        return Response({
+
+            "sample_component_id": sample_component.id,
+
+            "component_id": sample_component.component.id if sample_component.component else None,
+
+            "component_name": (
+                sample_component.name
+                if sample_component.name
+                else sample_component.component.name
+            ),
+
+            "minimum": minimum,
+
+            "maximum": maximum,
+
+            "labels": labels,
+
+            "values": values,
+
+            "min_line": min_line,
+
+            "max_line": max_line
+
+        })
+
+
+class ControlChartProductsAPIView(APIView):
 
     def get(self, request):
 
         product_type = request.GET.get("product_type")
-        product_id = request.GET.get("product_id")
-        analysis_id = request.GET.get("analysis_id")
-        component_id = request.GET.get("component_id")
 
-        products = models.Product.objects.all()
+        if not product_type:
+            return Response(
+                {"detail": "product_type is required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
-        if product_type:
-            products = products.filter(product_type=product_type)
-
-        if product_id:
-            products = products.filter(id=product_id)
-
-        if not products.exists():
-            return Response({"detail": "No products found"}, status=404)
-
-        analyses = models.Analysis.objects.filter(
-            id__in=models.ProductSamplingGradeAnalysis.objects.filter(
-                product_sampling_grade__product__in=products
-            ).values_list("analysis_id", flat=True)
-        ).distinct()
-
-        if analysis_id:
-            analyses = analyses.filter(id=analysis_id)
-
-        if not analyses.exists():
-            return Response({"detail": "No analysis found"}, status=404)
-
-        sample_components = models.SampleComponent.objects.filter(
-            entry_analysis__analysis__in=analyses
-        ).select_related("component")
-
-        if component_id:
-            sample_components = sample_components.filter(component_id=component_id)
-
-        if not sample_components.exists():
-            return Response({"detail": "No sample components found"}, status=404)
-
-        # =========================
-        # 🔥 GROUP BY COMPONENT
-        # =========================
-        grouped = {}
-
-        for sc in sample_components:
-
-            comp_id = sc.component_id
-            comp_name = sc.component.name if sc.component else None
-
-            if comp_id not in grouped:
-                grouped[comp_id] = {
-                    "component_id": comp_id,
-                    "component_name": comp_name,
-                    "sample_component_ids": [],
-                    "labels": [],
-                    "values": [],
-                    "min_line": [],
-                    "max_line": [],
-                }
-
-            results = models.ComponentResult.objects.filter(
-                sample_component=sc,
-                numeric_value__isnull=False
-            ).order_by("created_at")
-
-            for r in results:
-                grouped[comp_id]["sample_component_ids"].append(sc.id)
-                grouped[comp_id]["labels"].append(r.created_at)
-                grouped[comp_id]["values"].append(r.numeric_value)
-
-                grouped[comp_id]["min_line"].append(
-                    sc.minimum if sc.minimum is not None else sc.component.minimum
-                )
-
-                grouped[comp_id]["max_line"].append(
-                    sc.maximum if sc.maximum is not None else sc.component.maximum
-                )
+        products = (
+            models.Product.objects
+            .filter(product_type=product_type)
+            .order_by("name")
+        )
 
         return Response({
-            "filters": {
-                "product_type": product_type,
-                "product_id": product_id,
-                "analysis_id": analysis_id,
-                "component_id": component_id,
+            "product_type": product_type,
+            "products": [
+                {
+                    "id": product.id,
+                    "name": product.name
+                }
+                for product in products
+            ]
+        })
+
+
+class ControlChartAnalysesAPIView(APIView):
+
+    def get(self, request):
+
+        product_id = request.GET.get("product_id")
+
+        if not product_id:
+            return Response(
+                {"detail": "product_id is required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        product = models.Product.objects.filter(id=product_id).first()
+
+        if not product:
+            return Response(
+                {"detail": "Product not found."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        analyses = (
+            models.Analysis.objects.filter(
+                id__in=models.ProductSamplingGradeAnalysis.objects.filter(
+                    product_sampling_grade__product=product
+                ).values_list("analysis_id", flat=True)
+            )
+            .distinct()
+            .order_by("name")
+        )
+
+        return Response({
+            "product": {
+                "id": product.id,
+                "name": product.name
             },
-            "components": list(grouped.values())
-        })    
+            "analyses": [
+                {
+                    "id": analysis.id,
+                    "name": analysis.name,
+                    "alias_name": analysis.alias_name
+                }
+                for analysis in analyses
+            ]
+        })
 
 
+class ControlChartComponentsAPIView(APIView):
+
+    def get(self, request):
+
+        product_id = request.GET.get("product_id")
+        analysis_id = request.GET.get("analysis_id")
+
+        if not product_id:
+            return Response(
+                {"detail": "product_id is required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if not analysis_id:
+            return Response(
+                {"detail": "analysis_id is required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # -----------------------------
+        # Validate Product
+        # -----------------------------
+        product = models.Product.objects.filter(id=product_id).first()
+
+        if not product:
+            return Response(
+                {"detail": "Product not found."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        # -----------------------------
+        # Validate Analysis
+        # -----------------------------
+        analysis = models.Analysis.objects.filter(id=analysis_id).first()
+
+        if not analysis:
+            return Response(
+                {"detail": "Analysis not found."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        # -----------------------------
+        # Product + Analysis Mapping
+        # -----------------------------
+        psga = (
+            models.ProductSamplingGradeAnalysis.objects
+            .filter(
+                product_sampling_grade__product_id=product_id,
+                analysis_id=analysis_id
+            )
+            .prefetch_related("sample_components__component")
+            .first()
+        )
+
+        if not psga:
+            return Response({
+                "product": {
+                    "id": product.id,
+                    "name": product.name,
+                },
+                "analysis": {
+                    "id": analysis.id,
+                    "name": analysis.name,
+                },
+                "components": []
+            })
+
+        response = []
+
+        for sc in psga.sample_components.all():
+
+            minimum = (
+                sc.minimum
+                if sc.minimum is not None
+                else (
+                    sc.component.minimum
+                    if sc.component else None
+                )
+            )
+
+            maximum = (
+                sc.maximum
+                if sc.maximum is not None
+                else (
+                    sc.component.maximum
+                    if sc.component else None
+                )
+            )
+
+            response.append({
+                "sample_component_id": sc.id,
+                "component_id": sc.component.id if sc.component else None,
+                "component_name": (
+                    sc.name
+                    if sc.name
+                    else (
+                        sc.component.name if sc.component else None
+                    )
+                ),
+                "minimum": minimum,
+                "maximum": maximum,
+            })
+
+        return Response({
+            "product": {
+                "id": product.id,
+                "name": product.name,
+            },
+            "analysis": {
+                "id": analysis.id,
+                "name": analysis.name,
+            },
+            "components": response,
+        })
+    
 
 class AttachmentUploadView(APIView):
     permission_classes = [IsAuthenticated]

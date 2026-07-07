@@ -81,7 +81,11 @@ urlpatterns = [
     # path("render-report/", views.RenderReportView.as_view(), name="render_report"),
     path("render-request-report/", views.RenderRequestReportView.as_view(), name="render-request-report"),
     path('dashboard/', views.AnalyticsAPIView.as_view(), name='analytics-dashboard'),
-    path("control-chart/",views.ControlChartFilteredAPIView.as_view(),name="control-chart-filtered"),
+    path("control-chart/chart/",views.ControlChartAPIView.as_view(),name="control-chart",),
+    path("control-chart/products/",views.ControlChartProductsAPIView.as_view(),name="control-chart-products",),
+    path("control-chart/analyses/",views.ControlChartAnalysesAPIView.as_view(),name="control-chart-analyses",),
+    path("control-chart/components/", views.ControlChartComponentsAPIView.as_view(),name="control-chart-components"),
+
 
     path("reports/templates/", views.QueryReportTemplateCreateView.as_view(), name="create_template"),
     path("reports/render/", views.QueryReportRenderView.as_view(), name="reportrender"),
