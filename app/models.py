@@ -1315,29 +1315,30 @@ class Investigation(models.Model):
         return f"Investigation for Sample {self.sample.id}"
 
 
-class BlendReport(models.Model):
-    sample_set_id = models.CharField(max_length=100)
-    result_set_id = models.CharField(max_length=100)
+class SampleAnalysisResult(models.Model):
 
+    STATUS_CHOICES = (
+        ("pending", "Pending"),
+        ("approved", "Approved"),
+        ("rejected", "Rejected"),
+    )
+    sample_id = models.CharField(max_length=100, db_index=True)
     sample_name = models.CharField(max_length=255)
-    compound_name = models.CharField(max_length=100)  # "Nicotine"
+    analysis_name = models.CharField(max_length=255)
+    result = models.CharField(max_length=255, null=True, blank=True)
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default="pending",
+    )
 
-    time = models.FloatField(null=True, blank=True)  # (min)
-    sample_weight = models.FloatField(null=True, blank=True)
-    sku_strength = models.FloatField(null=True, blank=True)
-    area = models.FloatField(null=True, blank=True)
-    blend_amount = models.FloatField(null=True, blank=True)
-
-    # Authorship & Approval
-    authored_by = models.CharField(max_length=255, null=True, blank=True)
-    authored_at = models.DateTimeField(null=True, blank=True)
-
-    approved_by = models.CharField(max_length=255, null=True, blank=True)
-    approved_at = models.DateTimeField(null=True, blank=True)
-
-    instrument_name = models.CharField(max_length=100, default="Blend Report")
+    reviewed_by = models.ForeignKey(
+        User,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+    )
 
     created_at = models.DateTimeField(auto_now_add=True)
 
-    def __str__(self):
-        return self.sample_name
+

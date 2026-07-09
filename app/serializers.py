@@ -2965,4 +2965,13 @@ class IncomingMaterialSampleInspectionSerializer(serializers.ModelSerializer):
         return super().update(instance, validated_data)
 
 
+class SampleAnalysisResultSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = models.SampleAnalysisResult
+        fields = "__all__"
 
+
+class SampleApprovalSerializer(serializers.Serializer):
+    action = serializers.ChoiceField(
+        choices=["approve", "reject"]
+    )

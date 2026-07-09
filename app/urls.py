@@ -44,6 +44,7 @@ router.register(r'investigations', views.InvestigationViewSet, basename='investi
 router.register(r'nicotine-assay', views.PreparationViewSet, basename='nicotine-assay')
 router.register(r"trainings", views.TrainingViewSet, basename="trainings")
 router.register(r'inspections', views.IncomingMaterialSampleInspectionViewSet, basename='inspection')
+router.register(r"instruments-integration",views.SampleAnalysisResultViewSet,basename="sample-analysis-results",)
 
 urlpatterns = [
     path('', include(router.urls)),
@@ -98,7 +99,6 @@ urlpatterns = [
     path("upload-prep-file/", views.AttachmentUploadView.as_view(), name="upload-prep-file"),
     path("fetch-oracle-batch/", views.FetchBatchView.as_view(), name="fetch-oracle-batch"),
 
-    path("upload-instrument-blend-report/", views.UploadBlendReportView.as_view(), name="upload-instrument-blend-report"),
     path("upload-sample-excel/<int:form_id>/",views.ExcelSampleUploadView.as_view(),name="upload-sample-excel"),
 
     path("2fa/setup/", views.TwoFactorSetupView.as_view(), name="2fa-setup"),

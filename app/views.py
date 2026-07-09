@@ -61,7 +61,6 @@ from datetime import datetime, timedelta
 import qrcode
 import base64
 from io import BytesIO
-from .utility import parse_blend_report
 import pyotp
 import qrcode
 import io
@@ -1462,6 +1461,47 @@ class DynamicSampleFormEntryViewSet(viewsets.ModelViewSet):
         }
 
         return Response(data, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=["get"], url_path=r"check-status/(?P<sample_id>[^/.]+)")
+    def check_status(self, request, sample_id):
+        """
+        Check whether a sample can be used for instrument upload.
+
+        Returns:
+        {
+            "success": true,
+            "sample_id": "...",
+            "status": "completed",
+            "can_upload": true
+        }
+        """
+
+        try:
+            entry = self.get_queryset().get(id=sample_id)
+        except models.DynamicFormEntry.DoesNotExist:
+            return Response(
+                {
+                    "success": False,
+                    "message": "Sample not found."
+                },
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        allowed_statuses = {
+            "completed",
+            "release",
+            "rejected",
+        }
+
+        return Response(
+            {
+                "success": True,
+                "sample_id": sample_id,
+                "status": entry.status,
+                "can_upload": entry.status in allowed_statuses,
+            },
+            status=status.HTTP_200_OK,
+        )
 
 
 
@@ -5348,38 +5388,6 @@ class FetchBatchView(APIView):
         except Exception:
             return None
 
-
-class UploadBlendReportView(APIView):
-    def post(self, request):
-        uploaded_file = request.FILES.get("file")
-
-        if not uploaded_file:
-            return Response(
-                {"error": "File is required"},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        try:
-            with tempfile.NamedTemporaryFile(delete=False) as tmp:
-                for chunk in uploaded_file.chunks():
-                    tmp.write(chunk)
-
-                file_path = tmp.name
-
-            parse_blend_report(file_path)
-
-            return Response(
-                {"message": "File processed successfully"},
-                status=status.HTTP_200_OK
-            )
-
-        except Exception as e:
-            return Response(
-                {"error": str(e)},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
-
-
 import pandas as pd
 from django.http import JsonResponse
 from app.utility import process_excel_file
@@ -5410,3 +5418,138 @@ class ExcelSampleUploadView(APIView):
 
         except Exception as e:
             return JsonResponse({"error": str(e)}, status=500)
+
+
+def normalize(value):
+    if not value:
+        return ""
+
+    value = value.lower().strip()
+
+    return re.sub(r"[^a-z0-9]", "", value)
+
+class SampleAnalysisResultViewSet(viewsets.ModelViewSet):
+    queryset = models.SampleAnalysisResult.objects.all().order_by("-created_at")
+    serializer_class = SampleAnalysisResultSerializer
+    permission_classes = [IsAuthenticated, HasModulePermission]
+    pagination_class = CustomPageNumberPagination
+
+    @action(detail=True, methods=["post"], url_path="review")
+    def review(self, request, pk=None):
+
+        serializer = SampleApprovalSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        action = serializer.validated_data["action"]
+
+        try:
+            record = models.SampleAnalysisResult.objects.get(pk=pk)
+        except models.SampleAnalysisResult.DoesNotExist:
+            return Response(
+                {"detail": "SampleAnalysisResult not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # Instrument Sample ID (e.g. 113902)
+        sample_id = record.sample_id
+
+        # All analyses of this sample
+        sample_results = models.SampleAnalysisResult.objects.filter(
+            sample_id=sample_id
+        )
+
+        # -------------------------
+        # Reject
+        # -------------------------
+        if action == "reject":
+
+            sample_results.update(
+                status="rejected",
+                reviewed_by=request.user,
+            )
+
+            return Response(
+                {
+                    "message": "Sample rejected successfully.",
+                    "sample_id": sample_id,
+                    "total_results": sample_results.count(),
+                }
+            )
+
+        # -------------------------
+        # Approve
+        # -------------------------
+
+        try:
+            # DynamicFormEntry ID = SampleAnalysisResult instance ID ke against
+            entry = DynamicFormEntry.objects.get(id=pk)
+
+        except DynamicFormEntry.DoesNotExist:
+
+            return Response(
+                {
+                    "detail": f"DynamicFormEntry not found for id {pk}."
+                },
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        component_results = (
+            models.ComponentResult.objects.filter(entry=entry)
+            .select_related("sample_component")
+        )
+
+        component_map = {}
+
+        for component in component_results:
+
+            component_name = normalize(component.sample_component.name)
+
+            component_map[component_name] = component
+
+        updated = 0
+
+        with transaction.atomic():
+
+            for instrument in sample_results:
+
+                analysis_name = normalize(instrument.analysis_name)
+
+                component = component_map.get(analysis_name)
+
+                if not component:
+                    continue
+
+                component.value = instrument.result
+
+                try:
+                    component.numeric_value = float(instrument.result)
+                except (ValueError, TypeError):
+                    component.numeric_value = None
+
+                component.save(
+                    update_fields=[
+                        "value",
+                        "numeric_value",
+                    ]
+                )
+
+                updated += 1
+
+            sample_results.update(
+                status="approved",
+                reviewed_by=request.user,
+            )
+
+        return Response(
+            {
+                "message": "Sample approved successfully.",
+                "sample_id": sample_id,
+                "matched_components": updated,
+                "total_results": sample_results.count(),
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+    
+

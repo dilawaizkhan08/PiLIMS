@@ -240,170 +240,220 @@ def generate_report(template_id, sample_id, request):
         return None
 
 
+import csv
+
+from .models import SampleAnalysisResult
 
 
-from datetime import datetime
-from app import models
+IGNORE_COLUMNS = {
+    "#",
+    "Sample Set Id",
+    "Result Set Id",
+    "SampleName",
+    "Name",
+}
+
+import re
+import csv
+from app.models import SampleAnalysisResult
 
 
-def clean(line):
-    return line.replace("'", "").strip()
+IGNORE_COLUMNS = {
+    "#",
+    "Sample Set Id",
+    "Result Set Id",
+    "SampleName",
+    "Name",
+}
 
 
-def split(line):
-    return [p.strip() for p in line.split(",")]
+def clean(value):
+    if value is None:
+        return ""
+    return value.strip().strip("'").strip('"')
 
 
-def parse_date(date_str):
-    return datetime.strptime(
-        date_str.split(" +")[0].strip(),
-        "%m/%d/%Y %I:%M:%S %p"
-    )
+def parse_line(line):
+    return [clean(x) for x in re.findall(r"'([^']*)'", line)]
 
 
-def parse_blend_report(file_path):
+def import_component_summary(file_path):
+    """
+    Reads Component Summary Blend table dynamically and stores
+    each analysis/result as a separate database row.
+    """
 
-    with open(file_path, "r") as f:
-        lines = [clean(l) for l in f if l.strip()]
+    with open(file_path, "r", encoding="cp1252") as f:
+        rows = [parse_line(line) for line in f if line.strip()]
 
-    # =========================
-    # 1. PEAK RESULTS
-    # =========================
-    peak_records = []
-    peak_section = False
+    header_index = None
+    headers = None
 
-    for line in lines:
-
-        if "Peak Results" in line:
-            peak_section = True
-            continue
-
-        if peak_section:
-
-            if "Result Sign Off" in line:
-                break
-
-            parts = split(line)
-
-            if not parts:
-                continue
-
-            if not parts[0].isdigit():
-                continue
-
-            try:
-                clean_parts = [p for p in parts if p != ""]
-
-                if len(clean_parts) < 10:
-                    continue
-
-                peak_records.append({
-                    "sample_set_id": clean_parts[1],
-                    "result_set_id": clean_parts[2],
-                    "sample_name": clean_parts[3],
-                    "compound_name": clean_parts[4],
-                    "time": float(clean_parts[5]),
-                    "sample_weight": float(clean_parts[6]),
-                    "sku_strength": float(clean_parts[7]),
-                    "area": float(clean_parts[8]),
-                    "blend_amount": float(clean_parts[9]),
-                })
-
-            except Exception as e:
-                print("❌ Peak error:", parts, e)
-
-    # =========================
-    # 2. SIGNOFF (FINAL FIXED)
-    # =========================
-    signoff_map = {}
-    signoff_section = False
-
-    for line in lines:
+    # -----------------------------
+    # Find Header
+    # -----------------------------
+    for i, row in enumerate(rows):
 
         if (
-            "Full Name" in line and
-            "Date" in line and
-            "Sample Set Id" in line
+            "Sample Set Id" in row
+            and "SampleName" in row
+            and "Result Set Id" in row
         ):
-            signoff_section = True
+            header_index = i
+            headers = row
+            break
+
+    if headers is None:
+        raise Exception("Component Summary Blend table not found.")
+
+    # Dynamic analyses
+    analysis_columns = [
+        h for h in headers
+        if h and h not in IGNORE_COLUMNS
+    ]
+
+    print("Detected Analyses:", analysis_columns)
+
+    # -----------------------------------
+    # Data starts AFTER unit row
+    # -----------------------------------
+    data_start = header_index + 2
+
+    for row in rows[data_start:]:
+
+        if not row:
             continue
 
-        if signoff_section:
+        first = row[0]
 
-            if "Project Name" in line:
-                break
+        # Stop when summary begins
+        if first in {
+            "Min",
+            "Max",
+            "Mean",
+            "% RSD",
+            "Result Sign Off",
+        }:
+            break
 
-            parts = split(line)
+        # Ignore non data rows
+        if not first.isdigit():
+            continue
 
-            if not parts:
-                continue
+        # Some exports contain extra empty columns.
+        # Keep only required columns.
+        if len(row) > len(headers):
+            row = row[: len(headers)]
 
-            # 🔥 REMOVE HASH ROW PROPERLY
-            while parts and parts[0].strip() == "#":
-                parts.pop(0)
+        # Pad missing values
+        if len(row) < len(headers):
+            row.extend([""] * (len(headers) - len(row)))
 
-            if len(parts) < 6:
-                continue
+        data = dict(zip(headers, row))
 
-            try:
-                clean_parts = [p for p in parts if p != ""]
+        sample_id = data.get("Sample Set Id", "")
+        sample_name = data.get("SampleName", "")
 
-                sample_name = clean_parts[3]
-                full_name = clean_parts[4]
-                date = parse_date(clean_parts[5])
+        for analysis in analysis_columns:
 
-                if sample_name not in signoff_map:
-                    signoff_map[sample_name] = []
+            result = data.get(analysis, "").strip()
 
-                signoff_map[sample_name].append({
-                    "name": full_name,
-                    "date": date
-                })
+            SampleAnalysisResult.objects.create(
+                sample_id=sample_id,
+                sample_name=sample_name,
+                analysis_name=analysis,
+                result=result,
+            )
 
-            except Exception as e:
-                print("❌ Signoff error:", parts, e)
+    print("Import Completed.")
 
-    print("✅ SIGNOFF MAP SIZE:", len(signoff_map))
 
-    # =========================
-    # 3. SAVE DATA
-    # =========================
-    for record in peak_records:
+IGNORE_POUCH_COLUMNS = {
+    "Pouch Number",
+    "Status",
+    "Processing Start Time",
+    "Processing End Time",
+}
 
-        sample = record["sample_name"]
-        signoffs = signoff_map.get(sample, [])
+def clean_pouch(value):
+    if value is None:
+        return ""
+    return value.strip().strip('"').strip("'")
 
-        authored_by = authored_at = None
-        approved_by = approved_at = None
 
-        if len(signoffs) >= 1:
-            authored_by = signoffs[0]["name"]
-            authored_at = signoffs[0]["date"]
+def import_pouch_report(file_path):
+    """
+    Import pouch report dynamically.
+    Supports comma, tab and semicolon separated CSVs.
+    """
 
-        if len(signoffs) >= 2:
-            approved_by = signoffs[1]["name"]
-            approved_at = signoffs[1]["date"]
+    # Detect delimiter automatically
+    with open(file_path, "r", encoding="cp1252", newline="") as f:
+        sample = f.read(4096)
+        f.seek(0)
 
-        models.BlendReport.objects.create(
-            sample_set_id=record["sample_set_id"],
-            result_set_id=record["result_set_id"],
-            sample_name=sample,
-            compound_name=record["compound_name"],
-            time=record["time"],
-            sample_weight=record["sample_weight"],
-            sku_strength=record["sku_strength"],
-            area=record["area"],
-            blend_amount=record["blend_amount"],
-            authored_by=authored_by,
-            authored_at=authored_at,
-            approved_by=approved_by,
-            approved_at=approved_at,
+        try:
+            dialect = csv.Sniffer().sniff(sample, delimiters=",;\t")
+        except csv.Error:
+            dialect = csv.excel
+
+        rows = list(csv.reader(f, dialect))
+
+    print("First 10 rows:")
+    for i, row in enumerate(rows[:10]):
+        print(i, row)
+
+    header_index = None
+    headers = None
+
+    for i, row in enumerate(rows):
+
+        row = [clean_pouch(x) for x in row]
+
+        if "Pouch Number" in row:
+            header_index = i
+            headers = row
+            break
+
+    if header_index is None:
+        raise Exception(
+            "Pouch table not found. Check the printed rows above to verify the header name."
         )
 
-    print("✅ DONE SUCCESSFULLY")
+    analysis_columns = [
+        h for h in headers
+        if h and h not in IGNORE_POUCH_COLUMNS
+    ]
 
+    print("Detected Analyses:", analysis_columns)
 
+    for row in rows[header_index + 1:]:
 
+        row = [clean_pouch(x) for x in row]
+
+        if not any(row):
+            break
+
+        if len(row) < len(headers):
+            row.extend([""] * (len(headers) - len(row)))
+
+        data = dict(zip(headers, row))
+
+        sample_id = data.get("Pouch Number")
+
+        if not sample_id:
+            continue
+
+        for analysis in analysis_columns:
+
+            SampleAnalysisResult.objects.create(
+                sample_id=sample_id,
+                sample_name=f"{sample_id}",
+                analysis_name=analysis,
+                result=data.get(analysis, ""),
+            )
+
+    print("Pouch Report Imported.")
 
 import pandas as pd
 def to_float(value):
