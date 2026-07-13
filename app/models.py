@@ -779,8 +779,6 @@ class IncomingMaterialSampleInspection(models.Model):
         return self.inspection_sheet_no
     
     def save(self, *args, **kwargs):
-        if self.material and not self.material_type:
-            self.material_type = self.material.product_type
         super().save(*args, **kwargs)
 
 class DynamicFormEntryAnalysis(BaseModel):
