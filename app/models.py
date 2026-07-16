@@ -659,103 +659,37 @@ class IncomingMaterialSampleInspection(models.Model):
         ('n', 'N'),
     ]
 
-    inspection_sheet_no = models.CharField(
-        max_length=50,
-        primary_key=True,
-        default=generate_inspection_id,
-        editable=False
-    )
+    APPROVAL_STATUS_CHOICES = [
+        ("pending", "Pending"),
+        ("approved", "Approved"),
+    ]
 
-    material = models.ForeignKey(
-        Product,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name='inspections'
-    )
-
+    inspection_sheet_no = models.CharField(max_length=50,primary_key=True,default=generate_inspection_id,editable=False)
+    material = models.ForeignKey(Product,on_delete=models.SET_NULL,null=True,blank=True,related_name='inspections')
     material_type = models.CharField(max_length=100, blank=True, null=True)
-
-    sampling_type = models.CharField(
-        max_length=20,
-        choices=SAMPLING_TYPE_CHOICES,
-        blank=True,
-        null=True
-    )
-
+    sampling_type = models.CharField(max_length=20,choices=SAMPLING_TYPE_CHOICES,blank=True,null=True)
     high_risk_reason = models.TextField(blank=True, null=True)
-
-    leakage_contamination = models.CharField(
-        max_length=20,
-        choices=OBSERVATION_CHOICES,
-        blank=True,
-        null=True
-    )
-
-    outer_packaging_condition = models.CharField(
-        max_length=20,
-        choices=CONDITION_CHOICES,
-        blank=True,
-        null=True
-    )
-
-    container_sealing_closure = models.CharField(
-        max_length=20,
-        choices=CONDITION_CHOICES,
-        blank=True,
-        null=True
-    )
-
-    material_visual_appearance = models.CharField(
-        max_length=20,
-        choices=[('normal', 'Normal'), ('abnormal', 'Abnormal')],
-        blank=True,
-        null=True
-    )
-
-    msds_sds = models.CharField(
-        max_length=20,
-        choices=AVAILABILITY_CHOICES,
-        blank=True,
-        null=True
-    )
-
-    coa = models.CharField(
-        max_length=20,
-        choices=AVAILABILITY_CHOICES,
-        blank=True,
-        null=True
-    )
-
-    sampling_level_applied = models.CharField(
-        max_length=20,
-        choices=SAMPLING_LEVEL_CHOICES,
-        blank=True,
-        null=True
-    )
-
+    leakage_contamination = models.CharField(max_length=20,choices=OBSERVATION_CHOICES,blank=True,null=True)
+    outer_packaging_condition = models.CharField(max_length=20,choices=CONDITION_CHOICES,blank=True,null=True)
+    container_sealing_closure = models.CharField(max_length=20,choices=CONDITION_CHOICES,blank=True,null=True)
+    material_visual_appearance = models.CharField(max_length=20,choices=[('normal', 'Normal'), ('abnormal', 'Abnormal')],blank=True,null=True)
+    msds_sds = models.CharField(max_length=20,choices=AVAILABILITY_CHOICES,blank=True,null=True)
+    coa = models.CharField(max_length=20,choices=AVAILABILITY_CHOICES,blank=True,null=True)
+    sampling_level_applied = models.CharField(max_length=20,choices=SAMPLING_LEVEL_CHOICES,blank=True,null=True)
     no_of_cartons_to_be_opened = models.PositiveIntegerField(blank=True, null=True)
-
     retain_sample_quantity = models.CharField(max_length=255, blank=True, null=True)
-
-    # EXISTING FIELDS
     grn_number = models.CharField(max_length=100, blank=True, null=True)
     received_total_number = models.PositiveIntegerField(blank=True, null=True)
     vendor_lot_number = models.CharField(max_length=100, blank=True, null=True)
-
-    # A - Suppliers Label Information
     clarity = models.CharField(max_length=20, choices=CLARITY_CHOICES, blank=True, null=True)
     item_description = models.CharField(max_length=20, choices=PRESENCE_CHOICES, blank=True, null=True)
     supplier_name = models.CharField(max_length=20, choices=PRESENCE_CHOICES, blank=True, null=True)
     supplier_lot_number = models.CharField(max_length=20, choices=PRESENCE_CHOICES, blank=True, null=True)
     manufacturing_date = models.CharField(max_length=20, choices=PRESENCE_CHOICES, blank=True, null=True)
     expiry_date = models.CharField(max_length=20, choices=PRESENCE_CHOICES, blank=True, null=True)
-
-    # B - Sampling Information
     number_of_containers_to_be_opened = models.PositiveIntegerField(blank=True, null=True)
     sampled_quantity = models.CharField(max_length=255, blank=True, null=True)
     sampled_by = models.CharField(max_length=255, blank=True, null=True)
-
     container_sealed_after_sampling = models.BooleanField(default=False)
     container_labeled_after_sealed = models.BooleanField(default=False)
 
@@ -767,6 +701,8 @@ class IncomingMaterialSampleInspection(models.Model):
 
     decision = models.CharField(max_length=20, choices=DECISION_CHOICES, null=True, blank=True)
     accepted_quantity = models.PositiveIntegerField(null=True, blank=True)
+    approval_status = models.CharField(max_length=20,choices=APPROVAL_STATUS_CHOICES, default="pending")
+    generated_report_url = models.URLField(max_length=500,null=True,blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

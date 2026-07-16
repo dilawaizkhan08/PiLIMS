@@ -2940,31 +2940,34 @@ class TrainingSerializer(serializers.ModelSerializer):
 
         return data
     
+
 class IncomingMaterialSampleInspectionSerializer(serializers.ModelSerializer):
     material_name = serializers.CharField(source='material.name', read_only=True)
     inspection_id = serializers.CharField(source='inspection.inspection_sheet_no', read_only=True)
+
+    generated_report_url = serializers.SerializerMethodField()
 
     class Meta:
         model = models.IncomingMaterialSampleInspection
         fields = '__all__'
 
+    def get_generated_report_url(self, obj):
+        request = self.context.get("request")
+
+        if not obj.generated_report_url:
+            return None
+
+        if request:
+            return request.build_absolute_uri(obj.generated_report_url)
+
+        return obj.generated_report_url
+
     def create(self, validated_data):
-        # material = validated_data.get('material')
-
-        # if material:
-        #     validated_data['material_type'] = material.product_type
-
         return super().create(validated_data)
 
     def update(self, instance, validated_data):
-        # material = validated_data.get('material', instance.material)
-
-        # if material:
-        #     validated_data['material_type'] = material.product_type
-
         return super().update(instance, validated_data)
-
-
+    
 class SampleAnalysisResultSerializer(serializers.ModelSerializer):
     class Meta:
         model = models.SampleAnalysisResult

@@ -4770,7 +4770,7 @@ class DocumentUploadView(APIView):
         # Return relative path only
         return Response({"attachment": path}, status=status.HTTP_201_CREATED)
 
-
+import traceback
 class IncomingMaterialSampleInspectionViewSet(viewsets.ModelViewSet):
     queryset = models.IncomingMaterialSampleInspection.objects.all()
     serializer_class = IncomingMaterialSampleInspectionSerializer
@@ -4782,93 +4782,82 @@ class IncomingMaterialSampleInspectionViewSet(viewsets.ModelViewSet):
             checked_by=self.request.user.get_full_name() or self.request.user.username
         )
 
-    from django.utils import timezone
-    @action(detail=True, methods=['patch'], url_path='update-acceptance')
-    def update_acceptance(self, request, pk=None):
+    @action(detail=True, methods=['post'], url_path='approve')
+    def approve(self, request, pk=None):
         try:
             instance = self.get_object()
 
-            decision = request.data.get('decision')
-            accepted_quantity = request.data.get('accepted_quantity')
-
-            if decision not in ['accepted', 'rejected', 'partial']:
+            if instance.approval_status == "approved":
                 return Response(
-                    {"error": "Invalid decision value"},
+                    {"error": "Inspection is already approved."},
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
-            if decision == 'accepted':
-                instance.accepted_quantity = instance.received_total_number
-
-            elif decision == 'rejected':
-                instance.accepted_quantity = 0
-
-            elif decision == 'partial':
-                if accepted_quantity is None:
-                    return Response(
-                        {"error": "accepted_quantity is required for partial acceptance"},
-                        status=status.HTTP_400_BAD_REQUEST
-                    )
-
-                accepted_quantity = int(accepted_quantity)
-
-                if accepted_quantity > instance.received_total_number:
-                    return Response(
-                        {"error": "Accepted quantity cannot exceed received quantity"},
-                        status=status.HTTP_400_BAD_REQUEST
-                    )
-
-                instance.accepted_quantity = accepted_quantity
-
-            # Update decision
-            instance.decision = decision
-
-            # Update approved_by and approved_sign_date
-            if decision in ['accepted', 'partial']:
-                instance.approved_by = (
-                    request.user.get_full_name() or request.user.username
+            if instance.decision not in ["accepted", "partial", "rejected"]:
+                return Response(
+                    {"error": "Please select a decision before approval."},
+                    status=status.HTTP_400_BAD_REQUEST
                 )
-                instance.approved_sign_date = timezone.now().date()
-            else:
-                instance.approved_by = None
-                instance.approved_sign_date = None
+
+            instance.approval_status = "approved"
+            instance.approved_by = (
+                request.user.get_full_name() or request.user.username
+            )
+            instance.approved_sign_date = timezone.now().date()
 
             instance.save(update_fields=[
-                'decision',
-                'accepted_quantity',
-                'approved_by',
-                'approved_sign_date',
+                "approval_status",
+                "approved_by",
+                "approved_sign_date",
             ])
 
             sample_id = None
+            generated_report_url = None
 
-            if decision in ['accepted', 'partial']:
-                sample_id = self.create_sample_from_inspection(instance, request.user)
+            if instance.decision in ["accepted", "partial"]:
+
+                sample_id = self.create_sample_from_inspection(
+                    instance,
+                    request.user
+                )
+
+                if sample_id:
+                    report = self.generate_ims_report(request, sample_id)
+
+                    if report:
+                        generated_report_url = report.pdf_url
+
+                        instance.generated_report_url = generated_report_url
+                        instance.save(update_fields=["generated_report_url"])
 
             return Response({
-                "message": "Inspection decision updated successfully"
-                        + (f". Sample created with ID {sample_id}" if sample_id else ""),
+                "message": "Inspection approved successfully."
+                        + (f" Sample created with ID {sample_id}" if sample_id else ""),
                 "inspection_sheet_no": instance.inspection_sheet_no,
                 "decision": instance.decision,
-                "accepted_quantity": instance.accepted_quantity,
+                "approval_status": instance.approval_status,
                 "approved_by": instance.approved_by,
                 "approved_sign_date": instance.approved_sign_date,
-                "sample_id": sample_id
+                "sample_id": sample_id,
+                "generated_report_url": generated_report_url,
             })
 
-        except Exception as e:
-            return Response(
-                {"error": str(e)},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
-    
-    # =====================================================
-    # SAMPLE CREATION
-    # =====================================================
+        except Exception:
+            traceback.print_exc()
+            raise
+
     def create_sample_from_inspection(self, inspection, user):
         try:
+
+            existing_entry = models.DynamicFormEntry.objects.filter(
+                inspection=inspection
+            ).first()
+
+            if existing_entry:
+                return existing_entry.id
+
             sample_form = models.SampleForm.objects.get(
-                sample_name__iexact="beyti sample"
+                sample_name__iexact="DZRT Nicotine Pouches"
             )
 
             entry = models.DynamicFormEntry.objects.create(
@@ -4884,58 +4873,216 @@ class IncomingMaterialSampleInspectionViewSet(viewsets.ModelViewSet):
             product = inspection.material
             product_id = product.id if product else None
 
+            today = timezone.now().date()
+            expiry = today + timedelta(days=30)
+
             for field in sample_form.fields.all():
 
-                # 🔹 PRODUCT FIELD
+                name = field.field_name.strip().lower()
+
                 if (
                     field.field_property == "link_to_table"
                     and field.link_to_table == "app_product"
                 ):
-                    product_id = product.id if product else None
+
                     clean_data[field.field_name] = product_id
 
                     if product_id:
-                        product_analysis_ids = (
+                        analysis_ids = (
                             models.ProductSamplingGradeAnalysis.objects
-                            .filter(product_sampling_grade__product_id=product_id)
+                            .filter(
+                                product_sampling_grade__product_id=product_id
+                            )
                             .values_list("analysis_id", flat=True)
                             .distinct()
                         )
-                        auto_analysis_ids.update(product_analysis_ids)
 
-                # 🔹 PRODUCT TYPE
-                elif field.field_name.strip().lower() == "product type":
-                    clean_data[field.field_name] = "RAW_MATERIALS"
+                        auto_analysis_ids.update(analysis_ids)
 
-                # 🔹 DEFAULT
+                elif name == "product type":
+                    clean_data[field.field_name] = inspection.material_type
+
+                elif name == "batch number":
+                    clean_data[field.field_name] = inspection.vendor_lot_number
+
+                elif name == "manufacturing date":
+                    clean_data[field.field_name] = today.isoformat()
+
+                elif name == "expiry date":
+                    clean_data[field.field_name] = expiry.isoformat()
+
                 else:
                     clean_data[field.field_name] = None
 
-            # -------------------------
-            # ATTACH ANALYSES
-            # -------------------------
-            if auto_analysis_ids:
-                entry.analyses.set(
-                    models.Analysis.objects.filter(id__in=auto_analysis_ids)
-                )
-                create_entry_analyses(entry, auto_analysis_ids,product_id)
-
-            # -------------------------
-            # SAVE ENTRY
-            # -------------------------
             entry.data = clean_data
             entry.save()
 
-            return entry.id  # ✅ return sample id
+            if auto_analysis_ids:
+                entry.analyses.set(
+                    models.Analysis.objects.filter(
+                        id__in=auto_analysis_ids
+                    )
+                )
 
-        except models.SampleForm.DoesNotExist:
-            print("❌ 'beyti sample' form not found")
-            return None
+                create_entry_analyses(
+                    entry,
+                    auto_analysis_ids,
+                    product_id
+                )
 
-        except Exception as e:
-            print(f"❌ Sample creation failed: {str(e)}")
-            return None
+            return entry.id
 
+        except Exception:
+            traceback.print_exc()
+            raise
+
+    def generate_ims_report(self, request, sample_id):
+        try:
+            sample = models.DynamicFormEntry.objects.get(id=sample_id)
+
+            # IMS Template
+            template = models.QueryReportTemplate.objects.get(
+                name__iexact="ims"
+            )
+
+            # Execute SQL
+            result = self.execute_query(
+                template.sql_query,
+                {"sample_id": int(sample_id)}
+            )
+
+            if not result:
+                raise Exception("No data returned from SQL.")
+
+            parsed_data = {}
+
+            if "data" in result[0]:
+                try:
+                    parsed_data = json.loads(result[0]["data"])
+                except Exception:
+                    parsed_data = {}
+
+            context = {
+                "rows": result,
+                "entry": sample,
+                "data": parsed_data,
+                "sample_text_id": sample.sample_text_id,
+                "created_at": sample.created_at,
+            }
+
+            # QR Code
+            qr_url = (
+                f"{settings.FRONTEND_BASE_URL}/sample-details/{sample_id}"
+            )
+
+            qr = qrcode.QRCode(box_size=3, border=1)
+            qr.add_data(qr_url)
+            qr.make(fit=True)
+
+            img = qr.make_image(fill_color="black", back_color="white")
+
+            buffer = BytesIO()
+            img.save(buffer, format="PNG")
+
+            context["qr_code"] = (
+                "data:image/png;base64,"
+                + base64.b64encode(buffer.getvalue()).decode()
+            )
+
+            context["sample_url"] = qr_url
+
+            rendered_html = JinjaTemplate(
+                template.jinja_html_content
+            ).render(context)
+
+            default_css = """
+            @page { size:A4; margin:10mm; }
+
+            body{
+                font-family:Arial,sans-serif;
+            }
+
+            table{
+                width:100%;
+                border-collapse:collapse;
+            }
+
+            th,td{
+                border:1px solid black;
+                padding:6px;
+                font-size:12px;
+            }
+
+            .qr-footer{
+                position:fixed;
+                bottom:0;
+                right:0;
+            }
+
+            .qr-footer img{
+                width:35px;
+                height:35px;
+            }
+            """
+
+            css = default_css + (template.css_content or "")
+
+            rendered_html += f"""
+            <div class="qr-footer">
+                <img src="{context['qr_code']}">
+            </div>
+            """
+
+            with tempfile.NamedTemporaryFile(
+                delete=False,
+                suffix=".pdf"
+            ) as temp_pdf:
+
+                temp_path = temp_pdf.name
+
+            HTML(
+                string=rendered_html,
+                base_url=request.build_absolute_uri("/")
+            ).write_pdf(
+                target=temp_path,
+                stylesheets=[CSS(string=css)]
+            )
+
+            filename = f"IMS_{sample.sample_text_id}.pdf"
+
+            with open(temp_path, "rb") as f:
+                pdf_path = default_storage.save(
+                    f"reports/{filename}",
+                    ContentFile(f.read())
+                )
+
+            pdf_url = default_storage.url(pdf_path)
+
+            os.remove(temp_path)
+
+            report = models.GeneratedReport.objects.create(
+                sample=sample,
+                template=template,
+                pdf_url=pdf_url
+            )
+
+            return report
+
+        except Exception:
+            traceback.print_exc()
+            raise
+
+    def execute_query(self, sql_query, params):
+        from django.db import connection
+        with connection.cursor() as cursor:
+            cursor.execute(sql_query, params)
+            columns = [col[0] for col in cursor.description]
+            rows = [
+                dict(zip(columns, row))
+                for row in cursor.fetchall()
+            ]
+
+        return rows
 
 
 class ControlChartAPIView(APIView):
