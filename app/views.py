@@ -68,6 +68,7 @@ import base64
 import logging
 logger = logging.getLogger(__name__)
 from django.contrib.sessions.models import Session
+from django.db.utils import NotSupportedError
 
 
 
@@ -5597,8 +5598,8 @@ class SampleAnalysisResultViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        # Instrument Sample ID (e.g. 113902)
-        sample_id = record.sample_id
+        # Instrument Sample ID / Batch Number
+        sample_id = str(record.sample_id)
 
         # All analyses of this sample
         sample_results = models.SampleAnalysisResult.objects.filter(
@@ -5627,15 +5628,46 @@ class SampleAnalysisResultViewSet(viewsets.ModelViewSet):
         # Approve
         # -------------------------
 
+        entry = None
+
+        # First try PostgreSQL JSON lookup
         try:
-            # DynamicFormEntry ID = SampleAnalysisResult instance ID ke against
-            entry = DynamicFormEntry.objects.get(id=pk)
+            entry = DynamicFormEntry.objects.get(
+                data__contains={
+                    "Batch Number": sample_id,
+                }
+            )
+
+        except NotSupportedError:
+            for obj in DynamicFormEntry.objects.all():
+                if (
+                    isinstance(obj.data, dict)
+                    and str(obj.data.get("Batch Number")) == sample_id
+                ):
+                    entry = obj
+                    break
 
         except DynamicFormEntry.DoesNotExist:
+            pass
 
+        except DynamicFormEntry.MultipleObjectsReturned:
             return Response(
                 {
-                    "detail": f"DynamicFormEntry not found for id {pk}."
+                    "detail": (
+                        f"Multiple DynamicFormEntry records found "
+                        f"for Batch Number '{sample_id}'."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if entry is None:
+            return Response(
+                {
+                    "detail": (
+                        f"DynamicFormEntry not found for "
+                        f"Batch Number '{sample_id}'."
+                    )
                 },
                 status=status.HTTP_404_NOT_FOUND,
             )
@@ -5648,9 +5680,7 @@ class SampleAnalysisResultViewSet(viewsets.ModelViewSet):
         component_map = {}
 
         for component in component_results:
-
             component_name = normalize(component.sample_component.name)
-
             component_map[component_name] = component
 
         updated = 0
@@ -5696,7 +5726,5 @@ class SampleAnalysisResultViewSet(viewsets.ModelViewSet):
             },
             status=status.HTTP_200_OK,
         )
-
-
     
 

@@ -242,8 +242,6 @@ def generate_report(template_id, sample_id, request):
 
 import csv
 
-from .models import SampleAnalysisResult
-
 
 IGNORE_COLUMNS = {
     "#",
@@ -252,12 +250,7 @@ IGNORE_COLUMNS = {
     "SampleName",
     "Name",
 }
-
 import re
-import csv
-from app.models import SampleAnalysisResult
-
-
 IGNORE_COLUMNS = {
     "#",
     "Sample Set Id",
@@ -270,7 +263,7 @@ IGNORE_COLUMNS = {
 def clean(value):
     if value is None:
         return ""
-    return value.strip().strip("'").strip('"')
+    return str(value).strip().strip("'").strip('"')
 
 
 def parse_line(line):
@@ -289,9 +282,47 @@ def import_component_summary(file_path):
     header_index = None
     headers = None
 
-    # -----------------------------
-    # Find Header
-    # -----------------------------
+    signoff_datetime = None
+
+    # -------------------------------------------------
+    # Find first Sign Off date
+    # -------------------------------------------------
+    for i, row in enumerate(rows):
+
+        if "Full Name" in row and "Date" in row:
+
+            for data_row in rows[i + 1:]:
+
+                if not data_row:
+                    continue
+
+                if data_row[0] == "Result Sign Off":
+                    break
+
+                if len(data_row) >= 6:
+
+                    date_string = data_row[-1]
+
+                    if date_string:
+
+                        try:
+                            date_string = date_string.replace(" +03", "")
+
+                            signoff_datetime = datetime.strptime(
+                                date_string,
+                                "%m/%d/%Y %I:%M:%S %p",
+                            )
+
+                            break
+
+                        except Exception:
+                            pass
+
+            break
+
+    # -------------------------------------------------
+    # Find Blend header
+    # -------------------------------------------------
     for i, row in enumerate(rows):
 
         if (
@@ -306,17 +337,14 @@ def import_component_summary(file_path):
     if headers is None:
         raise Exception("Component Summary Blend table not found.")
 
-    # Dynamic analyses
     analysis_columns = [
-        h for h in headers
+        h
+        for h in headers
         if h and h not in IGNORE_COLUMNS
     ]
 
     print("Detected Analyses:", analysis_columns)
 
-    # -----------------------------------
-    # Data starts AFTER unit row
-    # -----------------------------------
     data_start = header_index + 2
 
     for row in rows[data_start:]:
@@ -326,7 +354,6 @@ def import_component_summary(file_path):
 
         first = row[0]
 
-        # Stop when summary begins
         if first in {
             "Min",
             "Max",
@@ -336,36 +363,39 @@ def import_component_summary(file_path):
         }:
             break
 
-        # Ignore non data rows
         if not first.isdigit():
             continue
 
-        # Some exports contain extra empty columns.
-        # Keep only required columns.
         if len(row) > len(headers):
             row = row[: len(headers)]
 
-        # Pad missing values
         if len(row) < len(headers):
             row.extend([""] * (len(headers) - len(row)))
 
         data = dict(zip(headers, row))
 
         sample_id = data.get("Sample Set Id", "")
-        sample_name = data.get("SampleName", "")
+        product_name = data.get("SampleName", "")
 
         for analysis in analysis_columns:
 
             result = data.get(analysis, "").strip()
 
-            SampleAnalysisResult.objects.create(
+            if result == "":
+                continue
+
+            models.SampleAnalysisResult.objects.create(
                 sample_id=sample_id,
-                sample_name=sample_name,
+                product_name=product_name,
                 analysis_name=analysis,
                 result=result,
+                unit=None,
+                time=signoff_datetime,
             )
 
     print("Import Completed.")
+
+
 
 
 IGNORE_POUCH_COLUMNS = {
@@ -375,25 +405,32 @@ IGNORE_POUCH_COLUMNS = {
     "Processing End Time",
 }
 
+
 def clean_pouch(value):
     if value is None:
         return ""
-    return value.strip().strip('"').strip("'")
+    return str(value).strip().strip('"').strip("'")
 
 
 def import_pouch_report(file_path):
     """
-    Import pouch report dynamically.
-    Supports comma, tab and semicolon separated CSVs.
+    Import pouch report.
+    Stores only Mean values for each analysis.
     """
 
+    # -------------------------------------
     # Detect delimiter automatically
+    # -------------------------------------
     with open(file_path, "r", encoding="cp1252", newline="") as f:
+
         sample = f.read(4096)
         f.seek(0)
 
         try:
-            dialect = csv.Sniffer().sniff(sample, delimiters=",;\t")
+            dialect = csv.Sniffer().sniff(
+                sample,
+                delimiters=",;\t",
+            )
         except csv.Error:
             dialect = csv.excel
 
@@ -403,12 +440,34 @@ def import_pouch_report(file_path):
     for i, row in enumerate(rows[:10]):
         print(i, row)
 
+    sample_id = None
+    product_name = None
+    processed_time = None
+
     header_index = None
     headers = None
 
+    # -------------------------------------
+    # Read report metadata
+    # -------------------------------------
     for i, row in enumerate(rows):
 
         row = [clean_pouch(x) for x in row]
+
+        if row and row[0] == "Sample ID":
+
+            if i + 1 < len(rows):
+
+                values = [clean_pouch(x) for x in rows[i + 1]]
+
+                if len(values) > 0:
+                    sample_id = values[0]
+
+                if len(values) > 4:
+                    product_name = values[4]
+
+                if len(values) > 8:
+                    processed_time = values[8]
 
         if "Pouch Number" in row:
             header_index = i
@@ -416,9 +475,7 @@ def import_pouch_report(file_path):
             break
 
     if header_index is None:
-        raise Exception(
-            "Pouch table not found. Check the printed rows above to verify the header name."
-        )
+        raise Exception("Pouch table not found.")
 
     analysis_columns = [
         h for h in headers
@@ -427,33 +484,58 @@ def import_pouch_report(file_path):
 
     print("Detected Analyses:", analysis_columns)
 
+    processed_datetime = None
+
+    if processed_time:
+        try:
+            processed_datetime = datetime.strptime(
+                processed_time,
+                "%d/%m/%Y %H:%M:%S",
+            )
+        except Exception:
+            pass
+
+    # -------------------------------------
+    # Find Mean row
+    # -------------------------------------
+    mean_row = None
+
     for row in rows[header_index + 1:]:
 
         row = [clean_pouch(x) for x in row]
 
-        if not any(row):
-            break
-
         if len(row) < len(headers):
             row.extend([""] * (len(headers) - len(row)))
 
-        data = dict(zip(headers, row))
+        # Mean row has "Mean" in column index 3
+        if len(row) > 3 and row[3].strip().lower() == "mean":
+            mean_row = dict(zip(headers, row))
+            break
 
-        sample_id = data.get("Pouch Number")
+    if mean_row is None:
+        raise Exception("Mean row not found.")
 
-        if not sample_id:
+    # -------------------------------------
+    # Save one record per analysis
+    # -------------------------------------
+    for analysis in analysis_columns:
+
+        value = mean_row.get(analysis)
+
+        if value in ("", None):
             continue
 
-        for analysis in analysis_columns:
+        models.SampleAnalysisResult.objects.create(
+            sample_id=sample_id,
+            product_name=product_name,
+            analysis_name=analysis,
+            result=value,
+            unit=None,
+            time=processed_datetime,
+        )
 
-            SampleAnalysisResult.objects.create(
-                sample_id=sample_id,
-                sample_name=f"{sample_id}",
-                analysis_name=analysis,
-                result=data.get(analysis, ""),
-            )
+    print("Pouch Report Imported Successfully.")
 
-    print("Pouch Report Imported.")
 
 import pandas as pd
 def to_float(value):
