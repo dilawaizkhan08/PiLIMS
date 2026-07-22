@@ -3910,8 +3910,19 @@ class QueryReportRenderView(APIView):
         try:
             params = {"sample_id": int(sample_id)}
             result = self.execute_query(template_obj.sql_query, params)
+            for row in result:
+                for field in ["analyst_sign", "approver_sign", "auth_sign"]:
+                    if row.get(field):
+                        row[field] = "file://" + os.path.join(
+                            settings.MEDIA_ROOT,
+                            str(row[field])
+                        )
+
             if not result:
-                return Response({"error": "No data returned from SQL"}, status=status.HTTP_404_NOT_FOUND)
+                return Response(
+                    {"error": "No data returned from SQL"},
+                    status=status.HTTP_404_NOT_FOUND
+                )
         except Exception as e:
             return Response({"error": f"SQL execution failed: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
@@ -4130,6 +4141,12 @@ class DynamicFormEntryCompactTicketPDFView(APIView):
         serialized_data = serializer.data
         formatted_data = serialized_data.get("data", {})
 
+        product_name = (
+            formatted_data.get("Product")
+            or formatted_data.get("product")
+            or ""
+        )
+
         # ---------------- QR CODE ----------------
         qr_url = f"{settings.FRONTEND_BASE_URL}/sample-details/{entry.id}"
 
@@ -4198,7 +4215,7 @@ class DynamicFormEntryCompactTicketPDFView(APIView):
         </div>
 
         <div class="details">
-            <strong style="font-size:9px;">{entry.form.sample_name}</strong><br/>
+            <strong style="font-size:9px;">{product_name}</strong><br/>
             <span>ID: {entry.sample_text_id}</span><br/>
         """
 
@@ -4222,7 +4239,7 @@ class DynamicFormEntryCompactTicketPDFView(APIView):
         </div>
 
         <div class="details">
-            <strong style="font-size:9px;">{entry.form.sample_name}</strong><br/>
+            <strong style="font-size:9px;">{product_name}</strong><br/>
             <span>ID: {entry.sample_text_id}</span><br/>
         """
 
@@ -4265,7 +4282,6 @@ class DynamicFormEntryCompactTicketPDFView(APIView):
 
 
 from .models import DynamicFormEntry, Product 
-
 class DynamicFormEntryQCReportPDFView(APIView):
 
     def get_template_config(self, status):
@@ -4907,10 +4923,10 @@ class IncomingMaterialSampleInspectionViewSet(viewsets.ModelViewSet):
                     clean_data[field.field_name] = inspection.vendor_lot_number
 
                 elif name == "manufacturing date":
-                    clean_data[field.field_name] = today.isoformat()
+                    clean_data[field.field_name] = None
 
                 elif name == "expiry date":
-                    clean_data[field.field_name] = expiry.isoformat()
+                    clean_data[field.field_name] = None
 
                 else:
                     clean_data[field.field_name] = None

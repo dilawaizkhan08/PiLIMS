@@ -615,6 +615,29 @@ class Product(BaseModel):
     def __str__(self):
         return self.name
 
+
+
+
+SAMPLING_LEVEL_CHOICES = [
+    ('pallet', 'Pallet'),
+    ('carton', 'Carton'),
+    ('unit', 'Unit'),
+    ('n', 'N'),
+]
+
+ALLOWED_SAMPLING_LEVELS = {key for key, _ in SAMPLING_LEVEL_CHOICES}
+def validate_sampling_levels(value):
+    if value is None:
+        return
+
+    if not isinstance(value, list):
+        raise ValidationError("sampling_level_applied must be a list.")
+
+    invalid = [item for item in value if item not in ALLOWED_SAMPLING_LEVELS]
+    if invalid:
+        raise ValidationError(
+            f"Invalid sampling level(s): {', '.join(invalid)}"
+        )
 class IncomingMaterialSampleInspection(models.Model):
     CLARITY_CHOICES = [
         ('clear', 'Clear'),
@@ -652,13 +675,6 @@ class IncomingMaterialSampleInspection(models.Model):
         ('missing', 'Missing'),
     ]
 
-    SAMPLING_LEVEL_CHOICES = [
-        ('pallet', 'Pallet'),
-        ('carton', 'Carton'),
-        ('unit', 'Unit'),
-        ('n', 'N'),
-    ]
-
     APPROVAL_STATUS_CHOICES = [
         ("pending", "Pending"),
         ("approved", "Approved"),
@@ -675,7 +691,7 @@ class IncomingMaterialSampleInspection(models.Model):
     material_visual_appearance = models.CharField(max_length=20,choices=[('normal', 'Normal'), ('abnormal', 'Abnormal')],blank=True,null=True)
     msds_sds = models.CharField(max_length=20,choices=AVAILABILITY_CHOICES,blank=True,null=True)
     coa = models.CharField(max_length=20,choices=AVAILABILITY_CHOICES,blank=True,null=True)
-    sampling_level_applied = models.CharField(max_length=20,choices=SAMPLING_LEVEL_CHOICES,blank=True,null=True)
+    sampling_level_applied = models.JSONField(default=list, blank=True, validators=[validate_sampling_levels],)
     no_of_cartons_to_be_opened = models.PositiveIntegerField(blank=True, null=True)
     retain_sample_quantity = models.CharField(max_length=255, blank=True, null=True)
     grn_number = models.CharField(max_length=100, blank=True, null=True)
@@ -721,6 +737,10 @@ class DynamicFormEntryAnalysis(BaseModel):
     entry = models.ForeignKey("DynamicFormEntry", on_delete=models.CASCADE, null=True, blank=True)
     analysis = models.ForeignKey("Analysis", on_delete=models.CASCADE)
     components = models.ManyToManyField("Component", blank=True)
+    display_order = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        ordering = ["display_order"]
 
     def __str__(self):
         return f"{self.entry.id} - {self.analysis.name}"
@@ -1066,9 +1086,11 @@ class ProductSamplingGradeAnalysis(BaseModel):
         blank=True,
         related_name="product_sampling_grade_analyses"
     )
+    display_order = models.PositiveIntegerField(default=0)
 
     class Meta:
         unique_together = ("product_sampling_grade", "analysis")
+        ordering = ["display_order"]
 
     def __str__(self):
         return f"{self.product_sampling_grade} → {self.analysis}"

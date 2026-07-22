@@ -148,20 +148,30 @@ class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = models.User
         fields = '__all__'
-        read_only_fields = ["groups", "roles", "user_groups"]
+        read_only_fields = [
+            "groups",
+            "user_permissions",
+            "roles",
+            "user_groups",
+            "created_by",
+            "last_login",
+        ]
 
     def create(self, validated_data):
         request = self.context.get('request')
 
         validated_data.pop("groups", None)
+        validated_data.pop("user_permissions", None)
 
         password = validated_data.pop("password")
         user_groups = validated_data.pop("user_group_ids", [])
         roles = validated_data.pop("role_ids", [])
-
-        # username fallback
+        
         if not validated_data.get("username"):
             validated_data["username"] = f"user_{uuid.uuid4().hex[:10]}"
+        
+        print("Validated Data Keys:", validated_data.keys())
+        print("Validated Data:", validated_data)
 
         user = models.User(**validated_data)
         user.set_password(password)
@@ -182,6 +192,7 @@ class UserSerializer(serializers.ModelSerializer):
 
     def update(self, instance, validated_data):
         validated_data.pop("groups", None)
+        validated_data.pop("user_permissions", None)
 
         password = validated_data.pop('password', None)
         user_groups = validated_data.pop("user_group_ids", None)
@@ -2289,6 +2300,7 @@ class GradeSerializer(serializers.ModelSerializer):
 
 class ProductSamplingGradeAnalysisSerializer(serializers.Serializer):
     analysis_id = serializers.IntegerField()
+    display_order = serializers.IntegerField(required=False, default=0)
     component_ids = serializers.ListField(
         child=serializers.IntegerField(),
         required=False
@@ -2410,39 +2422,40 @@ class ProductSerializer(serializers.ModelSerializer):
             id=analysis_item["analysis_id"]
         )
 
-        pa, _ = models.ProductSamplingGradeAnalysis.objects.get_or_create(
+        display_order = analysis_item.get("display_order", 0)
+
+        pa, created = models.ProductSamplingGradeAnalysis.objects.get_or_create(
             product_sampling_grade=psg,
-            analysis=analysis
+            analysis=analysis,
+            defaults={
+                "display_order": display_order
+            }
         )
+
+        if not created and pa.display_order != display_order:
+            pa.display_order = display_order
+            pa.save(update_fields=["display_order"])
 
         incoming_component_ids = list(dict.fromkeys(
             analysis_item.get("component_ids", [])
         ))
 
-        # 🔹 Existing components map
         existing_components = {
             sc.component_id: sc
             for sc in pa.sample_components.all()
         }
 
-        # ----------------------------
-        # ❌ DELETE missing
-        # ----------------------------
         for cid, sc in existing_components.items():
             if cid not in incoming_component_ids:
                 pa.sample_components.remove(sc)
                 sc.delete()
 
-        # ----------------------------
-        # ➕ ADD new only
-        # ----------------------------
         for cid in incoming_component_ids:
             if cid in existing_components:
-                continue  # ✅ reuse (IMPORTANT)
+                continue 
 
             real = models.Component.objects.get(id=cid)
 
-            # ✅ CREATE only for new ones
             replica = models.SampleComponent.objects.create(
                 entry_analysis=None,
                 component=real,
@@ -2463,7 +2476,6 @@ class ProductSerializer(serializers.ModelSerializer):
 
             pa.sample_components.add(replica)
 
-            # function param mapping
             for fp in real.function_parameters.all():
                 mapped_real = fp.mapped_component
                 if not mapped_real:
@@ -2479,10 +2491,7 @@ class ProductSerializer(serializers.ModelSerializer):
                         parameter=fp.parameter,
                         mapped_sample_component=mapped_replica,
                     )
-        
-    # ----------------------------
-    # CREATE SAMPLE COMPONENTS
-    # ----------------------------
+
     def _create_sample_component_replicas(self, pa, component_ids):
         for cid in component_ids:
             real = models.Component.objects.get(id=cid)
@@ -2530,9 +2539,6 @@ class ProductSerializer(serializers.ModelSerializer):
                         mapped_sample_component=mapped_replica,
                     )
 
-    # ----------------------------
-    # RESPONSE
-    # ----------------------------
     def to_representation(self, instance):
         data = super().to_representation(instance)
 
@@ -2553,6 +2559,7 @@ class ProductSerializer(serializers.ModelSerializer):
 
                     "analysis_id": pa.analysis.id,
                     "analysis_name": getattr(pa.analysis, "name", str(pa.analysis)),
+                    "display_order": pa.display_order,
 
                     "component_ids": list(
                         pa.sample_components.values_list("component_id", flat=True)

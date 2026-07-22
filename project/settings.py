@@ -8,12 +8,9 @@ import certifi
 from pathlib import Path
 from dotenv import load_dotenv
 
-load_dotenv()
-
-# ======================
-# BASE
-# ======================
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+load_dotenv(BASE_DIR / ".env")
 
 SECRET_KEY = "9w0r4r7y&aokq%s!ftu9r+de*-pchjqw%+ov38e*e$2lvzs3yh"
 
@@ -185,7 +182,7 @@ WSGI_APPLICATION = "project.wsgi.application"
 #     }
 # }
 
-FRONTEND_BASE_URL = os.getenv("FRONTEND_BASE_URL", "https://pilims.netlify.app")
+FRONTEND_BASE_URL = os.getenv("FRONTEND_BASE_URL", "" )
 
 DATABASES = {
     "default": {
