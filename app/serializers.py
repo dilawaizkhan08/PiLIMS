@@ -19,6 +19,7 @@ from django.core.files.storage import default_storage
 from django.core.files.base import ContentFile
 import json
 from .choices import ComponentTypes
+from app.utility import process_inspection
 
 def get_config(key, default=None):
     from .models import SystemConfiguration
@@ -2949,14 +2950,21 @@ class TrainingSerializer(serializers.ModelSerializer):
     
 
 class IncomingMaterialSampleInspectionSerializer(serializers.ModelSerializer):
-    material_name = serializers.CharField(source='material.name', read_only=True)
-    inspection_id = serializers.CharField(source='inspection.inspection_sheet_no', read_only=True)
+    material_name = serializers.CharField(
+        source="material.name",
+        read_only=True
+    )
+
+    inspection_id = serializers.CharField(
+        source="inspection.inspection_sheet_no",
+        read_only=True
+    )
 
     generated_report_url = serializers.SerializerMethodField()
 
     class Meta:
         model = models.IncomingMaterialSampleInspection
-        fields = '__all__'
+        fields = "__all__"
 
     def get_generated_report_url(self, obj):
         request = self.context.get("request")
@@ -2965,15 +2973,34 @@ class IncomingMaterialSampleInspectionSerializer(serializers.ModelSerializer):
             return None
 
         if request:
-            return request.build_absolute_uri(obj.generated_report_url)
-
+            return request.build_absolute_uri(
+                obj.generated_report_url
+            )
         return obj.generated_report_url
 
     def create(self, validated_data):
-        return super().create(validated_data)
+        inspection = super().create(validated_data)
+        request = self.context.get("request")
+
+        if request:
+            process_inspection(
+                inspection=inspection,
+                request=request
+            )
+
+        return inspection
+
 
     def update(self, instance, validated_data):
-        return super().update(instance, validated_data)
+        inspection = super().update(instance, validated_data)
+        request = self.context.get("request")
+        if request:
+            process_inspection(
+                inspection=inspection,
+                request=request
+            )
+
+        return inspection
     
 class SampleAnalysisResultSerializer(serializers.ModelSerializer):
     class Meta:

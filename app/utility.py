@@ -19,8 +19,12 @@ from jinja2 import Template as JinjaTemplate
 from weasyprint import HTML
 import re
 from datetime import datetime
-
-
+import traceback
+import qrcode
+from datetime import timedelta
+from django.utils import timezone
+from weasyprint import HTML, CSS
+import os,base64
 
 
 # paginate queryset generic function
@@ -197,24 +201,51 @@ def generate_report(template_id, sample_id, request):
                 parsed_data = json.loads(result[0]["data"])
             except:
                 pass
-
+            
+        report = models.GeneratedReport.objects.create(
+            sample=entry,
+            template=template_obj
+        )
+        
         context_data = {
             "rows": result,
             "entry": entry,
             "data": parsed_data,
             "sample_text_id": entry.sample_text_id,
-            "created_at": entry.created_at
+            "created_at": entry.created_at,
+            "report_number": report.id,
         }
 
         # Render HTML
         jinja_template = JinjaTemplate(template_obj.jinja_html_content)
         rendered_html = jinja_template.render(context_data)
 
+        default_css = """
+            .report-number{
+                position: fixed;
+                top: 5px;
+                right: 5px;
+                font-size: 10px;
+                font-weight: bold;
+            }
+            """
+
+        report_html = f"""
+            <div class="report-number">
+                Report No: {context_data["report_number"]}
+            </div>
+            """
+
+        rendered_html += report_html
+
         # Generate PDF
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_pdf:
             temp_path = temp_pdf.name
 
-        HTML(string=rendered_html).write_pdf(target=temp_path)
+        HTML(string=rendered_html).write_pdf(
+            target=temp_path,
+            stylesheets=[CSS(string=default_css)]
+        )
 
         # Save file
         with open(temp_path, "rb") as f:
@@ -226,12 +257,8 @@ def generate_report(template_id, sample_id, request):
 
         os.remove(temp_path)
 
-        # Save in DB (🔗 THIS IS LINK)
-        models.GeneratedReport.objects.create(
-            sample=entry,
-            template=template_obj,
-            pdf_url=pdf_url
-        )
+        report.pdf_url = pdf_url
+        report.save(update_fields=["pdf_url"])
 
         return pdf_url
 
@@ -682,4 +709,294 @@ def handle_analyses(entry, row):
                 value=str(text_value),
                 numeric_value=numeric
             )
+
+
+def process_inspection( inspection, request):
+        """
+        Create sample and IMS report if decision is accepted/partial.
+        Safe to call multiple times.
+        """
+
+        if inspection.decision not in ["accepted", "partial"]:
+            return
+
+        sample_id = create_sample_from_inspection(
+            inspection,
+            request.user
+        )
+
+        generated_report_url = None
+
+        if sample_id:
+            report = generate_ims_report(request, sample_id)
+
+            if report:
+                generated_report_url = report.pdf_url
+
+                inspection.generated_report_url = generated_report_url
+                inspection.save(update_fields=["generated_report_url"])
+
+            # TODO
+            # generate sample label
+            # generate inspection label
+
+        return sample_id, generated_report_url
+
+
+def create_sample_from_inspection(inspection, user):
+    try:
+
+        existing_entry = models.DynamicFormEntry.objects.filter(
+            inspection=inspection
+        ).first()
+
+        if existing_entry:
+            return existing_entry.id
+
+        sample_form = models.SampleForm.objects.get(
+            sample_name__iexact="DZRT Nicotine Pouches"
+        )
+
+        entry = models.DynamicFormEntry.objects.create(
+            form=sample_form,
+            data={},
+            logged_by=user,
+            inspection=inspection
+        )
+
+        clean_data = {}
+        auto_analysis_ids = set()
+
+        product = inspection.material
+        product_id = product.id if product else None
+
+        today = timezone.now().date()
+        expiry = today + timedelta(days=30)
+
+        for field in sample_form.fields.all():
+
+            name = field.field_name.strip().lower()
+
+            if (
+                field.field_property == "link_to_table"
+                and field.link_to_table == "app_product"
+            ):
+
+                clean_data[field.field_name] = product_id
+
+                if product_id:
+                    analysis_ids = (
+                        models.ProductSamplingGradeAnalysis.objects
+                        .filter(
+                            product_sampling_grade__product_id=product_id
+                        )
+                        .values_list("analysis_id", flat=True)
+                        .distinct()
+                    )
+
+                    auto_analysis_ids.update(analysis_ids)
+
+            elif name == "product type":
+                clean_data[field.field_name] = inspection.material_type
+
+            elif name == "batch number":
+                clean_data[field.field_name] = inspection.vendor_lot_number
+
+            elif name == "manufacturing date":
+                clean_data[field.field_name] = None
+
+            elif name == "expiry date":
+                clean_data[field.field_name] = None
+
+            else:
+                clean_data[field.field_name] = None
+
+        entry.data = clean_data
+        entry.save()
+
+        if auto_analysis_ids:
+            entry.analyses.set(
+                models.Analysis.objects.filter(
+                    id__in=auto_analysis_ids
+                )
+            )
+
+            create_entry_analyses(
+                entry,
+                auto_analysis_ids,
+                product_id
+            )
+
+        return entry.id
+
+    except Exception:
+        traceback.print_exc()
+        raise
+
+def generate_ims_report( request, sample_id):
+    try:
+        sample = models.DynamicFormEntry.objects.get(id=sample_id)
+
+        # IMS Template
+        template = models.QueryReportTemplate.objects.get(
+            name__iexact="ims"
+        )
+
+        # Execute SQL
+        result = execute_query(
+            template.sql_query,
+            {"sample_id": int(sample_id)}
+        )
+
+        if not result:
+            raise Exception("No data returned from SQL.")
+
+        parsed_data = {}
+
+        if "data" in result[0]:
+            try:
+                parsed_data = json.loads(result[0]["data"])
+            except Exception:
+                parsed_data = {}
+
+        report = models.GeneratedReport.objects.create(
+            sample=sample,
+            template=template
+        )
+
+        context = {
+            "rows": result,
+            "entry": sample,
+            "data": parsed_data,
+            "sample_text_id": sample.sample_text_id,
+            "created_at": sample.created_at,
+            "report_number": report.id,
+        }
+
+        # QR Code
+        qr_url = (
+            f"{settings.FRONTEND_BASE_URL}/sample-details/{sample_id}"
+        )
+
+        qr = qrcode.QRCode(box_size=3, border=1)
+        qr.add_data(qr_url)
+        qr.make(fit=True)
+
+        img = qr.make_image(fill_color="black", back_color="white")
+
+        buffer = BytesIO()
+        img.save(buffer, format="PNG")
+
+        context["qr_code"] = (
+            "data:image/png;base64,"
+            + base64.b64encode(buffer.getvalue()).decode()
+        )
+
+        context["sample_url"] = qr_url
+
+        rendered_html = JinjaTemplate(
+            template.jinja_html_content
+        ).render(context)
+
+        default_css = """
+        @page { size:A4; margin:10mm; }
+
+        body{
+            font-family:Arial,sans-serif;
+        }
+
+        table{
+            width:100%;
+            border-collapse:collapse;
+        }
+
+        th,td{
+            border:1px solid black;
+            padding:6px;
+            font-size:12px;
+        }
+
+        .qr-footer{
+            position:fixed;
+            bottom:0;
+            right:0;
+        }
+
+        .qr-footer img{
+            width:35px;
+            height:35px;
+        }
+
+        .report-number{
+            position: fixed;
+            top: 5px;
+            right: 5px;
+            font-size: 10px;
+            font-weight: bold;
+        }
+        """
+
+        css = default_css + (template.css_content or "")
+
+        rendered_html += f"""
+            <div class="report-number">
+                Report No: {context["report_number"]}
+            </div>
+
+            <div class="qr-footer">
+                <img src="{context['qr_code']}">
+            </div>
+            """
+
+        with tempfile.NamedTemporaryFile(
+            delete=False,
+            suffix=".pdf"
+        ) as temp_pdf:
+
+            temp_path = temp_pdf.name
+
+        HTML(
+            string=rendered_html,
+            base_url=request.build_absolute_uri("/")
+        ).write_pdf(
+            target=temp_path,
+            stylesheets=[CSS(string=css)]
+        )
+
+        filename = f"IMS_{sample.sample_text_id}.pdf"
+
+        with open(temp_path, "rb") as f:
+            pdf_path = default_storage.save(
+                f"reports/{filename}",
+                ContentFile(f.read())
+            )
+
+        pdf_url = default_storage.url(pdf_path)
+
+        os.remove(temp_path)
+
+        report.pdf_url = pdf_url
+        report.save(update_fields=["pdf_url"])
+
+        return report
+
+    except Exception:
+        traceback.print_exc()
+        raise
+
+def execute_query(sql_query, params):
+    from django.db import connection
+    with connection.cursor() as cursor:
+        cursor.execute(sql_query, params)
+        columns = [col[0] for col in cursor.description]
+        rows = [
+            dict(zip(columns, row))
+            for row in cursor.fetchall()
+        ]
+
+    return rows
+
+
+
+
 
