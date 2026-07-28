@@ -41,20 +41,42 @@ def paginate_queryset(request, view, queryset, serializer_class):
 def create_entry_analyses(entry, analysis_ids, product_id):
     from app import models
 
-    for analysis in models.Analysis.objects.filter(id__in=analysis_ids):
-
-        ea, _ = models.DynamicFormEntryAnalysis.objects.get_or_create(
-            entry=entry,
-            analysis=analysis
+    # Get analyses in product display order
+    product_analyses = (
+        models.ProductSamplingGradeAnalysis.objects
+        .filter(
+            product_sampling_grade__product_id=product_id,
+            analysis_id__in=analysis_ids
         )
+        .select_related("analysis")
+        .order_by("display_order")
+    )
+
+    for pa in product_analyses:
+        analysis = pa.analysis
+
+        ea, created = models.DynamicFormEntryAnalysis.objects.get_or_create(
+            entry=entry,
+            analysis=analysis,
+            defaults={
+                "display_order": pa.display_order
+            }
+        )
+
+        # If already exists, keep display order in sync
+        if not created and ea.display_order != pa.display_order:
+            ea.display_order = pa.display_order
+            ea.save(update_fields=["display_order"])
 
         # ---------------------------------------------------
         # GET PRODUCT SAMPLE COMPONENTS (TEMPLATE)
         # ---------------------------------------------------
-        product_components = models.SampleComponent.objects.filter(
-            product_sampling_grade_analyses__product_sampling_grade__product_id=product_id,
-            product_sampling_grade_analyses__analysis=analysis
-        ).distinct()
+        product_components = (
+            models.SampleComponent.objects.filter(
+                product_sampling_grade_analyses=pa
+            )
+            .distinct()
+        )
 
         ea.components.set(product_components.values_list("component", flat=True))
 
@@ -110,7 +132,7 @@ def create_entry_analyses(entry, analysis_ids, product_id):
                         mapped_sample_component=mapped_sc
                     )
 
-
+                    
 
 # def create_entry_analyses(entry, analysis_ids):
 #     from app import models
