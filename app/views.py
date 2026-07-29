@@ -68,7 +68,8 @@ import logging
 logger = logging.getLogger(__name__)
 from django.contrib.sessions.models import Session
 from django.db.utils import NotSupportedError
-from app.utility import process_inspection
+from app.utility import process_inspection, generate_ims_report
+
 
 
 
@@ -105,32 +106,46 @@ class LoginView(views.APIView):
         serializer = LoginSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        email = serializer.validated_data["email"]
+        email = serializer.validated_data["email"].strip()
         password = serializer.validated_data["password"]
 
+        # Case-insensitive email lookup
         try:
-            user = User.objects.get(email=email)
+            user = User.objects.get(email__iexact=email)
         except User.DoesNotExist:
-            return Response({"error": "Invalid credentials"}, status=401)
+            return Response(
+                {"error": "Invalid credentials"},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
 
+        # Check if account is active
         if not user.is_active:
             return Response(
                 {"error": "Your account is deactivated. Please contact admin."},
-                status=403,
+                status=status.HTTP_403_FORBIDDEN,
             )
 
         max_attempts = int(get_config("max_wrong_password_attempts", 5))
-        user_auth = authenticate(request, email=email, password=password)
 
+        # Authenticate using the actual email stored in DB
+        user_auth = authenticate(
+            request,
+            email=user.email,
+            password=password,
+        )
+
+        # ==========================
+        # Successful Login
+        # ==========================
         if user_auth:
-            # Reset failed login attempts
             user_auth.failed_login_attempts = 0
             user_auth.last_activity = timezone.now()
-            user_auth.save(update_fields=["failed_login_attempts", "last_activity"])
+            user_auth.save(
+                update_fields=["failed_login_attempts", "last_activity"]
+            )
 
-            # 🔐 CHECK 2FA
+            # 2FA
             if user_auth.is_2fa_enabled:
-                # Store user in session for verification
                 request.session["pending_2fa_user_id"] = user_auth.id
                 request.session.save()
 
@@ -140,19 +155,17 @@ class LoginView(views.APIView):
                         "requires_2fa": True,
                         "session_key": request.session.session_key,
                     },
-                    status=200,
+                    status=status.HTTP_200_OK,
                 )
 
-            # ✅ Normal login (2FA disabled)
-            token = Token.objects.filter(user=user_auth).first()
-            if not token:
-                try:
-                    token = Token.objects.create(user=user_auth)
-                except IntegrityError:
-                    token = Token.objects.get(user=user_auth)
+            token, _ = Token.objects.get_or_create(user=user_auth)
 
             update_last_login(None, user_auth)
-            user_data = UserSerializer(user_auth, context={"request": request}).data
+
+            user_data = UserSerializer(
+                user_auth,
+                context={"request": request},
+            ).data
 
             return Response(
                 {
@@ -160,29 +173,36 @@ class LoginView(views.APIView):
                     "user": user_data,
                     "requires_2fa": False,
                 },
-                status=200,
+                status=status.HTTP_200_OK,
             )
 
-        # ❌ Wrong password handling (UNCHANGED)
-        user.failed_login_attempts = F("failed_login_attempts") + 1
-        user.save(update_fields=["failed_login_attempts"])
-        user.refresh_from_db()
+        # ==========================
+        # Wrong Password
+        # ==========================
+        user.failed_login_attempts += 1
 
         if user.failed_login_attempts >= max_attempts:
             user.is_active = False
-            user.save(update_fields=["is_active"])
+
+        user.save(update_fields=["failed_login_attempts", "is_active"])
+
+        if not user.is_active:
             return Response(
                 {
                     "error": "Your account has been locked due to too many failed login attempts."
                 },
-                status=403,
+                status=status.HTTP_403_FORBIDDEN,
             )
 
         remaining = max_attempts - user.failed_login_attempts
+
         return Response(
-            {"error": f"Invalid credentials. You have {remaining} attempts left."},
-            status=401,
+            {
+                "error": f"Invalid credentials. You have {remaining} attempts left."
+            },
+            status=status.HTTP_401_UNAUTHORIZED,
         )
+
 
 class TwoFactorSetupView(APIView):
     permission_classes = [IsAuthenticated]
@@ -230,9 +250,6 @@ class TwoFactorSetupView(APIView):
         )
 
 
-
-
-#  ENABLE 2FA (after scanning QR — verify OTP for own account)
 class TwoFactorEnableView(APIView):
     """Authenticated user submits OTP to enable 2FA"""
 
@@ -488,8 +505,7 @@ class UserViewSet(TrackUserMixin, viewsets.ModelViewSet):
     pagination_class = CustomPageNumberPagination
 
     def get_queryset(self):
-        # Only return users created by the logged-in user
-        return User.objects.filter(created_by=self.request.user)
+        return User.objects.all()
 
     def perform_create(self, serializer):
         check_user_limit()
@@ -4311,17 +4327,17 @@ class DynamicFormEntryQCReportPDFView(APIView):
             "release": {
                 "title": "Released Label Template",
                 "doc_no": "BC-GRC-IMS-SOP-25-F-02",
-                "color": "#28a745",
+                "color": "transparent",
             },
             "rejected": {
                 "title": "Rejected Label Template",
                 "doc_no": "BC-GRC-IMS-SOP-25-F-03",
-                "color": "#dc3545",
+                "color": "transparent",
             },
             "hold": {
                 "title": "Hold Label Template",
                 "doc_no": "BC-GRC-IMS-SOP-25-F-04",
-                "color": "#ffc107",
+                "color": "transparent",
             },
             "in_progress": {
                 "title": "Sampled Label Template",
@@ -4351,9 +4367,7 @@ class DynamicFormEntryQCReportPDFView(APIView):
         current_status = status_param if status_param else entry.status
         config = self.get_template_config(current_status)
 
-        # -----------------------------------------
-        # Dynamic Page Size (Same as Label Size)
-        # -----------------------------------------
+        
         if current_status in ["rejected", "hold"]:
             page_width = "10.1cm"
             page_height = "10.1cm"
@@ -4805,7 +4819,7 @@ class DocumentUploadView(APIView):
         return Response({"attachment": path}, status=status.HTTP_201_CREATED)
 
 
-
+import traceback
 class IncomingMaterialSampleInspectionViewSet(viewsets.ModelViewSet):
     queryset = models.IncomingMaterialSampleInspection.objects.all()
     serializer_class = IncomingMaterialSampleInspectionSerializer
@@ -4841,9 +4855,12 @@ class IncomingMaterialSampleInspectionViewSet(viewsets.ModelViewSet):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-            if instance.decision not in ["accepted", "partial", "rejected"]:
+            # Only accepted/partial inspections can be approved
+            if instance.decision not in ["accepted", "partial"]:
                 return Response(
-                    {"error": "Please select a decision before approval."},
+                    {
+                        "error": "Inspection must be accepted completely or partially before approval."
+                    },
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
@@ -4860,6 +4877,25 @@ class IncomingMaterialSampleInspectionViewSet(viewsets.ModelViewSet):
                 "approved_sign_date",
             ])
 
+            # Get sample created during create/update
+            sample = models.DynamicFormEntry.objects.filter(
+                inspection=instance
+            ).first()
+
+            if not sample:
+                return Response(
+                    {
+                        "error": "No sample found for this inspection."
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            report = generate_ims_report(request, sample.id)
+
+            if report:
+                instance.generated_report_url = report.pdf_url
+                instance.save(update_fields=["generated_report_url"])
+
             return Response({
                 "message": "Inspection approved successfully.",
                 "inspection_sheet_no": instance.inspection_sheet_no,
@@ -4873,8 +4909,6 @@ class IncomingMaterialSampleInspectionViewSet(viewsets.ModelViewSet):
         except Exception:
             traceback.print_exc()
             raise
-
-
 
 class ControlChartAPIView(APIView):
 

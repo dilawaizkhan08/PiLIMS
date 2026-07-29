@@ -747,22 +747,22 @@ def process_inspection( inspection, request):
             request.user
         )
 
-        generated_report_url = None
+        # generated_report_url = None
 
-        if sample_id:
-            report = generate_ims_report(request, sample_id)
+        # if sample_id:
+        #     report = generate_ims_report(request, sample_id)
 
-            if report:
-                generated_report_url = report.pdf_url
+        #     if report:
+        #         generated_report_url = report.pdf_url
 
-                inspection.generated_report_url = generated_report_url
-                inspection.save(update_fields=["generated_report_url"])
+        #         inspection.generated_report_url = generated_report_url
+        #         inspection.save(update_fields=["generated_report_url"])
 
             # TODO
             # generate sample label
             # generate inspection label
 
-        return sample_id, generated_report_url
+        return sample_id
 
 
 def create_sample_from_inspection(inspection, user):
