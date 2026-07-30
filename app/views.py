@@ -511,14 +511,6 @@ class UserViewSet(TrackUserMixin, viewsets.ModelViewSet):
         check_user_limit()
         serializer.save(created_by=self.request.user)
 
-    def get_object(self):
-        obj = super().get_object()
-
-        # Only allow access if the user was created by the requesting user
-        if obj.created_by != self.request.user:
-            raise PermissionDenied("You can only access users you have created.")
-        
-        return obj
 
     @action(detail=True, methods=["post"], url_path="toggle-activation")
     def toggle_activation(self, request, pk=None):
