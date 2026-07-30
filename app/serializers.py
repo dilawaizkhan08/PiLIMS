@@ -50,8 +50,23 @@ class RegisterSerializer(serializers.ModelSerializer):
 
 
 class LoginSerializer(serializers.Serializer):
-    email = serializers.EmailField()
-    password = serializers.CharField(write_only=True)
+    class LoginSerializer(serializers.Serializer):
+        email = serializers.EmailField(
+            error_messages={
+                "required": "Email is required.",
+                "blank": "Email is required.",
+            }
+        )
+
+        password = serializers.CharField(
+            write_only=True,
+            allow_blank=False,
+            trim_whitespace=False,
+            error_messages={
+                "required": "Password is required.",
+                "blank": "Password is required.",
+            }
+        )
 
     def validate(self, data):
         if not data.get("email") or not data.get("password"):
@@ -84,6 +99,22 @@ class RoleSerializer(serializers.ModelSerializer):
 
     def get_users_detail(self, obj):
         return [{"id": user.id, "username": user.username} for user in obj.users.all()]
+
+    def validate_name(self, value):
+        value = value.strip()
+
+        qs = models.Role.objects.filter(name__iexact=value)
+
+        # Update ke waqt current role exclude karo
+        if self.instance:
+            qs = qs.exclude(pk=self.instance.pk)
+
+        if qs.exists():
+            raise serializers.ValidationError(
+                "Role with this name already exists."
+            )
+
+        return value
 
     def create(self, validated_data):
         users = validated_data.pop("users", [])
@@ -159,6 +190,7 @@ class UserSerializer(serializers.ModelSerializer):
         ]
 
     def create(self, validated_data):
+        validated_data["email"] = validated_data["email"].strip().lower()
         request = self.context.get('request')
 
         validated_data.pop("groups", None)
@@ -192,6 +224,8 @@ class UserSerializer(serializers.ModelSerializer):
         return user
 
     def update(self, instance, validated_data):
+        if "email" in validated_data:
+            validated_data["email"] = validated_data["email"].strip().lower()
         validated_data.pop("groups", None)
         validated_data.pop("user_permissions", None)
 
@@ -225,9 +259,15 @@ class UserSerializer(serializers.ModelSerializer):
         if not value:
             return value
 
-        user_id = self.instance.id if self.instance else None
-        if models.User.objects.filter(username=value).exclude(id=user_id).exists():
-            raise serializers.ValidationError("This username is already taken.")
+        value = value.strip()
+        qs = models.User.objects.filter(username__iexact=value)
+        if self.instance:
+            qs = qs.exclude(pk=self.instance.pk)
+
+        if qs.exists():
+            raise serializers.ValidationError(
+                "This username is already taken."
+            )
         return value
 
     def validate_name(self, value):
@@ -287,6 +327,20 @@ class UserSerializer(serializers.ModelSerializer):
                     raise serializers.ValidationError("Enter a valid international phone number.")
             except phonenumbers.NumberParseException:
                 raise serializers.ValidationError("Invalid phone number format.")
+        return value
+
+    def validate_email(self, value):
+        value = value.strip().lower()
+        qs = models.User.objects.filter(email__iexact=value)
+
+        if self.instance:
+            qs = qs.exclude(pk=self.instance.pk)
+
+        if qs.exists():
+            raise serializers.ValidationError(
+                "A user with this email already exists."
+            )
+
         return value
 
 
@@ -381,6 +435,21 @@ class UserGroupSerializer(serializers.ModelSerializer):
     class Meta:
         model = models.UserGroup
         fields = ['id', 'name', 'users', 'names']
+
+    def validate_name(self, value):
+        value = value.strip()
+        qs = models.UserGroup.objects.filter(name__iexact=value)
+
+        if self.instance:
+            qs = qs.exclude(pk=self.instance.pk)
+
+        if qs.exists():
+            raise serializers.ValidationError(
+                "User group with this name already exists."
+            )
+
+        return value
+
 
     def get_names(self, obj):
         return [user.name for user in obj.users.all()]
