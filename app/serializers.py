@@ -50,23 +50,22 @@ class RegisterSerializer(serializers.ModelSerializer):
 
 
 class LoginSerializer(serializers.Serializer):
-    class LoginSerializer(serializers.Serializer):
-        email = serializers.EmailField(
-            error_messages={
-                "required": "Email is required.",
-                "blank": "Email is required.",
-            }
-        )
+    email = serializers.EmailField(
+        error_messages={
+            "required": "Email is required.",
+            "blank": "Email is required.",
+        }
+    )
 
-        password = serializers.CharField(
-            write_only=True,
-            allow_blank=False,
-            trim_whitespace=False,
-            error_messages={
-                "required": "Password is required.",
-                "blank": "Password is required.",
-            }
-        )
+    password = serializers.CharField(
+        write_only=True,
+        allow_blank=False,
+        trim_whitespace=False,
+        error_messages={
+            "required": "Password is required.",
+            "blank": "Password is required.",
+        }
+    )
 
     def validate(self, data):
         if not data.get("email") or not data.get("password"):
