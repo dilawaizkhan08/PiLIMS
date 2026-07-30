@@ -696,6 +696,27 @@ class AnalysisViewSet(TrackUserMixin, viewsets.ModelViewSet):
             user_groups__in=user.user_groups.all()
         ).distinct()
 
+    def destroy(self, request, *args, **kwargs):
+        analysis = self.get_object()
+
+        linked_with_sample = models.DynamicFormEntryAnalysis.objects.filter(
+            analysis=analysis
+        ).exists()
+
+        # Linked with any Product
+        linked_with_product = models.ProductSamplingGradeAnalysis.objects.filter(
+            analysis=analysis
+        ).exists()
+
+        if linked_with_sample or linked_with_product:
+            return Response(
+                {
+                    "error": "This analysis is linked and couldn't be deleted."
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return super().destroy(request, *args, **kwargs)
 
 class CustomFunctionViewSet(TrackUserMixin,viewsets.ModelViewSet):
     queryset = models.CustomFunction.objects.all()
@@ -1101,6 +1122,20 @@ class SampleFormSubmitView(APIView):
         serializer = serializer_class(data=request.data)
 
         if not serializer.is_valid():
+            required_fields = []
+
+            for field, messages in serializer.errors.items():
+                if any("required" in str(msg).lower() for msg in messages):
+                    required_fields.append(field)
+
+            if required_fields:
+                return Response(
+                    {
+                        "error": f"{', '.join(required_fields)} {'is' if len(required_fields) == 1 else 'are'} required."
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
         all_entries = []
@@ -2203,6 +2238,20 @@ class ProductViewSet(TrackUserMixin, viewsets.ModelViewSet):
             user_groups__in=user.user_groups.all()
         ).distinct()
 
+    def destroy(self, request, *args, **kwargs):
+        product = self.get_object()   # URL se product mil gaya
+
+        if models.DynamicFormEntry.objects.filter(
+            data__Product=product.id
+        ).exists():
+            return Response(
+                {
+                    "error": "This product is linked to sample and couldn't be deleted."
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return super().destroy(request, *args, **kwargs)
 
 class RoleViewSet(TrackUserMixin,viewsets.ModelViewSet):
     queryset = models.Role.objects.all()

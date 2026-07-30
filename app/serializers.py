@@ -490,6 +490,23 @@ class TestMethodSerializer(serializers.ModelSerializer):
         data['user_groups_ids'] = list(instance.user_groups.values_list('id', flat=True))
         return data
 
+    def validate(self, attrs):
+        name = attrs.get("name")
+        queryset = models.TestMethod.objects.filter(
+            name__iexact=name
+        )
+
+        # Ignore current instance during update
+        if self.instance:
+            queryset = queryset.exclude(pk=self.instance.pk)
+
+        if queryset.exists():
+            raise serializers.ValidationError({
+                "error": "A test method with this name already exists."
+            })
+
+        return attrs
+
 
 class ParameterMappingSerializer(serializers.Serializer):
     parameter = serializers.CharField()
@@ -873,7 +890,21 @@ class AnalysisSerializer(serializers.ModelSerializer):
     # GET PREP BOOLEAN
     # =========================
     def get_prep(self, obj):
-        return obj.prep.count() > 0   
+        return obj.prep.count() > 0  
+
+    def validate_name(self, value):
+        qs = models.Analysis.objects.filter(name__iexact=value.strip())
+
+        # Update case me current object ko exclude karo
+        if self.instance:
+            qs = qs.exclude(pk=self.instance.pk)
+
+        if qs.exists():
+            raise serializers.ValidationError(
+                "Analysis with this name already exists."
+            )
+
+        return value.strip() 
 
     # =========================
     # CREATE
@@ -1038,6 +1069,26 @@ class InventorySerializer(serializers.ModelSerializer):
     def get_unit_name(self, obj):
         return obj.unit.name if obj.unit else None
 
+    def validate(self, attrs):
+        name = attrs.get("name")
+        batch_no = attrs.get("batch_no")
+
+        queryset = models.Inventory.objects.filter(
+            name__iexact=name,
+            batch_no__iexact=batch_no,
+        )
+
+        if self.instance:
+            queryset = queryset.exclude(pk=self.instance.pk)
+
+        if queryset.exists():
+            raise serializers.ValidationError({
+                "error": "Inventory with the same name and batch number already exists."
+            })
+
+        return attrs
+    
+
     def create(self, validated_data):
         stocks_data = validated_data.pop('stocks', [])
         user_groups = validated_data.pop('user_groups_ids', [])
@@ -1097,6 +1148,7 @@ class InventorySerializer(serializers.ModelSerializer):
         data['user_groups_ids'] = list(instance.user_groups.values_list('id', flat=True))
         return data
 
+    
 
 class UnitSerializer(serializers.ModelSerializer):
     # Show user group names in response
@@ -1118,6 +1170,23 @@ class UnitSerializer(serializers.ModelSerializer):
 
     def get_user_group_names(self, obj):
         return [ug.name for ug in obj.user_groups.all()]
+
+    def validate(self, attrs):
+        name = attrs.get("name")
+        queryset = models.Unit.objects.filter(
+            name__iexact=name
+        )
+
+        # Ignore current instance during update
+        if self.instance:
+            queryset = queryset.exclude(pk=self.instance.pk)
+
+        if queryset.exists():
+            raise serializers.ValidationError({
+                "error": "A unit with this name already exists."
+            })
+
+        return attrs
 
     def create(self, validated_data):
         # Extract and remove M2M field
@@ -1264,6 +1333,26 @@ class SampleFormSerializer(serializers.ModelSerializer):
             'user_groups_ids',       # ✅ POST/PUT with IDs
             'description', 'fields'
         ]
+
+    def validate(self, attrs):
+        sample_name = attrs.get("sample_name")
+        version = attrs.get("version")
+
+        queryset = models.SampleForm.objects.filter(
+            sample_name__iexact=sample_name,
+            version=version,
+        )
+
+        # Ignore current instance during update
+        if self.instance:
+            queryset = queryset.exclude(pk=self.instance.pk)
+
+        if queryset.exists():
+            raise serializers.ValidationError({
+                "error": "A sample form with the same name and version already exists."
+            })
+
+        return attrs
 
     def to_representation(self, instance):
         """Add *_ids fields to GET response"""
@@ -1767,6 +1856,16 @@ class SampleComponentSerializer(serializers.ModelSerializer):
         allow_blank=True
     )
 
+    list_id = serializers.PrimaryKeyRelatedField(
+        source="component.listname",
+        read_only=True
+    )
+
+    listname = serializers.StringRelatedField(
+        source="component.listname",
+        read_only=True
+    )
+
     class Meta:
         model = models.SampleComponent
         fields = [
@@ -1791,7 +1890,9 @@ class SampleComponentSerializer(serializers.ModelSerializer):
             "function",
             "parameters",
             "default_result",
-            "acceptance_criteria"
+            "acceptance_criteria",
+            "list_id",
+            "listname",
         ]
 
     # ---------------- VALIDATION ----------------
@@ -2000,23 +2101,29 @@ def build_dynamic_serializer(fields):
 
             field_dict[field.field_name] = serializers.ChoiceField(
                 choices=choices,
-                required=bool(choices),
-                allow_null=not bool(choices),
+                required=field.required,
+                allow_null=not field.required,
             )
 
         elif field.field_property == "text":
-            field_dict[field.field_name] = serializers.CharField(required=True)
+            field_dict[field.field_name] = serializers.CharField(
+                required=field.required,
+                allow_blank=not field.required,
+            )
 
         elif field.field_property == "date_time":
-            field_dict[field.field_name] = serializers.DateTimeField(required=True)
+            field_dict[field.field_name] = serializers.DateTimeField(
+                required=field.required,
+                allow_null=not field.required,
+            )
 
         elif field.field_property == "list" and field.list_ref:
             list_obj = field.list_ref
             choices = [(v.id, str(v)) for v in list_obj.values.all()]
             field_dict[field.field_name] = serializers.ChoiceField(
                 choices=choices,
-                required=bool(choices),
-                allow_null=not bool(choices),
+                required=field.required,
+                allow_null=not field.required,
             )
 
         elif field.field_property == "attachment":
@@ -2342,6 +2449,19 @@ class ProductSerializer(serializers.ModelSerializer):
             "analyses_data",
             "product_type",
         ]
+
+    def validate_name(self, value):
+        value = value.strip()
+        qs = models.Product.objects.filter(name__iexact=value)
+        if self.instance:
+            qs = qs.exclude(pk=self.instance.pk)
+
+        if qs.exists():
+            raise serializers.ValidationError(
+                "Product with this name already exists."
+            )
+
+        return value
 
     # ----------------------------
     # CREATE

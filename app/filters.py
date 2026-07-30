@@ -1,5 +1,6 @@
 from rest_framework.filters import BaseFilterBackend
 from django.db.models import Q
+from app.models import Product, DynamicFormEntry
 
 MAX_DEPTH = 2  # how deep to follow related models
 
@@ -40,11 +41,28 @@ def build_search_q(model, search_term, prefix="", depth=0, visited_models=None):
     return q_objects
 
 
+
+
 class GenericSearchFilter(BaseFilterBackend):
-    """Generic DRF filter: searches all fields + related fields (safe)"""
     def filter_queryset(self, request, queryset, view):
         search_term = request.query_params.get("search")
         if not search_term:
             return queryset
+
         q_objects = build_search_q(queryset.model, search_term)
+
+        if any(f.name == "data" for f in queryset.model._meta.get_fields()):
+            q_objects |= Q(data__icontains=search_term)
+
+        # Extra search only for DynamicFormEntry
+        if queryset.model == DynamicFormEntry:
+            product_ids = Product.objects.filter(
+                name__icontains=search_term
+            ).values_list("id", flat=True)
+
+            if product_ids:
+                q_objects |= Q(data__Product__in=product_ids)
+
         return queryset.filter(q_objects).distinct()
+
+    

@@ -915,6 +915,7 @@ class SampleComponent(models.Model):
         help_text="Default result value that appears in result entry screen"
     )
     acceptance_criteria = models.CharField(max_length=255, null=True, blank=True, help_text="Acceptance criteria for this component")
+    
 
     def __str__(self):
         return f"{self.name or self.component.name} (Sample Component)"
