@@ -52,7 +52,6 @@ class HasModulePermission(BasePermission):
         if user.is_superuser:
             return True
 
-        # 🔹 1. Get Role ID from Header
         role_id = request.headers.get("X-ROLE-ID")
 
         if not role_id:

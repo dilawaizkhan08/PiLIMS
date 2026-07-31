@@ -55,6 +55,7 @@ urlpatterns = [
     path('verify-otp/', views.VerifyOTPView.as_view(), name='verify-otp'),
     path("login/", views.LoginView.as_view(), name="login"), 
     path('register/', views.RegisterView.as_view(), name='register'),
+    path('refresh-login/', views.RefreshLoginView.as_view(), name='refresh-login'),
 
     path('sample-forms/<int:form_id>/fields/', views.SampleFormSchemaView.as_view()),
     path('sample-forms/<int:form_id>/submit/<int:repetition>/', views.SampleFormSubmitView.as_view()),

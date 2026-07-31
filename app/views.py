@@ -204,6 +204,46 @@ class LoginView(views.APIView):
         )
 
 
+class RefreshLoginView(views.APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        user = request.user
+
+        if not user.is_active:
+            return Response(
+                {"error": "Your account is deactivated. Please contact admin."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        # Update activity
+        user.failed_login_attempts = 0
+        user.last_activity = timezone.now()
+        user.save(update_fields=["failed_login_attempts", "last_activity"])
+
+        # Existing token
+        token = request.auth
+
+        # If for some reason request.auth is None
+        if token is None:
+            token, _ = Token.objects.get_or_create(user=user)
+
+        update_last_login(None, user)
+
+        user_data = UserSerializer(
+            user,
+            context={"request": request},
+        ).data
+
+        return Response(
+            {
+                "token": token.key,
+                "user": user_data,
+                "requires_2fa": False,
+            },
+            status=status.HTTP_200_OK,
+        )
+
 class TwoFactorSetupView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -1284,12 +1324,17 @@ class DynamicSampleFormEntryViewSet(viewsets.ModelViewSet):
         # -----------------------------
         # Require password & reason
         # -----------------------------
-        if new_status in ["release", "rejected", "hold"]:
+        PASSWORD_REQUIRED_STATUSES = ["received", "hold", "unhold", "release", "rejected", "reactivate",]
+
+        if new_status in PASSWORD_REQUIRED_STATUSES:
             if not reason or not password:
-                return Response({"error": "reason and password are required for this status"}, status=400)
+                return Response(
+                    {"error": "reason and password are required for this status"},
+                    status=400
+                )
+
             if not request.user.check_password(password):
                 return Response({"error": "Incorrect password"}, status=403)
-
         # -----------------------------
         # Permission mapping
         # -----------------------------
@@ -1464,7 +1509,10 @@ class DynamicSampleFormEntryViewSet(viewsets.ModelViewSet):
             # -----------------------------
             # NORMAL STATUS
             # -----------------------------
-            update_status_with_history(entry, new_status, user)
+            if new_status in PASSWORD_REQUIRED_STATUSES:
+                update_status_with_history(entry, new_status, user, reason=reason)
+            else:
+                update_status_with_history(entry, new_status, user)
 
         return Response({
             "message": f"Status updated to {new_status}",
