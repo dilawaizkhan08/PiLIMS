@@ -97,7 +97,7 @@ class RoleSerializer(serializers.ModelSerializer):
         fields = ["id", "name", "users", "users_detail", "permissions"]
 
     def get_users_detail(self, obj):
-        return [{"id": user.id, "username": user.username} for user in obj.users.all()]
+        return [{"id": user.id, "username": user.email} for user in obj.users.all()]
 
     def validate_name(self, value):
         value = value.strip()
