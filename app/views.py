@@ -2299,6 +2299,17 @@ class RoleViewSet(TrackUserMixin,viewsets.ModelViewSet):
     filter_backends = [GenericSearchFilter]
     pagination_class = CustomPageNumberPagination
 
+    def destroy(self, request, *args, **kwargs):
+        role = self.get_object()
+
+        if role.name.lower() == "admin1":
+            return Response(
+                {"detail": "This role cannot be deleted. (Superadmin)"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return super().destroy(request, *args, **kwargs)
+
 
 class ModuleViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
     """
