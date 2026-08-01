@@ -4464,7 +4464,7 @@ class DynamicFormEntryQCReportPDFView(APIView):
             page_width = "15.2cm"
             page_height = "15.2cm"
 
-        data = entry.data
+        data = entry.data or {}
 
         # Product Name
         product_display_name = "---"
@@ -4474,10 +4474,10 @@ class DynamicFormEntryQCReportPDFView(APIView):
             try:
                 product_display_name = Product.objects.get(id=product_id).name
             except (Product.DoesNotExist, ValueError):
-                product_display_name = entry.form.sample_name
+                product_display_name = getattr(getattr(entry, "form", None), "sample_name", "---")
 
-        mfg_date = data.get("Manufacturing Date", "---").split("T")[0]
-        exp_date = data.get("Expiry Date", "---").split("T")[0]
+        mfg_date = (data.get("Manufacturing Date") or "---").split("T")[0]
+        exp_date = (data.get("Expiry Date") or "---").split("T")[0]
 
         html_content = f"""
         <!DOCTYPE html>
@@ -4581,7 +4581,7 @@ class DynamicFormEntryQCReportPDFView(APIView):
 
                     <div class="data-row">
                         <span class="data-label">Batch number:</span>
-                        <span class="data-value">{data.get("Batch Number", "---")}</span>
+                        <span class="data-value">{data.get("Batch Number") or "---"}</span>
                     </div>
 
                     <div class="data-row">
@@ -4596,7 +4596,7 @@ class DynamicFormEntryQCReportPDFView(APIView):
 
                     <div class="data-row">
                         <span class="data-label">Quantity:</span>
-                        <span class="data-value">{data.get("Quantity", "---")}</span>
+                        <span class="data-value">{data.get("Quantity") or "---"}</span>
                     </div>
 
                     <div class="data-row" style="margin-top:30px;">
