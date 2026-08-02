@@ -4254,6 +4254,9 @@ class AddCommentToRequest(APIView):
 
         return Response({"message": "Comment added successfully"}, status=status.HTTP_200_OK)
 
+
+from io import BytesIO
+from pypdf import PdfReader, PdfWriter
 class DynamicFormEntryCompactTicketPDFView(APIView):
     """
     GET /api/samples/compact-ticket-pdf/?sample_id=&download=true
@@ -4388,20 +4391,44 @@ class DynamicFormEntryCompactTicketPDFView(APIView):
         """
 
         # ---------------- PDF GENERATE ----------------
+        # ---------------- PDF GENERATE ----------------
+
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp:
             temp_path = temp.name
 
         HTML(string=html_content).write_pdf(
             temp_path,
-            stylesheets=[CSS(string="@page { size: 100mm 37.5mm; margin:0; }")]
+            stylesheets=[
+                CSS(string="""
+                    @page {
+                        size: 100mm 37.5mm;
+                        margin:0;
+                    }
+                """)
+            ]
         )
 
-        with open(temp_path, "rb") as f:
-            pdf = f.read()
+        reader = PdfReader(temp_path)
+        writer = PdfWriter()
+
+        for page in reader.pages:
+            try:
+                page.rotate(90)     # pypdf >=3
+            except:
+                page.rotate_clockwise(90)   # old versions
+
+            writer.add_page(page)
+
+        output = BytesIO()
+        writer.write(output)
+        output.seek(0)
 
         os.remove(temp_path)
 
-        response = HttpResponse(pdf, content_type="application/pdf")
+        response = HttpResponse(
+            output.read(),
+            content_type="application/pdf"
+        )
 
         filename = f"sample_{entry.id}_ticket.pdf"
 

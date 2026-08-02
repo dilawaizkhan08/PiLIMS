@@ -38,7 +38,7 @@ class HasModulePermission(BasePermission):
         "unhold": "cancel_restore",
         "reactivate": "reactivate",
         "assign_analyst": "result_entry",
-        "generate_followup_sample": "create"
+        "generate_followup_sample": "create",
     }
 
     def has_permission(self, request, view):
@@ -93,6 +93,7 @@ class HasModulePermission(BasePermission):
 
             "consume": "consume_stock",
             "stocks": "view", 
+            "approve": "update",
         }
 
         action = getattr(view, "action", None)

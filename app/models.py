@@ -719,6 +719,7 @@ class IncomingMaterialSampleInspection(models.Model):
     accepted_quantity = models.PositiveIntegerField(null=True, blank=True)
     approval_status = models.CharField(max_length=20,choices=APPROVAL_STATUS_CHOICES, default="pending")
     generated_report_url = models.URLField(max_length=500,null=True,blank=True)
+    qc_label_url = models.URLField(max_length=500, null=True, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -1121,6 +1122,7 @@ PERMISSION_CHOICES = [
     ("cancel_restore", "Cancel/Restore"),
     ("reactivate", "Reactivate"),
     ("consume_stock", "Consume Stock"),
+    ("approve", "Approve"),
 ]
 
 class Role(models.Model):
