@@ -212,7 +212,9 @@ REST_FRAMEWORK = {
     'DEFAULT_RENDERER_CLASSES': [
         'project.translation.renderer.ArabicJSONRenderer',
         'rest_framework.renderers.JSONRenderer',
-    ]
+    ],
+    "DATETIME_FORMAT": "%d-%m-%Y",
+    "DATE_FORMAT": "%d-%m-%Y",
 }
 
 SPECTACULAR_SETTINGS = {

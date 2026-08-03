@@ -25,6 +25,10 @@ from datetime import timedelta
 from django.utils import timezone
 from weasyprint import HTML, CSS
 import os,base64
+from django.conf import settings
+from django.core.files.base import ContentFile
+from django.core.files.storage import default_storage
+
 
 
 # paginate queryset generic function
@@ -38,8 +42,16 @@ def paginate_queryset(request, view, queryset, serializer_class):
 
 
 
-def create_entry_analyses(entry, analysis_ids, product_id):
+def create_entry_analyses(entry, analysis_ids, product_id=None):
     from app import models
+
+    if not product_id:
+        for analysis in models.Analysis.objects.filter(id__in=analysis_ids):
+            models.DynamicFormEntryAnalysis.objects.get_or_create(
+                entry=entry,
+                analysis=analysis
+            )
+        return
 
     # Get analyses in product display order
     product_analyses = (
@@ -733,6 +745,164 @@ def handle_analyses(entry, row):
             )
 
 
+
+
+
+def generate_qc_label(request, sample_id, inspection):
+    try:
+        sample = models.DynamicFormEntry.objects.get(id=sample_id)
+
+        logo_path = os.path.join(
+            settings.BASE_DIR,
+            "static",
+            "images",
+            "badciel.png"
+        )
+
+        html = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+
+        <style>
+
+        @page {{
+            size:A4;
+            margin:15mm;
+        }}
+
+        body {{
+            font-family: Arial, Helvetica, sans-serif;
+            border:4px solid black;
+            padding:25px;
+            height:95%;
+            position:relative;
+        }}
+
+        .header {{
+            display:flex;
+            align-items:center;
+        }}
+
+        .logo {{
+            width:120px;
+        }}
+
+        .title {{
+            flex:1;
+            text-align:center;
+            font-size:34px;
+            font-weight:bold;
+            margin-right:100px;
+        }}
+
+        .field {{
+            border:2px solid black;
+            margin-top:30px;
+            padding:8px;
+            font-size:22px;
+        }}
+
+        .field-small {{
+            width:80%;
+        }}
+
+        .footer {{
+            position:absolute;
+            bottom:30px;
+            right:30px;
+            border:2px solid black;
+            padding:8px 18px;
+            font-size:20px;
+        }}
+
+        </style>
+
+        </head>
+
+        <body>
+
+        <div class="header">
+
+            <img src="file://{logo_path}" class="logo">
+
+            <div class="title">
+                QC SAMPLED
+            </div>
+
+        </div>
+
+        <div class="field">
+            Materials name :
+            <b>{inspection.material.name if inspection.material else ""}</b>
+        </div>
+
+        <div class="field">
+            Batch Number :
+            <b>{inspection.vendor_lot_number or ""}</b>
+        </div>
+
+        <div class="field">
+            Container No :
+            <b>{inspection.number_of_containers_to_be_opened or ""}</b>
+        </div>
+
+        <div class="field">
+            Sampled Quantity :
+            <b>{inspection.sampled_quantity or ""}</b>
+        </div>
+
+        <div class="field">
+            Sampled By :
+            <b>{inspection.sampled_by or inspection.checked_by or ""}</b>
+        </div>
+
+        <div class="field field-small">
+            Sign / Date :
+            <b>{inspection.checked_sign_date or ""}</b>
+        </div>
+
+        <div class="footer">
+            BC-GRC-IMS-SOP-25-F-07
+        </div>
+
+        </body>
+
+        </html>
+        """
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as pdf:
+            temp_path = pdf.name
+
+        HTML(
+            string=html,
+            base_url=request.build_absolute_uri("/")
+        ).write_pdf(
+            target=temp_path
+        )
+
+        filename = (
+            f"QC_LABEL_{inspection.inspection_sheet_no}.pdf"
+        )
+
+        with open(temp_path, "rb") as f:
+            pdf_path = default_storage.save(
+                f"qc_labels/{filename}",
+                ContentFile(f.read())
+            )
+
+        pdf_url = default_storage.url(pdf_path)
+
+        os.remove(temp_path)
+
+        return pdf_url
+
+    except Exception:
+        traceback.print_exc()
+        raise
+
+
+
 def process_inspection( inspection, request):
         """
         Create sample and IMS report if decision is accepted/partial.
@@ -746,6 +916,19 @@ def process_inspection( inspection, request):
             inspection,
             request.user
         )
+
+        if sample_id:
+            if not inspection.qc_label_url:
+                pdf_url = generate_qc_label(
+                    request,
+                    sample_id,
+                    inspection
+                )
+
+                inspection.qc_label_url = pdf_url
+                inspection.save(update_fields=["qc_label_url"])
+
+        return sample_id
 
         # generated_report_url = None
 
@@ -762,7 +945,7 @@ def process_inspection( inspection, request):
             # generate sample label
             # generate inspection label
 
-        return sample_id
+        # return sample_id
 
 
 def create_sample_from_inspection(inspection, user):

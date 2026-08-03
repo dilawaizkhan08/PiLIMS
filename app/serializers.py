@@ -2864,6 +2864,7 @@ class GeneratedReportSerializer(serializers.ModelSerializer):
     sample_text_id = serializers.CharField(source="sample.sample_text_id", read_only=True)
     template_id = serializers.IntegerField(source="template.id", read_only=True)
     template_name = serializers.CharField(source="template.name", read_only=True)
+    # created_at = serializers.DateTimeField(format="%d-%m-%Y", read_only=True)
 
     pdf_url = serializers.SerializerMethodField()
 
@@ -3149,6 +3150,7 @@ class IncomingMaterialSampleInspectionSerializer(serializers.ModelSerializer):
     )
 
     generated_report_url = serializers.SerializerMethodField()
+    qc_label_url = serializers.SerializerMethodField()
 
     class Meta:
         model = models.IncomingMaterialSampleInspection
@@ -3165,6 +3167,16 @@ class IncomingMaterialSampleInspectionSerializer(serializers.ModelSerializer):
                 obj.generated_report_url
             )
         return obj.generated_report_url
+
+    def get_qc_label_url(self, obj):
+        request = self.context.get("request")
+        if not obj.qc_label_url:
+            return None
+
+        if request:
+            return request.build_absolute_uri(obj.qc_label_url)
+
+        return obj.qc_label_url
 
     def create(self, validated_data):
         inspection = super().create(validated_data)

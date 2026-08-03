@@ -638,6 +638,7 @@ def validate_sampling_levels(value):
         raise ValidationError(
             f"Invalid sampling level(s): {', '.join(invalid)}"
         )
+    
 class IncomingMaterialSampleInspection(models.Model):
     CLARITY_CHOICES = [
         ('clear', 'Clear'),

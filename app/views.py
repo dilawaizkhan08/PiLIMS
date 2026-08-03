@@ -1182,6 +1182,7 @@ class SampleFormSubmitView(APIView):
 
             clean_data = {"form_id": sample_form.id}
             auto_analysis_ids = set()   # 🔹 product based analyses
+            product_id = None
 
             # ----------------------------------
             #  HANDLE FORM FIELDS
@@ -4485,6 +4486,7 @@ class DynamicFormEntryQCReportPDFView(APIView):
     def get(self, request):
         sample_id = request.query_params.get("sample_id")
         status_param = request.query_params.get("status")
+        quantity = request.query_params.get("quantity") 
 
         if not sample_id:
             return Response({"error": "sample_id required"}, status=400)
@@ -4634,7 +4636,7 @@ class DynamicFormEntryQCReportPDFView(APIView):
 
                     <div class="data-row">
                         <span class="data-label">Quantity:</span>
-                        <span class="data-value">{data.get("Quantity") or "---"}</span>
+                        <span class="data-value">{quantity or "---"}</span>
                     </div>
 
                     <div class="data-row" style="margin-top:30px;">

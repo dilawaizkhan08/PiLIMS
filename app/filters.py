@@ -41,6 +41,28 @@ def build_search_q(model, search_term, prefix="", depth=0, visited_models=None):
     return q_objects
 
 
+from datetime import datetime
+def get_created_at_search_q(search_term):
+    q = Q()
+
+    try:
+        dt = datetime.strptime(search_term, "%d-%m-%Y").date()
+        q |= Q(created_at__date=dt)
+        return q
+    except ValueError:
+        pass
+
+    # DD-MM
+    try:
+        dt = datetime.strptime(search_term, "%d-%m")
+        q |= Q(
+            created_at__day=dt.day,
+            created_at__month=dt.month,
+        )
+    except ValueError:
+        pass
+
+    return q
 
 
 class GenericSearchFilter(BaseFilterBackend):
@@ -54,7 +76,10 @@ class GenericSearchFilter(BaseFilterBackend):
         if any(f.name == "data" for f in queryset.model._meta.get_fields()):
             q_objects |= Q(data__icontains=search_term)
 
-        # Extra search only for DynamicFormEntry
+        # created_at search
+        if any(f.name == "created_at" for f in queryset.model._meta.get_fields()):
+            q_objects |= get_created_at_search_q(search_term)
+
         if queryset.model == DynamicFormEntry:
             product_ids = Product.objects.filter(
                 name__icontains=search_term
@@ -64,5 +89,4 @@ class GenericSearchFilter(BaseFilterBackend):
                 q_objects |= Q(data__Product__in=product_ids)
 
         return queryset.filter(q_objects).distinct()
-
     
