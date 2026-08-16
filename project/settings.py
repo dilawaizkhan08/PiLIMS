@@ -63,7 +63,7 @@ MIDDLEWARE = [
     "app.middleware.CurrentUserMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
-    "project.translation.middleware.LanguageMiddleware",
+    # "project.translation.middleware.LanguageMiddleware",
 ]
 
 # ======================
@@ -210,7 +210,7 @@ REST_FRAMEWORK = {
     ],
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
     'DEFAULT_RENDERER_CLASSES': [
-        'project.translation.renderer.ArabicJSONRenderer',
+        # 'project.translation.renderer.ArabicJSONRenderer',
         'rest_framework.renderers.JSONRenderer',
     ],
     "DATETIME_FORMAT": "%d-%m-%Y",

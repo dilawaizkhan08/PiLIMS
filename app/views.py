@@ -5039,11 +5039,44 @@ class IncomingMaterialSampleInspectionViewSet(viewsets.ModelViewSet):
             traceback.print_exc()
             raise
 
+from django.db.models import Q
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status
+from django.db.models import Q, Avg, Count, Min, Max
+from datetime import datetime,time
+
 class ControlChartAPIView(APIView):
 
     def get(self, request):
 
+        # ==========================================================
+        # QUERY PARAMETERS
+        # ==========================================================
+
+        product_id = request.GET.get("product_id")
+        analysis_id = request.GET.get("analysis_id")
         sample_component_id = request.GET.get("sample_component_id")
+
+        # OPTIONAL
+        start_date = request.GET.get("start_date")
+        end_date = request.GET.get("end_date")
+
+        # ==========================================================
+        # REQUIRED PARAMETER VALIDATION
+        # ==========================================================
+
+        if not product_id:
+            return Response(
+                {"detail": "product_id is required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if not analysis_id:
+            return Response(
+                {"detail": "analysis_id is required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
         if not sample_component_id:
             return Response(
@@ -5051,10 +5084,161 @@ class ControlChartAPIView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
+        # ==========================================================
+        # OPTIONAL DATE VALIDATION
+        #
+        # Expected format:
+        # YYYY-MM-DD
+        #
+        # Examples:
+        #
+        # No dates:
+        # ?product_id=297&analysis_id=380&sample_component_id=46884
+        #
+        # Both:
+        # &start_date=2026-08-03&end_date=2026-08-03
+        #
+        # Only start:
+        # &start_date=2026-08-03
+        #
+        # Only end:
+        # &end_date=2026-08-03
+        # ==========================================================
+
+        start_datetime = None
+        end_datetime = None
+
+        # ----------------------------------------------------------
+        # START DATE
+        # ----------------------------------------------------------
+
+        if start_date:
+
+            try:
+                start_datetime = datetime.strptime(
+                    start_date,
+                    "%Y-%m-%d"
+                )
+
+            except ValueError:
+                return Response(
+                    {
+                        "detail": (
+                            "Invalid start_date format. "
+                            "Use YYYY-MM-DD."
+                        )
+                    },
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+        # ----------------------------------------------------------
+        # END DATE
+        # ----------------------------------------------------------
+
+        if end_date:
+
+            try:
+                end_datetime = datetime.combine(
+                    datetime.strptime(
+                        end_date,
+                        "%Y-%m-%d"
+                    ).date(),
+                    time(
+                        23,
+                        59,
+                        59,
+                        999999
+                    )
+                )
+
+            except ValueError:
+                return Response(
+                    {
+                        "detail": (
+                            "Invalid end_date format. "
+                            "Use YYYY-MM-DD."
+                        )
+                    },
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+        # ==========================================================
+        # DATE RANGE VALIDATION
+        #
+        # Only validate if BOTH dates are provided.
+        # ==========================================================
+
+        if (
+            start_datetime is not None
+            and end_datetime is not None
+            and start_datetime > end_datetime
+        ):
+            return Response(
+                {
+                    "detail": (
+                        "start_date cannot be greater than end_date."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # ==========================================================
+        # PRODUCT
+        # ==========================================================
+
+        product = (
+            models.Product.objects
+            .filter(id=product_id)
+            .first()
+        )
+
+        if not product:
+            return Response(
+                {"detail": "Product not found."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        # ==========================================================
+        # ANALYSIS
+        # ==========================================================
+
+        analysis = (
+            models.Analysis.objects
+            .filter(id=analysis_id)
+            .first()
+        )
+
+        if not analysis:
+            return Response(
+                {"detail": "Analysis not found."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        # ==========================================================
+        # SELECTED SAMPLE COMPONENT
+        #
+        # Used to get:
+        #
+        # - component
+        # - unit
+        # - minimum
+        # - maximum
+        #
+        # Historical results are NOT restricted to this exact
+        # sample_component_id.
+        #
+        # Every entry can have its own SampleComponent record.
+        # ==========================================================
+
         sample_component = (
             models.SampleComponent.objects
-            .select_related("component")
-            .filter(id=sample_component_id)
+            .select_related(
+                "component",
+                "unit",
+            )
+            .filter(
+                id=sample_component_id
+            )
             .first()
         )
 
@@ -5064,21 +5248,38 @@ class ControlChartAPIView(APIView):
                 status=status.HTTP_404_NOT_FOUND
             )
 
-        results = (
-            models.ComponentResult.objects
-            .filter(
-                sample_component=sample_component,
-                numeric_value__isnull=False
+        # ==========================================================
+        # COMPONENT
+        # ==========================================================
+
+        component_id = sample_component.component_id
+
+        if not component_id:
+            return Response(
+                {
+                    "detail": (
+                        "Selected Sample Component has no component."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST
             )
-            .order_by("created_at")
-        )
+
+        component = sample_component.component
+
+        # ==========================================================
+        # MINIMUM / MAXIMUM
+        #
+        # Prefer SampleComponent override.
+        # Otherwise use Component specification.
+        # ==========================================================
 
         minimum = (
             sample_component.minimum
             if sample_component.minimum is not None
             else (
-                sample_component.component.minimum
-                if sample_component.component else None
+                component.minimum
+                if component
+                else None
             )
         )
 
@@ -5086,10 +5287,110 @@ class ControlChartAPIView(APIView):
             sample_component.maximum
             if sample_component.maximum is not None
             else (
-                sample_component.component.maximum
-                if sample_component.component else None
+                component.maximum
+                if component
+                else None
             )
         )
+
+        # ==========================================================
+        # HISTORICAL RESULTS QUERY
+        #
+        # Match:
+        #
+        # Same Product
+        # +
+        # Same Analysis
+        # +
+        # Same Component
+        #
+        # Date filter is applied ONLY when provided.
+        #
+        # IMPORTANT:
+        # We do NOT filter using selected sample_component_id.
+        # ==========================================================
+
+        results_query = (
+            models.ComponentResult.objects
+            .filter(
+                numeric_value__isnull=False,
+
+                # Same component
+                sample_component__component_id=component_id,
+
+                # Same analysis
+                sample_component__entry_analysis__analysis_id=analysis_id,
+            )
+            .filter(
+
+                # --------------------------------------------------
+                # PRODUCT JSON VALUE TYPE SAFETY
+                # --------------------------------------------------
+
+                Q(entry__data__Product=product.id)
+                |
+                Q(entry__data__Product=str(product.id))
+
+                |
+
+                Q(entry__data__product=product.id)
+                |
+                Q(entry__data__product=str(product.id))
+
+                |
+
+                Q(entry__data__US_Product=product.id)
+                |
+                Q(entry__data__US_Product=str(product.id))
+
+                |
+
+                Q(entry__data__USProduct=product.id)
+                |
+                Q(entry__data__USProduct=str(product.id))
+            )
+        )
+
+        # ==========================================================
+        # OPTIONAL START DATE FILTER
+        # ==========================================================
+
+        if start_datetime is not None:
+
+            results_query = results_query.filter(
+                created_at__gte=start_datetime
+            )
+
+        # ==========================================================
+        # OPTIONAL END DATE FILTER
+        # ==========================================================
+
+        if end_datetime is not None:
+
+            results_query = results_query.filter(
+                created_at__lte=end_datetime
+            )
+
+        # ==========================================================
+        # ORDER RESULTS
+        # ==========================================================
+
+        results = (
+            results_query
+            .select_related(
+                "entry",
+                "sample_component",
+                "sample_component__component",
+                "sample_component__unit",
+                "sample_component__entry_analysis",
+                "sample_component__entry_analysis__analysis",
+            )
+            .order_by("created_at")
+        )
+
+        # ==========================================================
+        # CHART DATA
+        # ==========================================================
 
         labels = []
         values = []
@@ -5098,29 +5399,156 @@ class ControlChartAPIView(APIView):
 
         for result in results:
 
-            labels.append(result.created_at.strftime("%Y-%m-%d %H:%M"))
+            labels.append(
+                result.created_at.strftime(
+                    "%Y-%m-%d %H:%M"
+                )
+            )
 
-            values.append(result.numeric_value)
+            values.append(
+                result.numeric_value
+            )
 
-            min_line.append(minimum)
+            min_line.append(
+                minimum
+            )
 
-            max_line.append(maximum)
+            max_line.append(
+                maximum
+            )
+
+        # ==========================================================
+        # AGGREGATES
+        # ==========================================================
+
+        aggregate_data = results_query.aggregate(
+            average=Avg("numeric_value"),
+            count=Count("id"),
+            minimum_value=Min("numeric_value"),
+            maximum_value=Max("numeric_value"),
+        )
+
+        average = aggregate_data["average"]
+
+        # ==========================================================
+        # COMPONENT NAME
+        # ==========================================================
+
+        component_name = (
+            sample_component.name
+            or component.name
+            if component
+            else sample_component.name
+        )
+
+        # ==========================================================
+        # UNIT
+        # ==========================================================
+
+        unit_data = None
+
+        if sample_component.unit:
+
+            unit_data = {
+                "id": sample_component.unit.id,
+                "name": sample_component.unit.name,
+                "symbol": sample_component.unit.symbol,
+            }
+
+        elif component and component.unit:
+
+            unit_data = {
+                "id": component.unit.id,
+                "name": component.unit.name,
+                "symbol": component.unit.symbol,
+            }
+
+        # ==========================================================
+        # RESPONSE
+        # ==========================================================
 
         return Response({
 
+            # ======================================================
+            # PRODUCT
+            # ======================================================
+
+            "product": {
+                "id": product.id,
+                "name": product.name,
+            },
+
+            # ======================================================
+            # ANALYSIS
+            # ======================================================
+
+            "analysis": {
+                "id": analysis.id,
+                "name": analysis.name,
+                "alias_name": analysis.alias_name,
+            },
+
+            # ======================================================
+            # DATE RANGE
+            #
+            # These remain null when not supplied.
+            # ======================================================
+
+            "date_range": {
+                "start_date": start_date,
+                "end_date": end_date,
+            },
+
+            # ======================================================
+            # COMPONENT
+            # ======================================================
+
             "sample_component_id": sample_component.id,
 
-            "component_id": sample_component.component.id if sample_component.component else None,
+            "component_id": component_id,
 
-            "component_name": (
-                sample_component.name
-                if sample_component.name
-                else sample_component.component.name
-            ),
+            "component_name": component_name,
+
+            # ======================================================
+            # UNIT
+            # ======================================================
+
+            "unit": unit_data,
+
+            # ======================================================
+            # SPECIFICATION LIMITS
+            # ======================================================
 
             "minimum": minimum,
 
             "maximum": maximum,
+
+            # ======================================================
+            # AGGREGATE INFORMATION
+            # ======================================================
+
+            "aggregate": {
+
+                "count": aggregate_data["count"],
+
+                "average": (
+                    round(average, 2)
+                    if average is not None
+                    else None
+                ),
+
+                "minimum_value": (
+                    aggregate_data["minimum_value"]
+                ),
+
+                "maximum_value": (
+                    aggregate_data["maximum_value"]
+                ),
+            },
+
+            # ======================================================
+            # CHART
+            # ======================================================
 
             "labels": labels,
 
@@ -5128,8 +5556,7 @@ class ControlChartAPIView(APIView):
 
             "min_line": min_line,
 
-            "max_line": max_line
-
+            "max_line": max_line,
         })
 
 
@@ -5147,7 +5574,10 @@ class ControlChartProductsAPIView(APIView):
 
         products = (
             models.Product.objects
-            .filter(product_type=product_type)
+            .filter(
+                product_type=product_type,
+                is_deleted=False,
+            )
             .order_by("name")
         )
 
@@ -5156,12 +5586,11 @@ class ControlChartProductsAPIView(APIView):
             "products": [
                 {
                     "id": product.id,
-                    "name": product.name
+                    "name": product.name,
                 }
                 for product in products
             ]
         })
-
 
 class ControlChartAnalysesAPIView(APIView):
 
@@ -5175,7 +5604,14 @@ class ControlChartAnalysesAPIView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        product = models.Product.objects.filter(id=product_id).first()
+        product = (
+            models.Product.objects
+            .filter(
+                id=product_id,
+                is_deleted=False,
+            )
+            .first()
+        )
 
         if not product:
             return Response(
@@ -5184,30 +5620,37 @@ class ControlChartAnalysesAPIView(APIView):
             )
 
         analyses = (
-            models.Analysis.objects.filter(
-                id__in=models.ProductSamplingGradeAnalysis.objects.filter(
-                    product_sampling_grade__product=product
-                ).values_list("analysis_id", flat=True)
+            models.Analysis.objects
+            .filter(
+                id__in=(
+                    models.ProductSamplingGradeAnalysis.objects
+                    .filter(
+                        product_sampling_grade__product_id=product_id
+                    )
+                    .values_list("analysis_id", flat=True)
+                ),
+                is_deleted=False,
             )
             .distinct()
             .order_by("name")
         )
 
         return Response({
+
             "product": {
                 "id": product.id,
-                "name": product.name
+                "name": product.name,
             },
+
             "analyses": [
                 {
                     "id": analysis.id,
                     "name": analysis.name,
-                    "alias_name": analysis.alias_name
+                    "alias_name": analysis.alias_name,
                 }
                 for analysis in analyses
             ]
         })
-
 
 class ControlChartComponentsAPIView(APIView):
 
@@ -5228,10 +5671,18 @@ class ControlChartComponentsAPIView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # -----------------------------
-        # Validate Product
-        # -----------------------------
-        product = models.Product.objects.filter(id=product_id).first()
+        # ==========================================================
+        # PRODUCT
+        # ==========================================================
+
+        product = (
+            models.Product.objects
+            .filter(
+                id=product_id,
+                is_deleted=False,
+            )
+            .first()
+        )
 
         if not product:
             return Response(
@@ -5239,10 +5690,18 @@ class ControlChartComponentsAPIView(APIView):
                 status=status.HTTP_404_NOT_FOUND
             )
 
-        # -----------------------------
-        # Validate Analysis
-        # -----------------------------
-        analysis = models.Analysis.objects.filter(id=analysis_id).first()
+        # ==========================================================
+        # ANALYSIS
+        # ==========================================================
+
+        analysis = (
+            models.Analysis.objects
+            .filter(
+                id=analysis_id,
+                is_deleted=False,
+            )
+            .first()
+        )
 
         if not analysis:
             return Response(
@@ -5250,16 +5709,21 @@ class ControlChartComponentsAPIView(APIView):
                 status=status.HTTP_404_NOT_FOUND
             )
 
-        # -----------------------------
-        # Product + Analysis Mapping
-        # -----------------------------
+        # ==========================================================
+        # PRODUCT + ANALYSIS
+        # ==========================================================
+
         psga = (
             models.ProductSamplingGradeAnalysis.objects
             .filter(
                 product_sampling_grade__product_id=product_id,
-                analysis_id=analysis_id
+                analysis_id=analysis_id,
             )
-            .prefetch_related("sample_components__component")
+            .prefetch_related(
+                "sample_components",
+                "sample_components__component",
+                "sample_components__unit",
+            )
             .first()
         )
 
@@ -5269,23 +5733,28 @@ class ControlChartComponentsAPIView(APIView):
                     "id": product.id,
                     "name": product.name,
                 },
+
                 "analysis": {
                     "id": analysis.id,
                     "name": analysis.name,
                 },
-                "components": []
+
+                "components": [],
             })
 
-        response = []
+        components = []
 
         for sc in psga.sample_components.all():
+
+            component = sc.component
 
             minimum = (
                 sc.minimum
                 if sc.minimum is not None
                 else (
-                    sc.component.minimum
-                    if sc.component else None
+                    component.minimum
+                    if component
+                    else None
                 )
             )
 
@@ -5293,37 +5762,97 @@ class ControlChartComponentsAPIView(APIView):
                 sc.maximum
                 if sc.maximum is not None
                 else (
-                    sc.component.maximum
-                    if sc.component else None
+                    component.maximum
+                    if component
+                    else None
                 )
             )
 
-            response.append({
+            components.append({
+
                 "sample_component_id": sc.id,
-                "component_id": sc.component.id if sc.component else None,
+
+                "component_id": (
+                    component.id
+                    if component
+                    else None
+                ),
+
                 "component_name": (
                     sc.name
-                    if sc.name
-                    else (
-                        sc.component.name if sc.component else None
+                    or (
+                        component.name
+                        if component
+                        else None
                     )
                 ),
+
+                "type": (
+                    sc.type
+                    or (
+                        component.type
+                        if component
+                        else None
+                    )
+                ),
+
+                "unit": (
+                    {
+                        "id": sc.unit.id,
+                        "name": sc.unit.name,
+                        "symbol": sc.unit.symbol,
+                    }
+                    if sc.unit
+                    else (
+                        {
+                            "id": component.unit.id,
+                            "name": component.unit.name,
+                            "symbol": component.unit.symbol,
+                        }
+                        if component and component.unit
+                        else None
+                    )
+                ),
+
                 "minimum": minimum,
+
                 "maximum": maximum,
+
+                "decimal_places": (
+                    sc.decimal_places
+                    if sc.decimal_places is not None
+                    else (
+                        component.decimal_places
+                        if component
+                        else None
+                    )
+                ),
+
+                "acceptance_criteria": (
+                    sc.acceptance_criteria
+                    or (
+                        component.acceptance_criteria
+                        if component
+                        else None
+                    )
+                ),
             })
 
         return Response({
+
             "product": {
                 "id": product.id,
                 "name": product.name,
             },
+
             "analysis": {
                 "id": analysis.id,
                 "name": analysis.name,
+                "alias_name": analysis.alias_name,
             },
-            "components": response,
-        })
-    
+
+            "components": components,
+        }) 
 
 class AttachmentUploadView(APIView):
     permission_classes = [IsAuthenticated]

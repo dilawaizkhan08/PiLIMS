@@ -1,35 +1,35 @@
-from django.core.cache import cache
+# from django.core.cache import cache
 
-def get_cached_translation(text):
+# def get_cached_translation(text):
 
-    key = f"translation:{text}"
+#     key = f"translation:{text}"
 
-    return cache.get(key)
-
-
-def save_translation(text, translated):
-
-    key = f"translation:{text}"
-
-    cache.set(
-        key,
-        translated,
-        timeout=86400 * 30
-    )
+#     return cache.get(key)
 
 
-from .translator import translate
+# def save_translation(text, translated):
 
-def cached_translate(text):
+#     key = f"translation:{text}"
 
-    cached = get_cached_translation(text)
+#     cache.set(
+#         key,
+#         translated,
+#         timeout=86400 * 30
+#     )
 
-    if cached:
-        return cached
 
-    translated = translate(text)
+# from .translator import translate
 
-    save_translation(text, translated)
+# def cached_translate(text):
 
-    return translated
+#     cached = get_cached_translation(text)
+
+#     if cached:
+#         return cached
+
+#     translated = translate(text)
+
+#     save_translation(text, translated)
+
+#     return translated
 

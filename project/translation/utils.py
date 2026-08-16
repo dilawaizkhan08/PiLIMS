@@ -1,24 +1,24 @@
-from .cache import cached_translate
+# from .cache import cached_translate
 
 
-def translate_json(data):
+# def translate_json(data):
 
-    if isinstance(data, dict):
+#     if isinstance(data, dict):
 
-        return {
-            key: translate_json(value)
-            for key, value in data.items()
-        }
+#         return {
+#             key: translate_json(value)
+#             for key, value in data.items()
+#         }
 
-    elif isinstance(data, list):
+#     elif isinstance(data, list):
 
-        return [
-            translate_json(item)
-            for item in data
-        ]
+#         return [
+#             translate_json(item)
+#             for item in data
+#         ]
 
-    elif isinstance(data, str):
+#     elif isinstance(data, str):
 
-        return cached_translate(data)
+#         return cached_translate(data)
 
-    return data
+#     return data
