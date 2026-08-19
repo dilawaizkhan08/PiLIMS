@@ -94,7 +94,7 @@ class UserGroup(BaseModel):
 
 class TestMethod(BaseModel):
     name = models.CharField(max_length=255)
-    user_groups = models.ManyToManyField(UserGroup, blank=True, related_name='test_methods')
+    user_groups = models.ManyToManyField(UserGroup, related_name='test_methods')
     description = models.TextField(blank=True, null=True)
     attachment = models.FileField(upload_to="test_methods/", null=True, blank=True)
 
@@ -277,7 +277,7 @@ class Analysis(BaseModel):
     alias_name = models.CharField(max_length=255, null=True, blank=True)
     version = models.PositiveIntegerField(default=1, null=True, blank=True)
 
-    user_groups = models.ManyToManyField(UserGroup, null=True, blank=True)
+    user_groups = models.ManyToManyField(UserGroup, blank=True)
     type =  models.CharField(max_length=255, null=True, blank=True)
     test_method = models.ForeignKey(TestMethod, on_delete=models.SET_NULL, null=True, blank=True)
     price = models.FloatField(null=True, blank=True)
@@ -291,7 +291,6 @@ class Analysis(BaseModel):
         Training,
         related_name="analyses",
         blank=True,
-        null=True,
     )
     instruments = models.ManyToManyField(
         "Instrument",
@@ -402,7 +401,7 @@ class Instrument(BaseModel):
         (STATUS_OUT_OF_SERVICE, "Out of Service"),
     ]
     name = models.CharField(max_length=255)
-    user_groups = models.ManyToManyField(UserGroup, blank=True, null=True,related_name='instruments_as_user_group')
+    user_groups = models.ManyToManyField(UserGroup, blank=True, related_name='instruments_as_user_group')
     vendor = models.CharField(max_length=255)
     manufacturer = models.CharField(max_length=255, blank=True, null=True)  # 👈 New field added
     serial_no = models.CharField(max_length=255, blank=True, null=True)
@@ -473,7 +472,7 @@ class InstrumentHistory(BaseModel):
 class Inventory(BaseModel):
     name = models.CharField(max_length=255)
     type =  models.CharField(max_length=255, null=True, blank=True)
-    user_groups = models.ManyToManyField(UserGroup, blank=True, null=True)
+    user_groups = models.ManyToManyField(UserGroup, blank=True)
     location = models.CharField(max_length=255)
     unit = models.ForeignKey('Unit', on_delete=models.SET_NULL, null=True)
     total_quantity = models.IntegerField(default=0)
