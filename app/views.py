@@ -1163,12 +1163,59 @@ class SampleFormSubmitView(APIView):
             if required_fields:
                 return Response(
                     {
-                        "error": f"{', '.join(required_fields)} {'is' if len(required_fields) == 1 else 'are'} required."
+                        "error": f"{', '.join(required_fields)} "
+                                f"{'is' if len(required_fields) == 1 else 'are'} required."
                     },
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                serializer.errors,
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+
+        # ----------------------------------
+        # BATCH NUMBER UNIQUENESS CHECK
+        # ----------------------------------
+        batch_number = None
+
+        # Check whether this form has a Batch Number field
+        batch_field = sample_form.fields.filter(
+            field_name__iexact="Batch Number"
+        ).first()
+
+        if batch_field:
+            batch_number = serializer.validated_data.get(
+                batch_field.field_name
+            )
+
+            # Only check uniqueness if Batch Number was actually provided
+            if batch_number:
+                batch_number = str(batch_number).strip()
+
+                # Check existing entries for this same form
+                existing_entries = models.DynamicFormEntry.objects.filter(
+                    form=sample_form
+                ).only("id", "data")
+
+                for existing_entry in existing_entries:
+                    existing_batch_number = existing_entry.data.get(
+                        "Batch Number"
+                    )
+
+                    if existing_batch_number is not None:
+                        if str(existing_batch_number).strip() == batch_number:
+                            return Response(
+                                {
+                                    "error": (
+                                        f"Batch Number '{batch_number}' "
+                                        "already exists."
+                                    )
+                                },
+                                status=status.HTTP_400_BAD_REQUEST,
+                            )
+
 
         all_entries = []
 
