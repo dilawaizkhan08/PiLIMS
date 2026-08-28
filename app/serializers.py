@@ -3139,6 +3139,11 @@ class TrainingSerializer(serializers.ModelSerializer):
     
 
 class IncomingMaterialSampleInspectionSerializer(serializers.ModelSerializer):
+    accepted_quantity = serializers.IntegerField(
+        required=False,
+        allow_null=True
+    )
+
     material_name = serializers.CharField(
         source="material.name",
         read_only=True
@@ -3156,6 +3161,15 @@ class IncomingMaterialSampleInspectionSerializer(serializers.ModelSerializer):
         model = models.IncomingMaterialSampleInspection
         fields = "__all__"
 
+    def to_internal_value(self, data):
+        data = data.copy()
+
+        # Frontend sends "" when quantity is not provided
+        if data.get("accepted_quantity") == "":
+            data["accepted_quantity"] = None
+
+        return super().to_internal_value(data)
+
     def get_generated_report_url(self, obj):
         request = self.context.get("request")
 
@@ -3163,13 +3177,13 @@ class IncomingMaterialSampleInspectionSerializer(serializers.ModelSerializer):
             return None
 
         if request:
-            return request.build_absolute_uri(
-                obj.generated_report_url
-            )
+            return request.build_absolute_uri(obj.generated_report_url)
+
         return obj.generated_report_url
 
     def get_qc_label_url(self, obj):
         request = self.context.get("request")
+
         if not obj.qc_label_url:
             return None
 
@@ -3180,6 +3194,7 @@ class IncomingMaterialSampleInspectionSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         inspection = super().create(validated_data)
+
         request = self.context.get("request")
 
         if request:
@@ -3189,11 +3204,12 @@ class IncomingMaterialSampleInspectionSerializer(serializers.ModelSerializer):
             )
 
         return inspection
-
 
     def update(self, instance, validated_data):
         inspection = super().update(instance, validated_data)
+
         request = self.context.get("request")
+
         if request:
             process_inspection(
                 inspection=inspection,
@@ -3201,6 +3217,7 @@ class IncomingMaterialSampleInspectionSerializer(serializers.ModelSerializer):
             )
 
         return inspection
+
     
 class SampleAnalysisResultSerializer(serializers.ModelSerializer):
     class Meta:
