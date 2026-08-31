@@ -171,28 +171,28 @@ WSGI_APPLICATION = "project.wsgi.application"
 # ======================
 # DATABASE
 # ======================
-# DATABASES = {
-#     "default": {
-#         "ENGINE": "django.db.backends.mysql",
-#         "NAME": os.getenv("POSTGRES_DB", "pilims_updated"),
-#         "USER": os.getenv("POSTGRES_USER", "dilawaiz"),
-#         "PASSWORD": os.getenv("POSTGRES_PASSWORD", "Admin@123"),
-#         "HOST": os.getenv("DB_HOST", "127.0.0.1"),
-#         "PORT": os.getenv("DB_PORT", "3306"),
-#         'OPTIONS': {
-#             'charset': 'utf8mb4',
-#         },
-#     }
-# }
+DATABASES = {
+    "default": {
+        "ENGINE": "django.db.backends.mysql",
+        "NAME": os.getenv("POSTGRES_DB", "pilims_updated"),
+        "USER": os.getenv("POSTGRES_USER", "dilawaiz"),
+        "PASSWORD": os.getenv("POSTGRES_PASSWORD", "Admin@123"),
+        "HOST": os.getenv("DB_HOST", "127.0.0.1"),
+        "PORT": os.getenv("DB_PORT", "3306"),
+        'OPTIONS': {
+            'charset': 'utf8mb4',
+        },
+    }
+}
 
 FRONTEND_BASE_URL = os.getenv("FRONTEND_BASE_URL", "" )
 
-DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.sqlite3",
-        "NAME": BASE_DIR / "db.sqlite3", 
-    }
-}
+# DATABASES = {
+#     "default": {
+#         "ENGINE": "django.db.backends.sqlite3",
+#         "NAME": BASE_DIR / "db.sqlite3", 
+#     }
+# }
 
 # ======================
 # REST FRAMEWORK
