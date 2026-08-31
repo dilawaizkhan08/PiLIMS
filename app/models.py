@@ -611,6 +611,11 @@ class Product(BaseModel):
         null=True,
         blank=True
     )
+    sample_quantity = models.CharField(
+        max_length=100,
+        null=True,
+        blank=True
+    )
     def __str__(self):
         return self.name
 
@@ -696,6 +701,11 @@ class IncomingMaterialSampleInspection(models.Model):
     retain_sample_quantity = models.CharField(max_length=255, blank=True, null=True)
     grn_number = models.CharField(max_length=100, blank=True, null=True)
     received_total_number = models.PositiveIntegerField(blank=True, null=True)
+    received_total_unit = models.CharField(
+        max_length=50,
+        blank=True,
+        null=True
+    )
     vendor_lot_number = models.CharField(max_length=100, blank=True, null=True)
     clarity = models.CharField(max_length=20, choices=CLARITY_CHOICES, blank=True, null=True)
     item_description = models.CharField(max_length=20, choices=PRESENCE_CHOICES, blank=True, null=True)

@@ -2516,6 +2516,7 @@ class ProductSerializer(serializers.ModelSerializer):
             "erp_code",
             "analyses_data",
             "product_type",
+            "sample_quantity",
         ]
 
     def validate_name(self, value):
@@ -3150,7 +3151,7 @@ class IncomingMaterialSampleInspectionSerializer(serializers.ModelSerializer):
     )
 
     inspection_id = serializers.CharField(
-        source="inspection.inspection_sheet_no",
+        source="inspection_sheet_no",
         read_only=True
     )
 
@@ -3160,11 +3161,14 @@ class IncomingMaterialSampleInspectionSerializer(serializers.ModelSerializer):
     class Meta:
         model = models.IncomingMaterialSampleInspection
         fields = "__all__"
+        read_only_fields = [
+            "created_at",
+            "updated_at",
+        ]
 
     def to_internal_value(self, data):
         data = data.copy()
 
-        # Frontend sends "" when quantity is not provided
         if data.get("accepted_quantity") == "":
             data["accepted_quantity"] = None
 
@@ -3191,32 +3195,6 @@ class IncomingMaterialSampleInspectionSerializer(serializers.ModelSerializer):
             return request.build_absolute_uri(obj.qc_label_url)
 
         return obj.qc_label_url
-
-    def create(self, validated_data):
-        inspection = super().create(validated_data)
-
-        request = self.context.get("request")
-
-        if request:
-            process_inspection(
-                inspection=inspection,
-                request=request
-            )
-
-        return inspection
-
-    def update(self, instance, validated_data):
-        inspection = super().update(instance, validated_data)
-
-        request = self.context.get("request")
-
-        if request:
-            process_inspection(
-                inspection=inspection,
-                request=request
-            )
-
-        return inspection
 
     
 class SampleAnalysisResultSerializer(serializers.ModelSerializer):

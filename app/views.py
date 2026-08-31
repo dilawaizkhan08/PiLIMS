@@ -4553,15 +4553,22 @@ class DynamicFormEntryQCReportPDFView(APIView):
 
         data = entry.data or {}
 
-        # Product Name
         product_display_name = "---"
+        sample_quantity = "---"
         product_id = data.get("Product")
-
         if product_id:
             try:
-                product_display_name = Product.objects.get(id=product_id).name
+                product = Product.objects.get(id=product_id)
+
+                product_display_name = product.name
+                sample_quantity = product.sample_quantity or "---"
+
             except (Product.DoesNotExist, ValueError):
-                product_display_name = getattr(getattr(entry, "form", None), "sample_name", "---")
+                product_display_name = getattr(
+                    getattr(entry, "form", None),
+                    "sample_name",
+                    "---"
+                )
 
         mfg_date = (data.get("Manufacturing Date") or "---").split("T")[0]
         exp_date = (data.get("Expiry Date") or "---").split("T")[0]
@@ -4682,8 +4689,8 @@ class DynamicFormEntryQCReportPDFView(APIView):
                     </div>
 
                     <div class="data-row">
-                        <span class="data-label">Quantity:</span>
-                        <span class="data-value">{quantity or "---"}</span>
+                        <span class="data-label">Sample Quantity:</span>
+                        <span class="data-value">{sample_quantity}</span>
                     </div>
 
                     <div class="data-row" style="margin-top:30px;">
@@ -5007,6 +5014,7 @@ class IncomingMaterialSampleInspectionViewSet(viewsets.ModelViewSet):
             checked_by=self.request.user.get_full_name()
             or self.request.user.username
         )
+
         process_inspection(
             inspection,
             self.request
@@ -5014,6 +5022,7 @@ class IncomingMaterialSampleInspectionViewSet(viewsets.ModelViewSet):
 
     def perform_update(self, serializer):
         inspection = serializer.save()
+
         process_inspection(
             inspection,
             self.request
@@ -5042,8 +5051,7 @@ class IncomingMaterialSampleInspectionViewSet(viewsets.ModelViewSet):
 
             instance.approval_status = "approved"
             instance.approved_by = (
-                request.user.get_full_name()
-                or request.user.username
+                request.user.name
             )
             instance.approved_sign_date = timezone.now().date()
 
