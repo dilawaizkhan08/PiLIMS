@@ -4042,7 +4042,7 @@ class QueryReportTemplateCreateView(APIView):
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-from django.core.mail import EmailMessage
+
 class QueryReportRenderView(APIView):
     """
     GET /api/reports/render/?template_id=&sample_id=&download=true
@@ -4053,34 +4053,76 @@ class QueryReportRenderView(APIView):
         sample_id = request.query_params.get("sample_id")
         download = request.query_params.get("download")
 
+        # ---------------------------------------------------------
+        # 1. Validate parameters
+        # ---------------------------------------------------------
         if not (template_id and sample_id):
             return Response(
                 {"error": "template_id and sample_id required"},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # 1️⃣ Get report template
+        # ---------------------------------------------------------
+        # 2. Get report template
+        # ---------------------------------------------------------
         try:
-            template_obj = models.QueryReportTemplate.objects.get(id=template_id)
+            template_obj = models.QueryReportTemplate.objects.get(
+                id=template_id
+            )
         except models.QueryReportTemplate.DoesNotExist:
-            return Response({"error": "Template not found"}, status=status.HTTP_404_NOT_FOUND)
+            return Response(
+                {"error": "Template not found"},
+                status=status.HTTP_404_NOT_FOUND
+            )
 
-        # 2️⃣ Check entry
+        # ---------------------------------------------------------
+        # 3. Get DynamicFormEntry
+        # ---------------------------------------------------------
         try:
-            entry = models.DynamicFormEntry.objects.get(id=sample_id)
+            entry = models.DynamicFormEntry.objects.get(
+                id=sample_id
+            )
         except models.DynamicFormEntry.DoesNotExist:
-            return Response({"error": f"DynamicFormEntry {sample_id} not found"}, status=status.HTTP_404_NOT_FOUND)
+            return Response(
+                {
+                    "error": (
+                        f"DynamicFormEntry {sample_id} not found"
+                    )
+                },
+                status=status.HTTP_404_NOT_FOUND
+            )
 
-        # 3️⃣ Execute SQL
+        # ---------------------------------------------------------
+        # 4. Execute SQL
+        # ---------------------------------------------------------
         try:
-            params = {"sample_id": int(sample_id)}
-            result = self.execute_query(template_obj.sql_query, params)
+            params = {
+                "sample_id": int(sample_id)
+            }
+
+            result = self.execute_query(
+                template_obj.sql_query,
+                params
+            )
+
+            # -----------------------------------------------------
+            # Convert signature paths to file:// URLs
+            # -----------------------------------------------------
+            signature_fields = [
+                "analyst_sign",
+                "approver_sign",
+                "auth_sign",
+            ]
+
             for row in result:
-                for field in ["analyst_sign", "approver_sign", "auth_sign"]:
+                for field in signature_fields:
                     if row.get(field):
-                        row[field] = "file://" + os.path.join(
-                            settings.MEDIA_ROOT,
-                            str(row[field])
+                        row[field] = (
+                            "file://"
+                            + os.path.join(
+                                settings.MEDIA_ROOT,
+                                str(row[field])
+                            )
                         )
 
             if not result:
@@ -4088,137 +4130,323 @@ class QueryReportRenderView(APIView):
                     {"error": "No data returned from SQL"},
                     status=status.HTTP_404_NOT_FOUND
                 )
+
         except Exception as e:
-            return Response({"error": f"SQL execution failed: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return Response(
+                {
+                    "error": (
+                        f"SQL execution failed: {str(e)}"
+                    )
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
-        # 4️⃣ Parse JSON
-        if "data" in result[0]:
-            try:
-                parsed_data = json.loads(result[0]["data"])
-            except Exception:
-                parsed_data = {}
-        else:
-            parsed_data = {}
+        # ---------------------------------------------------------
+        # 5. Parse JSON data
+        # ---------------------------------------------------------
+        parsed_data = {}
 
+        if result and "data" in result[0]:
+            raw_data = result[0].get("data")
+
+            if raw_data:
+                try:
+                    if isinstance(raw_data, str):
+                        parsed_data = json.loads(raw_data)
+                    elif isinstance(raw_data, dict):
+                        parsed_data = raw_data
+                    else:
+                        parsed_data = {}
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    parsed_data = {}
+
+        # ---------------------------------------------------------
+        # 6. Create GeneratedReport
+        # ---------------------------------------------------------
         report = models.GeneratedReport.objects.create(
             sample=entry,
             template=template_obj
         )
+
+        # ---------------------------------------------------------
+        # 7. Prepare Jinja context
+        #
+        # IMPORTANT:
+        # created_at is kept as a datetime object.
+        # Do NOT use strftime() here.
+        #
+        # This allows Jinja to safely do:
+        #
+        # {{ created_at.strftime("%d-%m-%Y") }}
+        #
+        # or:
+        #
+        # {{ created_at.strftime("%Y-%m-%d %H:%M:%S") }}
+        # ---------------------------------------------------------
         context_data = {
             "rows": result,
             "entry": entry,
             "data": parsed_data,
-            "sample_text_id": entry.sample_text_id,
-            "created_at": entry.created_at,
-            "report_number": report.id,
 
+            "sample_text_id": entry.sample_text_id,
+
+            # IMPORTANT: Keep original datetime object
+            "created_at": entry.created_at,
+
+            "report": report,
+            "report_number": report.id,
         }
 
-        # 5️⃣a QR code generate
-        qr_url = f"{settings.FRONTEND_BASE_URL}/sample-details/{sample_id}"
-        qr = qrcode.QRCode(box_size=3, border=1)
-        qr.add_data(qr_url)
-        qr.make(fit=True)
-        img = qr.make_image(fill_color="black", back_color="white")
-
-        buffer = BytesIO()
-        img.save(buffer, format="PNG")
-        qr_base64 = base64.b64encode(buffer.getvalue()).decode()
-        buffer.close()
-
-        context_data["qr_code"] = f"data:image/png;base64,{qr_base64}"
-        context_data["sample_url"] = qr_url
-
-        # 6️⃣ Render HTML
-        jinja_template = JinjaTemplate(template_obj.jinja_html_content)
-        rendered_html = jinja_template.render(context_data)
-
-        default_css = """
-            @page { size: A4; margin: 10mm; }
-
-            body { font-family: Arial, sans-serif; margin: 10px; }
-
-            table { width: 100%; border-collapse: collapse; }
-
-            th, td {
-                border: 1px solid #000;
-                padding: 6px;
-                text-align: left;
-                font-size: 12px;
-            }
-
-            th { background-color: #f2f2f2; }
-
-            /* ✅ QR bottom-right exact corner */
-            .qr-footer {
-                position: fixed;
-                bottom: 0px;     /* bilkul bottom */
-                right: 0px;      /* bilkul right */
-            }
-
-            .qr-footer img {
-                width: 35px;
-                height: 35px;
-            }
-
-            .report-number {
-                position: fixed;
-                top: -20px;
-                left: 0px;
-                font-size: 10px;
-                font-weight: bold;
-                padding: 6px 2px;
-            }
-            """
-        combined_css = f"{default_css}\n{template_obj.css_content or ''}"
-
-        # 7️⃣a Inject QR at footer (UPDATED)
-        report_html = f"""
-            <div class="report-number">
-                Report No: {context_data["report_number"]}
-            </div>
-            """
-
-        qr_html = f"""
-            <div class="qr-footer">
-                <img src="{context_data["qr_code"]}" alt="QR Code">
-            </div>
-            """
-
-        rendered_html = rendered_html + report_html + qr_html
-
-        # 8️⃣ Generate PDF
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_pdf:
-            temp_path = temp_pdf.name
-
-        HTML(string=rendered_html, base_url=request.build_absolute_uri("/")).write_pdf(
-            target=temp_path,
-            stylesheets=[CSS(string=combined_css)]
+        # ---------------------------------------------------------
+        # 8. Generate QR code
+        # ---------------------------------------------------------
+        qr_url = (
+            f"{settings.FRONTEND_BASE_URL}"
+            f"/sample-details/{sample_id}"
         )
 
-        # 8️⃣a Save PDF
-        with open(temp_path, "rb") as f:
-            file_content = ContentFile(f.read())
+        qr = qrcode.QRCode(
+            box_size=3,
+            border=1
+        )
 
-        pdf_filename = f"report_entry_{sample_id}.pdf"
-        pdf_path = default_storage.save(f"reports/{pdf_filename}", file_content)
-        pdf_url = default_storage.url(pdf_path)
+        qr.add_data(qr_url)
+        qr.make(fit=True)
 
-        os.remove(temp_path)
+        img = qr.make_image(
+            fill_color="black",
+            back_color="white"
+        )
 
+        buffer = BytesIO()
+
+        img.save(
+            buffer,
+            format="PNG"
+        )
+
+        qr_base64 = base64.b64encode(
+            buffer.getvalue()
+        ).decode()
+
+        buffer.close()
+
+        context_data["qr_code"] = (
+            f"data:image/png;base64,{qr_base64}"
+        )
+
+        context_data["sample_url"] = qr_url
+
+        # ---------------------------------------------------------
+        # 9. Render Jinja HTML
+        # ---------------------------------------------------------
+        try:
+            jinja_template = JinjaTemplate(
+                template_obj.jinja_html_content
+            )
+
+            rendered_html = jinja_template.render(
+                context_data
+            )
+
+        except Exception as e:
+            return Response(
+                {
+                    "error": (
+                        f"Jinja template rendering failed: {str(e)}"
+                    )
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+        # ---------------------------------------------------------
+        # 10. Default CSS
+        # ---------------------------------------------------------
+        default_css = """
+        @page {
+            size: A4;
+            margin: 10mm;
+        }
+
+        body {
+            font-family: Arial, sans-serif;
+            margin: 10px;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        th,
+        td {
+            border: 1px solid #000;
+            padding: 6px;
+            text-align: left;
+            font-size: 12px;
+        }
+
+        th {
+            background-color: #f2f2f2;
+        }
+
+        /* QR code - bottom right */
+        .qr-footer {
+            position: fixed;
+            bottom: 0px;
+            right: 0px;
+        }
+
+        .qr-footer img {
+            width: 35px;
+            height: 35px;
+        }
+
+        /* Report number */
+        .report-number {
+            position: fixed;
+            top: -20px;
+            left: 0px;
+            font-size: 10px;
+            font-weight: bold;
+            padding: 6px 2px;
+        }
+        """
+
+        combined_css = (
+            f"{default_css}\n"
+            f"{template_obj.css_content or ''}"
+        )
+
+        # ---------------------------------------------------------
+        # 11. Add Report Number
+        # ---------------------------------------------------------
+        report_html = f"""
+        <div class="report-number">
+            Report No: {context_data["report_number"]}
+        </div>
+        """
+
+        # ---------------------------------------------------------
+        # 12. Add QR Code
+        # ---------------------------------------------------------
+        qr_html = f"""
+        <div class="qr-footer">
+            <img
+                src="{context_data["qr_code"]}"
+                alt="QR Code"
+            >
+        </div>
+        """
+
+        rendered_html = (
+            rendered_html
+            + report_html
+            + qr_html
+        )
+
+        # ---------------------------------------------------------
+        # 13. Generate PDF
+        # ---------------------------------------------------------
+        temp_path = None
+
+        try:
+            with tempfile.NamedTemporaryFile(
+                delete=False,
+                suffix=".pdf"
+            ) as temp_pdf:
+
+                temp_path = temp_pdf.name
+
+            HTML(
+                string=rendered_html,
+                base_url=request.build_absolute_uri("/")
+            ).write_pdf(
+                target=temp_path,
+                stylesheets=[
+                    CSS(string=combined_css)
+                ]
+            )
+
+            # -----------------------------------------------------
+            # 14. Save PDF to Django storage
+            # -----------------------------------------------------
+            with open(temp_path, "rb") as f:
+                file_content = ContentFile(
+                    f.read()
+                )
+
+            pdf_filename = (
+                f"report_entry_{sample_id}.pdf"
+            )
+
+            pdf_path = default_storage.save(
+                f"reports/{pdf_filename}",
+                file_content
+            )
+
+            pdf_url = default_storage.url(
+                pdf_path
+            )
+
+        except Exception as e:
+            return Response(
+                {
+                    "error": (
+                        f"PDF generation failed: {str(e)}"
+                    )
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+        finally:
+            # -----------------------------------------------------
+            # Delete temporary PDF
+            # -----------------------------------------------------
+            if temp_path and os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    pass
+
+        # ---------------------------------------------------------
+        # 15. Update GeneratedReport
+        # ---------------------------------------------------------
         report.pdf_url = pdf_url
-        report.save(update_fields=["pdf_url"])
 
-        # 8️⃣c Send email
-        if entry.status == "completed" and entry.logged_by and entry.logged_by.email:
+        report.save(
+            update_fields=["pdf_url"]
+        )
+
+        # ---------------------------------------------------------
+        # 16. Send Email
+        # ---------------------------------------------------------
+        if (
+            entry.status == "completed"
+            and entry.logged_by
+            and entry.logged_by.email
+        ):
             try:
-                subject = f"Report for Sample {entry.sample_text_id}"
+                subject = (
+                    f"Report for Sample "
+                    f"{entry.sample_text_id}"
+                )
+
+                recipient_name = (
+                    entry.logged_by.get_full_name()
+                    or entry.logged_by.email
+                )
+
                 body = (
-                    f"Hello {entry.logged_by.get_full_name() or entry.logged_by.email},\n\n"
-                    f"The report for your sample ({entry.sample_text_id}) has been generated.\n"
-                    f"You can download it from the link below:\n\n"
+                    f"Hello {recipient_name},\n\n"
+                    f"The report for your sample "
+                    f"({entry.sample_text_id}) "
+                    f"has been generated.\n\n"
+                    f"You can download it from the "
+                    f"link below:\n\n"
                     f"{request.build_absolute_uri(pdf_url)}\n\n"
-                    f"Regards,\nLab Team"
+                    f"Regards,\n"
+                    f"Lab Team"
                 )
 
                 email = EmailMessage(
@@ -4228,34 +4456,89 @@ class QueryReportRenderView(APIView):
                     to=[entry.logged_by.email],
                 )
 
-                with default_storage.open(pdf_path, "rb") as f:
-                    email.attach(f"report_{entry.sample_text_id}.pdf", f.read(), "application/pdf")
+                # Attach generated PDF
+                with default_storage.open(
+                    pdf_path,
+                    "rb"
+                ) as f:
 
-                email.send(fail_silently=False)
+                    email.attach(
+                        f"report_{entry.sample_text_id}.pdf",
+                        f.read(),
+                        "application/pdf"
+                    )
+
+                email.send(
+                    fail_silently=False
+                )
 
             except Exception as e:
-                print(f"Failed to send email: {e}")
+                print(
+                    f"Failed to send email: {e}"
+                )
 
-        # 9️⃣ Return PDF
-        with default_storage.open(pdf_path, "rb") as f:
-            pdf_bytes = f.read()
+        # ---------------------------------------------------------
+        # 17. Return PDF
+        # ---------------------------------------------------------
+        try:
+            with default_storage.open(
+                pdf_path,
+                "rb"
+            ) as f:
 
-        response = HttpResponse(pdf_bytes, content_type="application/pdf")
-        filename = f"report_entry_{sample_id}.pdf"
+                pdf_bytes = f.read()
 
-        response["Content-Disposition"] = (
-            f'attachment; filename="{filename}"'
-            if download else f'inline; filename="{filename}"'
+        except Exception as e:
+            return Response(
+                {
+                    "error": (
+                        f"Unable to read generated PDF: {str(e)}"
+                    )
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+        response = HttpResponse(
+            pdf_bytes,
+            content_type="application/pdf"
         )
+
+        filename = (
+            f"report_entry_{sample_id}.pdf"
+        )
+
+        if download:
+            response["Content-Disposition"] = (
+                f'attachment; filename="{filename}"'
+            )
+        else:
+            response["Content-Disposition"] = (
+                f'inline; filename="{filename}"'
+            )
 
         return response
 
-    # Helper
+    # =============================================================
+    # Helper: Execute SQL
+    # =============================================================
     def execute_query(self, sql_query, params):
         with connection.cursor() as cursor:
-            cursor.execute(sql_query, params)
-            columns = [col[0] for col in cursor.description]
-            rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+            cursor.execute(
+                sql_query,
+                params
+            )
+
+            columns = [
+                col[0]
+                for col in cursor.description
+            ]
+
+            rows = [
+                dict(zip(columns, row))
+                for row in cursor.fetchall()
+            ]
+
         return rows
     
 
