@@ -4523,25 +4523,18 @@ class QueryReportRenderView(APIView):
     # =============================================================
     def execute_query(self, sql_query, params):
         with connection.cursor() as cursor:
-
-            cursor.execute(
-                sql_query,
-                params
-            )
+            cursor.execute(sql_query, params)
 
             columns = [
                 col[0]
                 for col in cursor.description
             ]
 
-            rows = [
+            return [
                 dict(zip(columns, row))
                 for row in cursor.fetchall()
             ]
-
-        return rows
-    
-
+        
 class DatabaseStructureView(APIView):
     def get(self, request):
         tables = []
