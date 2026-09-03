@@ -958,9 +958,9 @@ def create_sample_from_inspection(inspection, user):
         if existing_entry:
             return existing_entry.id
 
-        sample_form = models.SampleForm.objects.get(
-            sample_name__iexact="DZRT Nicotine Pouches"
-        )
+        sample_form = models.SampleForm.objects.filter(
+            sample_name__icontains="DZRT"
+        ).values("id", "sample_name")
 
         entry = models.DynamicFormEntry.objects.create(
             form=sample_form,
