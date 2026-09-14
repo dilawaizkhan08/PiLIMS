@@ -4597,7 +4597,12 @@ class DynamicFormEntryCompactTicketPDFView(APIView):
 
         # ---------------- SERIALIZED DATA ----------------
         from .serializers import DynamicFormEntrySerializer
-        serializer = DynamicFormEntrySerializer(entry, context={"request": request})
+
+        serializer = DynamicFormEntrySerializer(
+            entry,
+            context={"request": request}
+        )
+
         serialized_data = serializer.data
         formatted_data = serialized_data.get("data", {})
 
@@ -4610,11 +4615,18 @@ class DynamicFormEntryCompactTicketPDFView(APIView):
         # ---------------- QR CODE ----------------
         qr_url = f"{settings.FRONTEND_BASE_URL}/sample-details/{entry.id}"
 
-        qr = qrcode.QRCode(box_size=3, border=1)
+        qr = qrcode.QRCode(
+            box_size=3,
+            border=1
+        )
+
         qr.add_data(qr_url)
         qr.make(fit=True)
 
-        img = qr.make_image(fill_color="black", back_color="white")
+        img = qr.make_image(
+            fill_color="black",
+            back_color="white"
+        )
 
         buffer = BytesIO()
         img.save(buffer, format="PNG")
@@ -4623,91 +4635,205 @@ class DynamicFormEntryCompactTicketPDFView(APIView):
 
         # ---------------- HTML ----------------
         html_content = f"""
+        <!DOCTYPE html>
         <html>
         <head>
+
         <style>
+
         @page {{
             size: 100mm 37.5mm;
             margin: 0;
         }}
 
+        html,
         body {{
-            font-family: Arial;
-            font-size:8px;
-            margin:0;
-            padding:0;
+            width: 100mm;
+            height: 37.5mm;
+            margin: 0;
+            padding: 0;
+            font-family: Arial, sans-serif;
+        }}
+
+        body {{
+            font-size: 10px;
         }}
 
         .label {{
-            display:flex;
-            flex-direction:row;
-            gap:3mm;
-            padding:1mm;
-            height:18mm;
+            width: 100mm;
+            height: 37.5mm;
+            box-sizing: border-box;
+
+            display: flex;
+            flex-direction: row;
+
+            margin: 0;
+            padding: 1.5mm;
+
+            gap: 1mm;
+
+            overflow: hidden;
         }}
 
+        /* ---------------- QR HALF ---------------- */
+
         .qr {{
-            text-align:center;
-            flex:none;
+            width: 30%;
+            height: 34.5mm;
+
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+
+            flex-shrink: 0;
         }}
 
         .details {{
-            flex:1;
-            line-height:1.1;
+            width: 70%;
+            height: 34.5mm;
+
+            box-sizing: border-box;
+            padding-left: 1mm;
+
+            line-height: 1.2;
+            font-size: 18px;
+
+            overflow: hidden;
+
+            word-wrap: break-word;
+            overflow-wrap: break-word;
+        }}
+
+        .qr img {{
+            width: 28mm;
+            height: 28mm;
+            display: block;
         }}
 
         .label-title {{
-            font-weight:bold;
-            font-size:7px;
+            margin-top: 1mm;
+
+            font-weight: bold;
+            font-size: 10px;
+
+            line-height: 1;
+            text-align: center;
         }}
+
+        /* ---------------- TEXT HALF ---------------- */
+
+
+        .details strong {{
+            display: block;
+
+            font-size: 13px;
+
+            line-height: 1.15;
+
+            margin-bottom: 1mm;
+        }}
+
+        .details span {{
+            font-size: 10px;
+            line-height: 1.2;
+        }}
+
         </style>
+
         </head>
 
         <body>
 
-        <!-- LAB SAMPLE LABEL -->
+        <!-- ================= LAB SAMPLE LABEL ================= -->
 
         <div class="label">
 
-        <div class="qr">
-            <img src="data:image/png;base64,{qr_base64}" width="40" height="40"><br>
-            <div class="label-title">Lab Sample Label</div>
-        </div>
+            <div class="qr">
 
-        <div class="details">
-            <strong style="font-size:9px;">{product_name}</strong><br/>
-            <span>ID: {entry.sample_text_id}</span><br/>
+                <img
+                    src="data:image/png;base64,{qr_base64}"
+                    width="28mm"
+                    height="28mm"
+                >
+
+                <div class="label-title">
+                    Lab Sample Label
+                </div>
+
+            </div>
+
+            <div class="details">
+
+                <strong>
+                    {product_name}
+                </strong>
+
+                <span>
+                    ID: {entry.sample_text_id}
+                </span>
+                <br/>
         """
 
         # ---------------- FORMATTED DATA ----------------
+
         for k, v in formatted_data.items():
-            html_content += f"<span>{k}: {v}</span><br/>"
+            html_content += f"""
+                <span>
+                    {k}: {v}
+                </span>
+                <br/>
+            """
 
         html_content += """
-        </div>
-        </div>
-        """
+            </div>
 
-        # ---------------- RETAINING LABEL ----------------
+        </div>
 
-        html_content += f"""
+
+        <!-- ================= RETAINING LABEL ================= -->
+
         <div class="label">
 
-        <div class="qr">
-            <img src="data:image/png;base64,{qr_base64}" width="40" height="40"><br>
-            <div class="label-title">Retaining Label</div>
-        </div>
+            <div class="qr">
 
-        <div class="details">
-            <strong style="font-size:9px;">{product_name}</strong><br/>
-            <span>ID: {entry.sample_text_id}</span><br/>
+                <img
+                    src="data:image/png;base64,""" + qr_base64 + """"
+                    width="28mm"
+                    height="28mm"
+                >
+
+                <div class="label-title">
+                    Retaining Label
+                </div>
+
+            </div>
+
+            <div class="details">
+
+                <strong>
+        """ + str(product_name) + """
+                </strong>
+
+                <span>
+                    ID: """ + str(entry.sample_text_id) + """
+                </span>
+                <br/>
         """
 
+        # ---------------- FORMATTED DATA ----------------
+
         for k, v in formatted_data.items():
-            html_content += f"<span>{k}: {v}</span><br/>"
+            html_content += f"""
+                <span>
+                    {k}: {v}
+                </span>
+                <br/>
+            """
 
         html_content += """
-        </div>
+            </div>
+
         </div>
 
         </body>
@@ -4715,39 +4841,51 @@ class DynamicFormEntryCompactTicketPDFView(APIView):
         """
 
         # ---------------- PDF GENERATE ----------------
-        # ---------------- PDF GENERATE ----------------
 
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp:
+        with tempfile.NamedTemporaryFile(
+            delete=False,
+            suffix=".pdf"
+        ) as temp:
+
             temp_path = temp.name
 
         HTML(string=html_content).write_pdf(
             temp_path,
             stylesheets=[
-                CSS(string="""
+                CSS(
+                    string="""
                     @page {
                         size: 100mm 37.5mm;
-                        margin:0;
+                        margin: 0;
                     }
-                """)
+                    """
+                )
             ]
         )
+
+        # ---------------- ROTATE PDF ----------------
 
         reader = PdfReader(temp_path)
         writer = PdfWriter()
 
         for page in reader.pages:
+
             try:
-                page.rotate(90)     # pypdf >=3
+                page.rotate(90)
             except:
-                page.rotate_clockwise(90)   # old versions
+                page.rotate_clockwise(90)
 
             writer.add_page(page)
 
         output = BytesIO()
+
         writer.write(output)
+
         output.seek(0)
 
         os.remove(temp_path)
+
+        # ---------------- RESPONSE ----------------
 
         response = HttpResponse(
             output.read(),
@@ -5173,28 +5311,36 @@ class PreparationLabelPDFView(APIView):
             padding:0;
         }}
 
-        .label {{
-            display:flex;
-            flex-direction:row;
-            gap:3mm;
-            padding:1mm;
-            height:18mm;
-        }}
+        .label {
+            display: flex;
+            flex-direction: row;
+            gap: 2mm;
+            padding: 1mm;
+            height: 35mm;
+            box-sizing: border-box;
+        }
 
-        .qr {{
-            text-align:center;
-            flex:none;
-        }}
+        .qr {
+            width: 50%;
+            text-align: center;
+            flex: none;
+        }
 
-        .details {{
-            flex:1;
-            line-height:1.2;
-        }}
+        .details {
+            width: 50%;
+            line-height: 1.15;
+            font-size: 10px;
+            overflow: hidden;
+        }
 
-        .label-title {{
-            font-weight:bold;
-            font-size:7px;
-        }}
+        .label-title {
+            font-weight: bold;
+            font-size: 9px;
+        }
+
+        .details strong {
+            font-size: 12px !important;
+        }
         </style>
         </head>
 

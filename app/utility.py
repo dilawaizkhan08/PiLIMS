@@ -960,7 +960,10 @@ def create_sample_from_inspection(inspection, user):
 
         sample_form = models.SampleForm.objects.filter(
             sample_name__icontains="DZRT"
-        ).values("id", "sample_name")
+        ).first()
+
+        if not sample_form:
+            raise ValueError("SampleForm containing 'DZRT' not found.")
 
         entry = models.DynamicFormEntry.objects.create(
             form=sample_form,
@@ -1038,6 +1041,7 @@ def create_sample_from_inspection(inspection, user):
         traceback.print_exc()
         raise
 
+    
 def generate_ims_report( request, sample_id):
     try:
         sample = models.DynamicFormEntry.objects.get(id=sample_id)
