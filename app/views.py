@@ -5433,8 +5433,8 @@ class IncomingMaterialSampleInspectionViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         inspection = serializer.save(
-            checked_by=self.request.user.get_full_name()
-            or self.request.user.username
+            checked_by=self.request.user.name,
+            checked_sign_date=timezone.now().date(),
         )
 
         process_inspection(

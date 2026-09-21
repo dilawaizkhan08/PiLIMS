@@ -3157,6 +3157,7 @@ class IncomingMaterialSampleInspectionSerializer(serializers.ModelSerializer):
 
     generated_report_url = serializers.SerializerMethodField()
     qc_label_url = serializers.SerializerMethodField()
+    received_total_unit_name = serializers.SerializerMethodField()
 
     class Meta:
         model = models.IncomingMaterialSampleInspection
@@ -3173,6 +3174,13 @@ class IncomingMaterialSampleInspectionSerializer(serializers.ModelSerializer):
             data["accepted_quantity"] = None
 
         return super().to_internal_value(data)
+
+    def get_received_total_unit_name(self, obj):
+        if not obj.received_total_unit:
+            return None
+
+        unit = models.Unit.objects.filter(id=obj.received_total_unit).first()
+        return unit.name if unit else None
 
     def get_generated_report_url(self, obj):
         request = self.context.get("request")
