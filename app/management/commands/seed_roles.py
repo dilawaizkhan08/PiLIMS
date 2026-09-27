@@ -10,7 +10,7 @@ class Command(BaseCommand):
 
     ROLE_DATA = {
         "name": "Admin1",
-        "users": [1],
+        "users": [23],
         "permissions": [
             # User
             {"module": "app_user", "action": "create"},

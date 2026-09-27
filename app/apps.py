@@ -5,7 +5,7 @@ from .license_service import validate_license, LicenseError
 
 class AppConfig(AppConfig):
     default_auto_field = "django.db.models.BigAutoField"
-    name = "app"  # <-- sirf ek unique name
+    name = "app"
 
     def ready(self):
         # Load signals

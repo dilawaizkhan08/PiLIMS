@@ -45,7 +45,7 @@ from .filters import GenericSearchFilter
 from .utility import create_entry_analyses,update_status_with_history
 
 from app.serializers import ComponentResultSerializer
-from app.user_limit import check_user_limit
+from app.user_limit import check_user_limit, check_concurrent_user_limit
 from django.template import Template, Context
 from django.utils.text import slugify
 from django.db.models.query import QuerySet
@@ -157,7 +157,7 @@ class LoginView(views.APIView):
                     },
                     status=status.HTTP_200_OK,
                 )
-
+            check_concurrent_user_limit(user_auth)
             token, _ = Token.objects.get_or_create(user=user_auth)
 
             update_last_login(None, user_auth)
