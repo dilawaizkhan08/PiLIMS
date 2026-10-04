@@ -50,7 +50,7 @@ class RegisterSerializer(serializers.ModelSerializer):
 
 
 class LoginSerializer(serializers.Serializer):
-    email = serializers.EmailField(
+    email = serializers.CharField(
         error_messages={
             "required": "Email is required.",
             "blank": "Email is required.",

@@ -113,10 +113,14 @@ class LoginView(views.APIView):
         try:
             user = User.objects.get(email__iexact=email)
         except User.DoesNotExist:
-            return Response(
-                {"error": "Invalid credentials"},
-                status=status.HTTP_401_UNAUTHORIZED,
-            )
+            # If email is not found, try name
+            try:
+                user = User.objects.get(name__iexact=email)
+            except User.DoesNotExist:
+                return Response(
+                    {"error": "Invalid credentials"},
+                    status=status.HTTP_401_UNAUTHORIZED,
+                )
 
         # Check if account is active
         if not user.is_active:
