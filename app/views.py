@@ -208,6 +208,19 @@ class LoginView(views.APIView):
         )
 
 
+class LogoutView(views.APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, *args, **kwargs):
+        # Delete the current user's authentication token
+        Token.objects.filter(user=request.user).delete()
+
+        return Response(
+            {"message": "Logged out successfully."},
+            status=status.HTTP_200_OK,
+        )
+
+
 class RefreshLoginView(views.APIView):
     permission_classes = [IsAuthenticated]
 
