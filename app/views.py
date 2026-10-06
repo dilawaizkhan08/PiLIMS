@@ -6473,30 +6473,21 @@ class FetchBatchView(APIView):
                 for product in products
             }
 
-            data = []
+            # Take first matching Oracle item
+            item = items[0]
 
-            for item in items:
-                item_number = item.get("ItemNumber")
+            item_number = item.get("ItemNumber")
 
-                data.append(
-                    {
-                        "batch_number": item.get("LotNumber"),
-                        "inventory_item_id": item.get("InventoryItemId"),
-                        "organization_code": item.get("OrganizationCode"),
-
-                        # Keep Oracle ItemNumber
-                        "item_number": item_number,
-                        "item_description": product_map.get(
-                            item_number,
-                            ""
-                        ),
-
-                        "active_lot": item.get("ActiveLot"),
-                        "status_code": item.get("StatusCode"),
-                        "origination_date": item.get("OriginationDate"),
-                        "expiry_date": item.get("ExpirationDate"),
-                    }
-                )
+            data = {
+                "batch_number": item.get("LotNumber"),
+                "item_number": item_number,
+                "item_description": product_map.get(
+                    item_number,
+                    ""
+                ),
+                "origination_date": item.get("OriginationDate"),
+                "expiry_date": item.get("ExpirationDate"),
+            }
 
             return Response(
                 {
@@ -6540,8 +6531,9 @@ class FetchBatchView(APIView):
                     "message": f"Internal Server Error: {str(exc)}",
                 },
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )       
-                
+            )
+        
+               
 import pandas as pd
 from django.http import JsonResponse
 from app.utility import process_excel_file
