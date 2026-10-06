@@ -6452,16 +6452,45 @@ class FetchBatchView(APIView):
                     status=status.HTTP_404_NOT_FOUND,
                 )
 
+            # Get all Oracle ItemNumbers
+            item_numbers = {
+                item.get("ItemNumber")
+                for item in items
+                if item.get("ItemNumber")
+            }
+
+            # Match Oracle ItemNumber with LIMS Product.erp_code
+            products = models.Product.objects.filter(
+                erp_code__in=item_numbers
+            ).values(
+                "erp_code",
+                "name",
+            )
+
+            # ERP Code -> Product Name
+            product_map = {
+                product["erp_code"]: product["name"]
+                for product in products
+            }
+
             data = []
 
             for item in items:
+                item_number = item.get("ItemNumber")
+
                 data.append(
                     {
                         "batch_number": item.get("LotNumber"),
                         "inventory_item_id": item.get("InventoryItemId"),
                         "organization_code": item.get("OrganizationCode"),
-                        "item_number": item.get("ItemNumber"),
-                        "item_description": item.get("ItemDescription"),
+
+                        # Keep Oracle ItemNumber
+                        "item_number": item_number,
+                        "item_description": product_map.get(
+                            item_number,
+                            ""
+                        ),
+
                         "active_lot": item.get("ActiveLot"),
                         "status_code": item.get("StatusCode"),
                         "origination_date": item.get("OriginationDate"),
@@ -6511,8 +6540,7 @@ class FetchBatchView(APIView):
                     "message": f"Internal Server Error: {str(exc)}",
                 },
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
-            
+            )       
                 
 import pandas as pd
 from django.http import JsonResponse
