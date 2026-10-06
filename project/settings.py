@@ -285,11 +285,18 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 # settings.py
 
-ORACLE_CONFIG = {
-    "URL": "https://fa-exto-test-saasfaprod1.fa.ocs.oraclecloud.com/xmlpserver/services/PublicReportService",
-    "USER": "aps.consultant",
-    "PASSWORD": "APS@22334455",
-    "REPORT_PATH": "/Custom/Custom Report/Inventory/New Report/BADAEL_INV_BATCH_DETAILS/BADAEL_INV_BATCH_DETAILS_REP.xdo"
+# ORACLE_CONFIG = {
+#     "URL": "https://fa-exto-test-saasfaprod1.fa.ocs.oraclecloud.com/xmlpserver/services/PublicReportService",
+#     "USER": "LIMS.INTG",
+#     "PASSWORD": "LIMS@#32@10*&",
+#     "REPORT_PATH": "/Custom/Custom Report/Inventory/New Report/BADAEL_INV_BATCH_DETAILS/BADAEL_INV_BATCH_DETAILS_REP.xdo"
+# }
+
+
+ORACLE_FSCM_CONFIG = {
+    "BASE_URL": "https://fa-exto-test-saasfaprod1.fa.ocs.oraclecloud.com",
+    "USER": "LIMS.INTG",
+    "PASSWORD": "LIMS@#32@10*&",
 }
 
 

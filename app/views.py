@@ -6374,94 +6374,146 @@ import base64
 import requests
 import xml.etree.ElementTree as ET
 
+import requests
+
+from django.conf import settings
+from rest_framework import status
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+from rest_framework.views import APIView
+
+
 class FetchBatchView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        batch_number_query = request.GET.get("batchNumber")
+        batch_number = request.GET.get("batchNumber", "").strip()
 
-        if not batch_number_query:
+        if not batch_number:
             return Response(
-                {"success": False, "message": "batchNumber parameter is required"},
-                status=status.HTTP_400_BAD_REQUEST
+                {
+                    "success": False,
+                    "message": "batchNumber parameter is required",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # return Response(
-        #                 {
-        #                     "success": True,
-        #                     "data": {
-        #                         "batch_number": batch_number_query,
-        #                         "item_number": "Flavour Materials",
-        #                         "item_description": "Pasteurized Milk",
-        #                         "origination_date":"2025-10-10",
-        #                         "expiry_date": "2026-10-10",
-        #                     }
-        #                 },
-        #                 status=status.HTTP_200_OK
-        #             )
+        config = settings.ORACLE_FSCM_CONFIG
+
+        url = (
+            f"{config['BASE_URL']}"
+            "/fscmRestApi/resources/11.13.18.05/inventoryItemLots"
+        )
+
+        params = {
+            "q": f"LotNumber={batch_number}",
+            "onlyData": "true",
+            "fields": (
+                "OrganizationCode,"
+                "InventoryItemId,"
+                "ItemNumber,"
+                "ItemDescription,"
+                "LotNumber,"
+                "ActiveLot,"
+                "StatusCode,"
+                "OriginationDate,"
+                "ExpirationDate"
+            ),
+        }
 
         try:
-            # 1. Prepare Payload
-            url = f"https://fa-exto-test-saasfaprod1.fa.ocs.oraclecloud.com/fscmRestApi/resources/11.13.18.05/inventoryItemLots?q=LotNumber={batch_number_query}"
-            payload = ""
-            headers = {
-            'Authorization': 'Basic YXBzLmNvbnN1bHRhbnQ6QVBTQDIyMzM0NDU1'
-            }
+            response = requests.get(
+                url,
+                params=params,
+                auth=(config["USER"], config["PASSWORD"]),
+                timeout=30,
+            )
 
-            # 2. Execute Request
-            response = requests.request("GET", url, headers=headers, data=payload)
-
-            if response.status_code == 200:
-                oracle_data = response.json()
-                items = oracle_data.get("items", [])
-
-                if not items:
-                    return Response(
-                        {
-                            "success": False,
-                            "message": "Batch not found."
-                        },
-                        status=status.HTTP_404_NOT_FOUND
-                    )
-
-                item = items[0]
-
-                parsed_data = {
-                    "batch_number": item.get("LotNumber"),
-                    "item_number": item.get("ItemNumber"),
-                    "item_description": item.get("ItemDescription"),
-                    "origination_date": item.get("OriginationDate"),
-                    "expiry_date": item.get("ExpirationDate"),
-                }
-
+            if response.status_code != 200:
                 return Response(
                     {
-                        "success": True,
-                        "data": parsed_data
+                        "success": False,
+                        "message": "Oracle API request failed.",
+                        "oracle_status": response.status_code,
+                        "oracle_response": response.text,
                     },
-                    status=status.HTTP_200_OK
+                    status=status.HTTP_502_BAD_GATEWAY,
                 )
-            else:
+
+            oracle_data = response.json()
+            items = oracle_data.get("items", [])
+
+            if not items:
                 return Response(
-                {"success": False, "message": response.text},
-                status=status.HTTP_400_BAD_REQUEST
+                    {
+                        "success": False,
+                        "message": "Batch not found.",
+                    },
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+
+            data = []
+
+            for item in items:
+                data.append(
+                    {
+                        "batch_number": item.get("LotNumber"),
+                        "inventory_item_id": item.get("InventoryItemId"),
+                        "organization_code": item.get("OrganizationCode"),
+                        "item_number": item.get("ItemNumber"),
+                        "item_description": item.get("ItemDescription"),
+                        "active_lot": item.get("ActiveLot"),
+                        "status_code": item.get("StatusCode"),
+                        "origination_date": item.get("OriginationDate"),
+                        "expiry_date": item.get("ExpirationDate"),
+                    }
+                )
+
+            return Response(
+                {
+                    "success": True,
+                    "data": data,
+                },
+                status=status.HTTP_200_OK,
             )
+
         except requests.exceptions.Timeout:
             return Response(
-                {"success": False, "message": "Oracle service timed out"},
-                status=status.HTTP_504_GATEWAY_TIMEOUT
+                {
+                    "success": False,
+                    "message": "Oracle service timed out.",
+                },
+                status=status.HTTP_504_GATEWAY_TIMEOUT,
             )
-        except requests.exceptions.RequestException as e:
+
+        except requests.exceptions.RequestException as exc:
             return Response(
-                {"success": False, "message": f"Oracle connection error: {str(e)}"},
-                status=status.HTTP_503_SERVICE_UNAVAILABLE
+                {
+                    "success": False,
+                    "message": f"Oracle connection error: {str(exc)}",
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
-        except Exception as e:
+
+        except ValueError:
             return Response(
-                {"success": False, "message": f"Internal Server Error: {str(e)}"},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                {
+                    "success": False,
+                    "message": "Invalid response received from Oracle.",
+                },
+                status=status.HTTP_502_BAD_GATEWAY,
             )
-        
+
+        except Exception as exc:
+            return Response(
+                {
+                    "success": False,
+                    "message": f"Internal Server Error: {str(exc)}",
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+            
+                
 import pandas as pd
 from django.http import JsonResponse
 from app.utility import process_excel_file
