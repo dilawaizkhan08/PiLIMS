@@ -6382,7 +6382,6 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-
 class FetchBatchView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -6452,39 +6451,88 @@ class FetchBatchView(APIView):
                     status=status.HTTP_404_NOT_FOUND,
                 )
 
+            # ---------------------------------------------------------
             # Get all Oracle ItemNumbers
+            # ---------------------------------------------------------
             item_numbers = {
                 item.get("ItemNumber")
                 for item in items
                 if item.get("ItemNumber")
             }
 
+            # ---------------------------------------------------------
             # Match Oracle ItemNumber with LIMS Product.erp_code
+            # ---------------------------------------------------------
             products = models.Product.objects.filter(
                 erp_code__in=item_numbers
-            ).values(
-                "erp_code",
-                "name",
             )
 
-            # ERP Code -> Product Name
+            # ERP Code -> Product
             product_map = {
-                product["erp_code"]: product["name"]
+                product.erp_code: product
                 for product in products
             }
 
-            # Take first matching Oracle item
+            # ---------------------------------------------------------
+            # Get "Product Types" List
+            # ---------------------------------------------------------
+            product_type_list = models.List.objects.filter(
+                name="Product Types"
+            ).first()
+
+            # Value.value -> Value.id
+            product_type_map = {}
+
+            if product_type_list:
+                product_type_map = {
+                    value.value: value.id
+                    for value in product_type_list.values.all()
+                }
+
+            # ---------------------------------------------------------
+            # Use only the first Oracle instance
+            # ---------------------------------------------------------
             item = items[0]
 
             item_number = item.get("ItemNumber")
 
+            product = product_map.get(item_number)
+
+            # Product choice display name
+            product_type_name = (
+                product.get_product_type_display()
+                if product
+                else ""
+            )
+
+            # Find matching Value.id from Product Types list
+            product_type_id = product_type_map.get(
+                product_type_name
+            )
+
+            # ---------------------------------------------------------
+            # Final Response Data
+            # ---------------------------------------------------------
             data = {
                 "batch_number": item.get("LotNumber"),
                 "item_number": item_number,
-                "item_description": product_map.get(
-                    item_number,
-                    ""
+
+                "item_description": (
+                    product.name
+                    if product
+                    else ""
                 ),
+
+                "product_id": (
+                    product.id
+                    if product
+                    else None
+                ),
+
+                "product_type_id": product_type_id,
+
+                "product_type_name": product_type_name,
+
                 "origination_date": item.get("OriginationDate"),
                 "expiry_date": item.get("ExpirationDate"),
             }
