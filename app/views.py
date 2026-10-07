@@ -1159,6 +1159,8 @@ def convert_datetimes_to_strings(data):
 
 class SampleFormSubmitView(APIView):
     permission_classes = [IsAuthenticated, HasModulePermission]
+    required_permission_module = "app_dynamicformentry"
+    required_permission_action = "create"
 
     def post(self, request, form_id, repetition):
 
@@ -3197,6 +3199,10 @@ class SystemConfigurationDetailView(generics.RetrieveUpdateDestroyAPIView):
 
 
 class BulkConfigUpdateView(TrackUserMixin,APIView):
+    permission_classes = [IsAuthenticated, HasModulePermission]
+
+    required_permission_module = "app_systemconfiguration"
+    required_permission_action = "update"
     def patch(self, request):
         
         configs_data = request.data.get("configs", [])
@@ -3780,7 +3786,10 @@ STATUS_CHOICES = [
 
 
 class AnalyticsAPIView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, HasModulePermission]
+
+    required_permission_module = "app_dashboard"
+    required_permission_action = "analytics"
 
     def get(self, request, *args, **kwargs):
         # ===================== FILTERS =====================
@@ -6383,7 +6392,9 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 class FetchBatchView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, HasModulePermission]
+    required_permission_module = "app_dynamicformentry"
+    required_permission_action = "fetch_batch"
 
     def get(self, request):
         batch_number = request.GET.get("batchNumber", "").strip()

@@ -60,7 +60,17 @@ class HasModulePermission(BasePermission):
         try:
             role = user.roles.get(id=role_id)
         except models.Role.DoesNotExist:
-            return False  # User does not have this role
+            return False 
+
+        # Explicit permission for custom APIViews
+        required_module = getattr(view, "required_permission_module", None)
+        required_action = getattr(view, "required_permission_action", None)
+
+        if required_module and required_action:
+            return role.permissions.filter(
+                module=required_module,
+                action=required_action
+            ).exists()
 
         # 🔹 2. Detect model (module name)
         model = None

@@ -115,9 +115,27 @@ class RoleSerializer(serializers.ModelSerializer):
 
         return value
 
+    def add_dependent_permissions(self, permissions_data):
+        permissions = {
+            (perm["module"], perm["action"])
+            for perm in permissions_data
+        }
+
+        if ("app_dynamicformentry", "create") in permissions:
+            permissions.update({
+                ("app_list", "view"),
+                ("app_sampleform", "view"),
+            })
+
+        return [
+            {"module": module, "action": action}
+            for module, action in permissions
+        ]
+
     def create(self, validated_data):
         users = validated_data.pop("users", [])
         permissions_data = validated_data.pop("permissions", [])
+        permissions_data = self.add_dependent_permissions(permissions_data)
         role = models.Role.objects.create(**validated_data)
         role.users.set(users)
 
@@ -128,6 +146,7 @@ class RoleSerializer(serializers.ModelSerializer):
     def update(self, instance, validated_data):
         users = validated_data.pop("users", [])
         permissions_data = validated_data.pop("permissions", [])
+        permissions_data = self.add_dependent_permissions(permissions_data)
 
         instance.name = validated_data.get("name", instance.name)
         instance.save()
