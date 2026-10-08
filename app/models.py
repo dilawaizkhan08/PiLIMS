@@ -1133,6 +1133,8 @@ PERMISSION_CHOICES = [
     ("reactivate", "Reactivate"),
     ("consume_stock", "Consume Stock"),
     ("approve", "Approve"),
+    ("fetch_batch", "Fetch Batch"),
+    ("analytics", "Analytics"),
 ]
 
 class Role(models.Model):
