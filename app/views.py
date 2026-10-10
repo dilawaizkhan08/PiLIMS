@@ -109,27 +109,42 @@ class LoginView(views.APIView):
         email = serializer.validated_data["email"].strip()
         password = serializer.validated_data["password"]
 
-        # Case-insensitive email lookup
-        try:
-            user = User.objects.get(email__iexact=email)
-        except User.DoesNotExist:
-            # If email is not found, try name
-            try:
-                user = User.objects.get(name__iexact=email)
-            except User.DoesNotExist:
+        # Email login is allowed for all users
+        user = User.objects.filter(email__iexact=email).first()
+
+        # Name login is allowed only for OQ team
+        if user is None and email.lower() == "oq team":
+            user = User.objects.filter(name__iexact="OQ team").first()
+
+        # User not found
+        if user is None:
+            if "@" not in email:
                 return Response(
-                    {"error": "Invalid credentials"},
-                    status=status.HTTP_401_UNAUTHORIZED,
+                    {
+                        "error": (
+                            "Please enter a valid email address. "
+                        )
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
                 )
+
+            return Response(
+                {"error": "Invalid email or password."},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
 
         # Check if account is active
         if not user.is_active:
             return Response(
-                {"error": "Your account is deactivated. Please contact admin."},
+                {
+                    "error": "Your account is deactivated. Please contact admin."
+                },
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        max_attempts = int(get_config("max_wrong_password_attempts", 5))
+        max_attempts = int(
+            get_config("max_wrong_password_attempts", 5)
+        )
 
         # Authenticate using the actual email stored in DB
         user_auth = authenticate(
@@ -138,14 +153,15 @@ class LoginView(views.APIView):
             password=password,
         )
 
-        # ==========================
         # Successful Login
-        # ==========================
         if user_auth:
             user_auth.failed_login_attempts = 0
             user_auth.last_activity = timezone.now()
             user_auth.save(
-                update_fields=["failed_login_attempts", "last_activity"]
+                update_fields=[
+                    "failed_login_attempts",
+                    "last_activity",
+                ]
             )
 
             # 2FA
@@ -161,7 +177,9 @@ class LoginView(views.APIView):
                     },
                     status=status.HTTP_200_OK,
                 )
+
             check_concurrent_user_limit(user_auth)
+
             token, _ = Token.objects.get_or_create(user=user_auth)
 
             update_last_login(None, user_auth)
@@ -180,20 +198,26 @@ class LoginView(views.APIView):
                 status=status.HTTP_200_OK,
             )
 
-        # ==========================
         # Wrong Password
-        # ==========================
         user.failed_login_attempts += 1
 
         if user.failed_login_attempts >= max_attempts:
             user.is_active = False
 
-        user.save(update_fields=["failed_login_attempts", "is_active"])
+        user.save(
+            update_fields=[
+                "failed_login_attempts",
+                "is_active",
+            ]
+        )
 
         if not user.is_active:
             return Response(
                 {
-                    "error": "Your account has been locked due to too many failed login attempts."
+                    "error": (
+                        "Your account has been locked due to too many "
+                        "failed login attempts."
+                    )
                 },
                 status=status.HTTP_403_FORBIDDEN,
             )
@@ -202,11 +226,13 @@ class LoginView(views.APIView):
 
         return Response(
             {
-                "error": f"Invalid credentials. You have {remaining} attempts left."
+                "error": (
+                    f"Invalid email or password. "
+                    f"You have {remaining} attempts left."
+                )
             },
             status=status.HTTP_401_UNAUTHORIZED,
         )
-
 
 class LogoutView(views.APIView):
     permission_classes = [IsAuthenticated]
@@ -1193,47 +1219,112 @@ class SampleFormSubmitView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-
+        
         # ----------------------------------
-        # BATCH NUMBER UNIQUENESS CHECK
+        # UNIQUE FIELD VALIDATION
         # ----------------------------------
-        batch_number = None
+        unique_fields = list(
+            sample_form.fields.filter(unique=True)
+        )
 
-        # Check whether this form has a Batch Number field
+        # Preserve existing Batch Number uniqueness validation
         batch_field = sample_form.fields.filter(
             field_name__iexact="Batch Number"
         ).first()
 
-        if batch_field:
-            batch_number = serializer.validated_data.get(
-                batch_field.field_name
+        if batch_field and batch_field not in unique_fields:
+            unique_fields.append(batch_field)
+
+        existing_entries = models.DynamicFormEntry.objects.filter(
+            form=sample_form
+        ).only("id", "data")
+
+        for field in unique_fields:
+            submitted_value = serializer.validated_data.get(
+                field.field_name
             )
 
-            # Only check uniqueness if Batch Number was actually provided
-            if batch_number:
-                batch_number = str(batch_number).strip()
+            if submitted_value is None or submitted_value == "":
+                continue
 
-                # Check existing entries for this same form
-                existing_entries = models.DynamicFormEntry.objects.filter(
-                    form=sample_form
-                ).only("id", "data")
+            submitted_value = str(submitted_value).strip()
 
-                for existing_entry in existing_entries:
-                    existing_batch_number = existing_entry.data.get(
-                        "Batch Number"
+            if not submitted_value:
+                continue
+
+            # Check existing entries for duplicate values
+            for existing_entry in existing_entries:
+                existing_data = existing_entry.data or {}
+                existing_value = existing_data.get(field.field_name)
+
+                if existing_value is None:
+                    continue
+
+                if str(existing_value).strip() == submitted_value:
+                    return Response(
+                        {
+                            "error": (
+                                f"{field.field_name} '{submitted_value}' "
+                                "already exists."
+                            )
+                        },
+                        status=status.HTTP_400_BAD_REQUEST,
                     )
 
-                    if existing_batch_number is not None:
-                        if str(existing_batch_number).strip() == batch_number:
-                            return Response(
-                                {
-                                    "error": (
-                                        f"Batch Number '{batch_number}' "
-                                        "already exists."
-                                    )
-                                },
-                                status=status.HTTP_400_BAD_REQUEST,
-                            )
+            # Repetition creates multiple entries with the same value
+            if repetition > 1:
+                return Response(
+                    {
+                        "error": (
+                            f"{field.field_name} '{submitted_value}' "
+                            "cannot be repeated when repetition is greater than 1."
+                        )
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+
+
+        # ----------------------------------
+        # BATCH NUMBER UNIQUENESS CHECK
+        # ----------------------------------
+        # batch_number = None
+
+        # # Check whether this form has a Batch Number field
+        # batch_field = sample_form.fields.filter(
+        #     field_name__iexact="Batch Number"
+        # ).first()
+
+        # if batch_field:
+        #     batch_number = serializer.validated_data.get(
+        #         batch_field.field_name
+        #     )
+
+        #     # Only check uniqueness if Batch Number was actually provided
+        #     if batch_number:
+        #         batch_number = str(batch_number).strip()
+
+        #         # Check existing entries for this same form
+        #         existing_entries = models.DynamicFormEntry.objects.filter(
+        #             form=sample_form
+        #         ).only("id", "data")
+
+        #         for existing_entry in existing_entries:
+        #             existing_batch_number = existing_entry.data.get(
+        #                 "Batch Number"
+        #             )
+
+        #             if existing_batch_number is not None:
+        #                 if str(existing_batch_number).strip() == batch_number:
+        #                     return Response(
+        #                         {
+        #                             "error": (
+        #                                 f"Batch Number '{batch_number}' "
+        #                                 "already exists."
+        #                             )
+        #                         },
+        #                         status=status.HTTP_400_BAD_REQUEST,
+        #                     )
 
 
         all_entries = []
@@ -3359,7 +3450,7 @@ class MultiDynamicReportSchemaView(APIView):
 class ActivityViewSet(viewsets.ModelViewSet):
     queryset = models.Activity.objects.all().order_by("-created_at")
     serializer_class = ActivitySerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, HasModulePermission]
     pagination_class = CustomPageNumberPagination
 
     @action(detail=False, methods=["get"], url_path="export-csv")

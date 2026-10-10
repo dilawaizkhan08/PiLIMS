@@ -1391,14 +1391,12 @@ class SampleFieldSerializer(serializers.ModelSerializer):
         model = models.SampleField
         fields = [
             'id', 'field_name', 'field_property', 'list_ref',
-            'link_to_table', 'order', 'required'
+            'link_to_table', 'order', 'required', 'unique'
         ]
 
 
 class SampleFormSerializer(serializers.ModelSerializer):
     fields = SampleFieldSerializer(many=True)
-
-    # ✅ Read-only nested
     user_groups = UserGroupSerializer(many=True, read_only=True)
     group_analysis_list = AnalysisSerializer(many=True, read_only=True)
 

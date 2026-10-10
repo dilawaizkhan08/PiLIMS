@@ -563,6 +563,7 @@ class SampleField(BaseModel):
     
     order = models.IntegerField(default=0)
     required = models.BooleanField(default=False) 
+    unique = models.BooleanField(default=False)
 
     def __str__(self):
         return f"{self.field_name} ({self.sample_form.sample_name})"
