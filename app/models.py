@@ -1172,38 +1172,7 @@ class ComponentResult(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
 
-class ComponentResultDocument(models.Model):
-    result = models.ForeignKey(
-        ComponentResult,
-        on_delete=models.CASCADE,
-        related_name="documents"
-    )
 
-    document = models.ImageField(
-        upload_to="component_result_documents/%Y/%m/"
-    )
-
-    note = models.CharField(
-        max_length=255,
-        blank=True,
-        default=""
-    )
-
-    captured_by = models.ForeignKey(
-        User,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="captured_result_documents"
-    )
-
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        ordering = ["-created_at"]
-
-    def __str__(self):
-        return f"Document for result {self.result_id}"
 
 
 class ComponentResultDocument(models.Model):
