@@ -108,4 +108,8 @@ urlpatterns = [
     path("2fa/verify/", views.TwoFactorVerifyView.as_view(), name="2fa-verify"),
     path("2fa/disable/", views.TwoFactorDisableView.as_view(), name="2fa-disable"),
 
+
+    path("component-results/<int:result_id>/documents/",views.ComponentResultDocumentView.as_view(), name="component-result-documents",),
+    path("component-result-documents/<int:document_id>/",views.ComponentResultDocumentDeleteView.as_view(),name="component-result-document-delete",),
+
 ]

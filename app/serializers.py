@@ -176,11 +176,9 @@ class UserSerializer(serializers.ModelSerializer):
         allow_blank=True
     )
 
-    # ✅ READ (for response)
     user_groups = serializers.StringRelatedField(many=True, read_only=True)
     roles = RoleSerializer(many=True, read_only=True)
 
-    # ✅ WRITE (for input)
     user_group_ids = serializers.PrimaryKeyRelatedField(
         queryset=models.UserGroup.objects.all(),
         many=True,
@@ -2818,6 +2816,41 @@ class ComponentResultSerializer(serializers.ModelSerializer):
             return obj.sample_component.spec_limits or []
 
 
+
+class ComponentResultDocumentSerializer(serializers.ModelSerializer):
+    document_url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = models.ComponentResultDocument
+        fields = [
+            "id",
+            "result",
+            "document",
+            "document_url",
+            "note",
+            "captured_by",
+            "created_at",
+        ]
+        read_only_fields = [
+            "id",
+            "result",
+            "document",
+            "document_url",
+            "captured_by",
+            "created_at",
+        ]
+
+    def get_document_url(self, obj):
+        if not obj.document:
+            return None
+
+        request = self.context.get("request")
+        url = obj.document.url
+
+        return request.build_absolute_uri(url) if request else url
+
+
+
 class SystemConfigurationSerializer(serializers.ModelSerializer):
     class Meta:
         model = models.SystemConfiguration
@@ -3232,3 +3265,5 @@ class SampleApprovalSerializer(serializers.Serializer):
     action = serializers.ChoiceField(
         choices=["approve", "reject"]
     )
+
+

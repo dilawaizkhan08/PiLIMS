@@ -69,7 +69,7 @@ logger = logging.getLogger(__name__)
 from django.contrib.sessions.models import Session
 from django.db.utils import NotSupportedError
 from app.utility import process_inspection, generate_ims_report
-
+import time as time_module
 
 
 
@@ -2745,11 +2745,20 @@ class EntryAnalysesSchemaView(APIView):
                     sample_component=sc
                 ).first()
 
-                # ✅ default_result: sample override first, fallback to component
+                document_url = None
+
+                if result:
+                    result_document = result.documents.first()
+
+                    if result_document and result_document.document:
+                        document_url = request.build_absolute_uri(
+                            result_document.document.url
+                        )
+
                 default_result = sc.default_result if sc.default_result else comp.default_result
 
                 comps.append({
-                    "id": sc.id,  # Sample Component ID
+                    "id": sc.id, 
                     "name": sc.name,
                     "type": comp.type,
                     "unit": {"id": sc.unit.id, "name": sc.unit.name} if sc.unit else None,
@@ -2767,6 +2776,7 @@ class EntryAnalysesSchemaView(APIView):
                     "remarks": result.remarks if result else None,
                     "authorization_remark": result.authorization_remark if result else None,
                     "acceptance_criteria": sc.acceptance_criteria,
+                    "document_url": document_url,
                 })
 
             # ---------------------------
@@ -6874,5 +6884,128 @@ class SampleAnalysisResultViewSet(viewsets.ModelViewSet):
             },
             status=status.HTTP_200_OK,
         )
+
     
+
+class ComponentResultDocumentView(APIView):
+    permission_classes = [IsAuthenticated, HasModulePermission]
+    parser_classes = [MultiPartParser, FormParser]
+
+    MAX_FILE_SIZE = 15 * 1024 * 1024
+    ALLOWED_TYPES = {
+        "image/jpeg",
+        "image/png",
+        "application/pdf",
+        "text/plain",
+    }
+
+    def get(self, request, result_id):
+        result = get_object_or_404(
+            models.ComponentResult,
+            pk=result_id
+        )
+
+        documents = result.documents.all()
+
+        serializer = ComponentResultDocumentSerializer(
+            documents,
+            many=True,
+            context={"request": request}
+        )
+
+        return Response({
+            "result_id": result.id,
+            "documents": serializer.data
+        })
+
+    
+    import logging
+    import time
+
+    logger = logging.getLogger(__name__)
+
+    def post(self, request, result_id):
+        start = time_module.time()
+        logger.warning("DOCUMENT UPLOAD: Request received")
+
+        result = get_object_or_404(
+            models.ComponentResult,
+            pk=result_id
+        )
+        logger.warning("DOCUMENT UPLOAD: Result fetched in %.2fs", time_module.time() - start)
+
+        image = request.FILES.get("document")
+
+        if not image:
+            return Response(
+                {"error": "document is required"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        logger.warning(
+            "DOCUMENT UPLOAD: File received: %s, size=%s",
+            image.name, image.size
+        )
+
+        if image.size > self.MAX_FILE_SIZE:
+            return Response(
+                {"error": "Maximum file size is 15 MB"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if image.content_type not in self.ALLOWED_TYPES:
+            return Response(
+                {"error": "Only JPEG, PNG, PDF, and TXT files are allowed"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        logger.warning("DOCUMENT UPLOAD: Before database/storage save")
+
+        instance = models.ComponentResultDocument.objects.create(
+            result=result,
+            document=image,
+            note=request.data.get("note", ""),
+            captured_by=request.user
+        )
+
+        logger.warning(
+            "DOCUMENT UPLOAD: Save completed in %.2fs",
+            time_module.time() - start
+        )
+
+        serializer = ComponentResultDocumentSerializer(
+            instance,
+            context={"request": request}
+        )
+
+        logger.warning("DOCUMENT UPLOAD: Before response serialization")
+        data = serializer.data
+        logger.warning("DOCUMENT UPLOAD: Serialization completed")
+
+        return Response(
+            {
+                "message": "Document saved successfully",
+                "document": data
+            },
+            status=status.HTTP_201_CREATED
+        )
+
+
+class ComponentResultDocumentDeleteView(APIView):
+    permission_classes = [IsAuthenticated, HasModulePermission]
+
+    def delete(self, request, document_id):
+        document = get_object_or_404(
+            models.ComponentResultDocument,
+            pk=document_id
+        )
+
+        # Add your result-level access and delete permission checks here.
+        document.delete()
+
+        return Response(
+            {"message": "Document deleted successfully"},
+            status=status.HTTP_200_OK
+        )
+
 
