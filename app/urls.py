@@ -111,5 +111,6 @@ urlpatterns = [
 
     path("component-results/<int:result_id>/documents/",views.ComponentResultDocumentView.as_view(), name="component-result-documents",),
     path("component-result-documents/<int:document_id>/",views.ComponentResultDocumentDeleteView.as_view(),name="component-result-document-delete",),
-
+    path("notifications/", views.NotificationListView.as_view(), name="notification-list",),
+    path("notifications/<int:notification_id>/read/", views.MarkNotificationReadView.as_view(), name="mark-notification-read",),
 ]

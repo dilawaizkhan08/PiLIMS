@@ -1206,6 +1206,3 @@ def execute_query(sql_query, params):
     return rows
 
 
-
-
-

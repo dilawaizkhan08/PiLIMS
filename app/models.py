@@ -1173,8 +1173,6 @@ class ComponentResult(models.Model):
 
 
 
-
-
 class ComponentResultDocument(models.Model):
     result = models.ForeignKey(
         "app.ComponentResult",
@@ -1322,6 +1320,85 @@ class SampleAnalysisResult(models.Model):
     time = models.DateTimeField(null=True,blank=True)
     status = models.CharField(max_length=20,choices=STATUS_CHOICES,default="pending",)
     created_at = models.DateTimeField(auto_now_add=True)
+
+
+
+
+class Notification(models.Model):
+    TYPE_CHOICES = [
+        ("sample_logged", "Sample Logged"),
+        ("sample_completed", "Sample Completed"),
+        ("out_of_specs", "Results Out of Specs"),
+    ]
+
+    AUDIENCE_CHOICES = [
+        ("all", "All Users"),
+        ("permission", "Permission Based"),
+    ]
+
+    notification_type = models.CharField(
+        max_length=30,
+        choices=TYPE_CHOICES,
+    )
+    audience = models.CharField(
+        max_length=20,
+        choices=AUDIENCE_CHOICES,
+        default="all",
+    )
+
+    # Required only when audience = permission
+    required_module = models.CharField(
+        max_length=200,
+        null=True,
+        blank=True,
+    )
+    required_action = models.CharField(
+        max_length=100,
+        null=True,
+        blank=True,
+    )
+
+    title = models.CharField(max_length=255)
+    message = models.TextField()
+
+    sample = models.ForeignKey(
+        "DynamicFormEntry",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="notifications",
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return self.title
+
+
+class NotificationRead(models.Model):
+    notification = models.ForeignKey(
+        Notification,
+        on_delete=models.CASCADE,
+        related_name="read_records",
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="notification_reads",
+    )
+    read_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["notification", "user"],
+                name="unique_notification_read_per_user",
+            )
+        ]
+
 
 
 

@@ -3271,15 +3271,15 @@ class SampleApprovalSerializer(serializers.Serializer):
     )
 
 
-# from rest_framework import serializers
-# # from app.models import Notification
+from rest_framework import serializers
+from app.models import Notification
 
 
-# class NotificationSerializer(serializers.ModelSerializer):
-#     sample_text_id = serializers.CharField(source="sample.sample_text_id", read_only=True, allow_null=True,)
-#     is_read = serializers.BooleanField(read_only=True)
+class NotificationSerializer(serializers.ModelSerializer):
+    sample_text_id = serializers.CharField(source="sample.sample_text_id", read_only=True, allow_null=True,)
+    is_read = serializers.BooleanField(read_only=True)
 
-#     class Meta:
-#         model = Notification
-#         fields = ["id", "notification_type", "title", "message", "sample", "sample_text_id", "is_read", "created_at",]
+    class Meta:
+        model = Notification
+        fields = ["id", "notification_type", "title", "message", "sample", "sample_text_id", "is_read", "created_at",]
 

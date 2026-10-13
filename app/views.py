@@ -70,6 +70,7 @@ from django.contrib.sessions.models import Session
 from django.db.utils import NotSupportedError
 from app.utility import process_inspection, generate_ims_report
 import time as time_module
+from app.notification import create_sample_logged_notification, create_sample_completed_notification, create_out_of_specs_notification
 
 
 
@@ -1419,6 +1420,8 @@ class SampleFormSubmitView(APIView):
 
             entry.data = clean_data
             entry.save()
+
+            create_sample_logged_notification(entry)
 
             all_entries.append({
                 "entry_id": entry.id,
@@ -3067,14 +3070,78 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
                         continue
 
                 auth_flag = save_and_authorize or res.get("authorization_flag", False)
-                saved_results.append(save_component_result(
+
+                saved_result = save_component_result(
                     entry,
                     sc,
                     res.get("value"),
                     numeric_value,
                     res.get("remarks"),
                     auth_flag
-                ))
+                )
+                saved_results.append(saved_result)
+
+                # Check numeric minimum/maximum
+                out_of_specs = (
+                    numeric_value is not None and (
+                        (sc.minimum is not None and numeric_value < sc.minimum)
+                        or
+                        (sc.maximum is not None and numeric_value > sc.maximum)
+                    )
+                )
+
+                # ---------------------------
+                # Check Out of Specs
+                # ---------------------------
+                entered_value = res.get("value")
+
+                # Check numeric minimum/maximum
+                out_of_specs = (
+                    numeric_value is not None
+                    and (
+                        (
+                            sc.minimum is not None
+                            and numeric_value < sc.minimum
+                        )
+                        or
+                        (
+                            sc.maximum is not None
+                            and numeric_value > sc.maximum
+                        )
+                    )
+                )
+
+                # Check text/list specifications
+                spec_limits = (
+                    sc.spec_limits
+                    or sc.component.spec_limits
+                    or []
+                )
+
+                if isinstance(spec_limits, str):
+                    spec_limits = [spec_limits]
+
+                if entered_value not in [None, ""] and spec_limits:
+                    allowed_values = [
+                        str(value).strip().casefold()
+                        for value in spec_limits
+                    ]
+
+                    if str(entered_value).strip().casefold() not in allowed_values:
+                        out_of_specs = True
+
+                # Create notification
+                if out_of_specs:
+                    create_out_of_specs_notification(
+                        entry,
+                        sc.name,
+                        (
+                            entered_value
+                            if entered_value not in [None, ""]
+                            else numeric_value
+                        )
+                    )
+
 
             # ---------------------------
             # Save auto-calculated components
@@ -3119,6 +3186,8 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
             return status_
 
         final_status = update_entry_status(entry)
+        if final_status == "completed":
+            create_sample_completed_notification(entry)
 
         # ---------------------------
         # Analysis Status
@@ -7009,3 +7078,114 @@ class ComponentResultDocumentDeleteView(APIView):
         )
 
 
+
+from django.db.models import Q, Exists, OuterRef
+from app.models import Notification, NotificationRead, Permission
+
+
+class NotificationListView(generics.ListAPIView):
+    serializer_class = NotificationSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        user = self.request.user
+
+        # Permissions from all roles assigned to this user.
+        user_permissions = Permission.objects.filter(
+            role__users=user
+        ).values_list("module", "action").distinct()
+
+        # Match exact module/action pairs to avoid accidental
+        # cross-matching of different permissions.
+        permission_filter = Q(pk__in=[])
+
+        for module, action in user_permissions:
+            permission_filter |= Q(
+                required_module=module,
+                required_action=action,
+            )
+
+        queryset = Notification.objects.filter(
+            Q(audience="all")
+            | Q(
+                Q(audience="permission")
+                & permission_filter
+            )
+        )
+
+        # Per-user read status without creating one notification
+        # row for every recipient.
+        read_records = NotificationRead.objects.filter(
+            notification_id=OuterRef("pk"),
+            user=user,
+        )
+
+        queryset = queryset.annotate(
+            is_read=Exists(read_records)
+        )
+
+        notification_type = self.request.query_params.get("type")
+        is_read = self.request.query_params.get("is_read")
+
+        if notification_type:
+            queryset = queryset.filter(
+                notification_type=notification_type
+            )
+
+        if is_read is not None:
+            if is_read.lower() in ("true", "1"):
+                queryset = queryset.filter(is_read=True)
+            elif is_read.lower() in ("false", "0"):
+                queryset = queryset.filter(is_read=False)
+
+        return queryset.select_related("sample")
+
+
+class MarkNotificationReadView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, notification_id):
+        # Get notification
+        notification = get_object_or_404(
+            Notification,
+            id=notification_id
+        )
+
+        # Check whether notification is visible to this user
+        if notification.audience == "permission":
+            has_permission = request.user.is_superuser or request.user.roles.filter(
+                permissions__module=notification.required_module,
+                permissions__action=notification.required_action,
+            ).exists()
+
+            if not has_permission:
+                return Response(
+                    {"error": "You do not have permission to access this notification."},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+
+        elif notification.audience != "all":
+            return Response(
+                {"error": "This notification is not available."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        # Create read record only if it does not already exist
+        read_record, created = NotificationRead.objects.get_or_create(
+            notification=notification,
+            user=request.user,
+        )
+
+        return Response(
+            {
+                "message": (
+                    "Notification marked as read."
+                    if created
+                    else "Notification is already marked as read."
+                ),
+                "notification_id": notification.id,
+                "is_read": True,
+                "read_at": read_record.read_at,
+            },
+            status=status.HTTP_200_OK
+        )
