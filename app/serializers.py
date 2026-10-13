@@ -3225,12 +3225,16 @@ class IncomingMaterialSampleInspectionSerializer(serializers.ModelSerializer):
 
         return super().to_internal_value(data)
 
+    
     def get_received_total_unit_name(self, obj):
-        if not obj.received_total_unit:
+        unit_value = obj.received_total_unit
+
+        if not unit_value:
             return None
 
-        unit = models.Unit.objects.filter(id=obj.received_total_unit).first()
-        return unit.name if unit else None
+        unit = models.Unit.objects.filter(name__iexact=unit_value).first()
+        return unit.name if unit else unit_value
+
 
     def get_generated_report_url(self, obj):
         request = self.context.get("request")
@@ -3266,4 +3270,16 @@ class SampleApprovalSerializer(serializers.Serializer):
         choices=["approve", "reject"]
     )
 
+
+from rest_framework import serializers
+from app.models import Notification
+
+
+class NotificationSerializer(serializers.ModelSerializer):
+    sample_text_id = serializers.CharField(source="sample.sample_text_id", read_only=True, allow_null=True,)
+    is_read = serializers.BooleanField(read_only=True)
+
+    class Meta:
+        model = Notification
+        fields = ["id", "notification_type", "title", "message", "sample", "sample_text_id", "is_read", "created_at",]
 
