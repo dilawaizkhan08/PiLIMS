@@ -732,6 +732,9 @@ class IncomingMaterialSampleInspection(models.Model):
     generated_report_url = models.URLField(max_length=500,null=True,blank=True)
     qc_label_url = models.URLField(max_length=500, null=True, blank=True)
 
+    manufacturing_actual_date = models.DateField(blank=True, null=True)
+    expiry_actual_date = models.DateField(blank=True, null=True)
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

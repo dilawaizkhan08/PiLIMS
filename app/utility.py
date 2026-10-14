@@ -46,7 +46,9 @@ def create_entry_analyses(entry, analysis_ids, product_id=None):
     from app import models
 
     if not product_id:
-        for analysis in models.Analysis.objects.filter(id__in=analysis_ids):
+        for analysis in models.Analysis.objects.filter(
+            id__in=analysis_ids
+        ):
             models.DynamicFormEntryAnalysis.objects.get_or_create(
                 entry=entry,
                 analysis=analysis
@@ -67,43 +69,50 @@ def create_entry_analyses(entry, analysis_ids, product_id=None):
     for pa in product_analyses:
         analysis = pa.analysis
 
-        ea, created = models.DynamicFormEntryAnalysis.objects.get_or_create(
-            entry=entry,
-            analysis=analysis,
-            defaults={
-                "display_order": pa.display_order
-            }
+        ea, created = (
+            models.DynamicFormEntryAnalysis.objects.get_or_create(
+                entry=entry,
+                analysis=analysis,
+                defaults={
+                    "display_order": pa.display_order
+                }
+            )
         )
 
-        # If already exists, keep display order in sync
+        # Keep display order in sync
         if not created and ea.display_order != pa.display_order:
             ea.display_order = pa.display_order
             ea.save(update_fields=["display_order"])
 
-        # ---------------------------------------------------
+        # ---------------------------------------------
         # GET PRODUCT SAMPLE COMPONENTS (TEMPLATE)
-        # ---------------------------------------------------
+        # ---------------------------------------------
         product_components = (
             models.SampleComponent.objects.filter(
                 product_sampling_grade_analyses=pa
             )
+            .select_related("component", "custom_function")
+            .prefetch_related("component__function_parameters")
             .distinct()
         )
 
-        ea.components.set(product_components.values_list("component", flat=True))
+        ea.components.set(
+            product_components.values_list("component_id", flat=True)
+        )
 
         old_to_new_map = {}
+        component_to_new_map = {}
 
-        # ---------------------------------------------------
-        # ALWAYS CLONE NEW SAMPLE COMPONENTS
-        # ---------------------------------------------------
+        # ---------------------------------------------
+        # CLONE ALL SAMPLE COMPONENTS FIRST
+        # ---------------------------------------------
         for comp in product_components:
-
             sc = models.SampleComponent.objects.create(
                 entry_analysis=ea,
                 component=comp.component,
 
-                type=comp.type,
+                type="Numeric" if comp.calculated else comp.type,
+
                 name=comp.name,
                 unit=comp.unit,
                 minimum=comp.minimum,
@@ -118,33 +127,45 @@ def create_entry_analyses(entry, analysis_ids, product_id=None):
                 acceptance_criteria=comp.acceptance_criteria,
             )
 
+            # Template SampleComponent ID -> new SampleComponent
             old_to_new_map[comp.id] = sc
 
-        # ---------------------------------------------------
-        # CLONE FUNCTION PARAMETERS
-        # ---------------------------------------------------
-        for comp in product_components:
+            # Component ID -> new SampleComponent
+            component_to_new_map[comp.component_id] = sc
 
+        # ---------------------------------------------
+        # CLONE FUNCTION PARAMETERS AFTER ALL COMPONENTS
+        # EXIST
+        # ---------------------------------------------
+        for comp in product_components:
             if not comp.calculated:
                 continue
 
             new_sc = old_to_new_map.get(comp.id)
-
             if not new_sc:
                 continue
 
             for param in comp.component.function_parameters.all():
+                mapped_component_id = param.mapped_component_id
 
-                mapped_sc = old_to_new_map.get(param.mapped_component.id)
+                if not mapped_component_id:
+                    continue
 
-                if mapped_sc:
-                    models.SampleComponentFunctionParameter.objects.create(
-                        sample_component=new_sc,
-                        parameter=param.parameter,
-                        mapped_sample_component=mapped_sc
-                    )
+                mapped_sc = component_to_new_map.get(
+                    mapped_component_id
+                )
 
-                    
+                if not mapped_sc:
+                    continue
+
+                models.SampleComponentFunctionParameter.objects.update_or_create(
+                    sample_component=new_sc,
+                    parameter=param.parameter,
+                    defaults={
+                        "mapped_sample_component": mapped_sc
+                    }
+                )
+             
 
 # def create_entry_analyses(entry, analysis_ids):
 #     from app import models
@@ -1011,10 +1032,22 @@ def create_sample_from_inspection(inspection, user):
                 clean_data[field.field_name] = inspection.vendor_lot_number
 
             elif name == "manufacturing date":
-                clean_data[field.field_name] = None
+                manufacturing_date = inspection.manufacturing_actual_date
+
+                clean_data[field.field_name] = (
+                    manufacturing_date.isoformat()
+                    if manufacturing_date
+                    else None
+                )
 
             elif name == "expiry date":
-                clean_data[field.field_name] = None
+                expiry_date = inspection.expiry_actual_date
+
+                clean_data[field.field_name] = (
+                    expiry_date.isoformat()
+                    if expiry_date
+                    else None
+                )
 
             else:
                 clean_data[field.field_name] = None

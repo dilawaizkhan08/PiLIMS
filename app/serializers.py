@@ -2632,9 +2632,7 @@ class ProductSerializer(serializers.ModelSerializer):
         pa, created = models.ProductSamplingGradeAnalysis.objects.get_or_create(
             product_sampling_grade=psg,
             analysis=analysis,
-            defaults={
-                "display_order": display_order
-            }
+            defaults={"display_order": display_order}
         )
 
         if not created and pa.display_order != display_order:
@@ -2647,65 +2645,28 @@ class ProductSerializer(serializers.ModelSerializer):
 
         existing_components = {
             sc.component_id: sc
-            for sc in pa.sample_components.all()
+            for sc in pa.sample_components.select_related("component").all()
         }
 
+        # Remove components no longer selected
         for cid, sc in existing_components.items():
             if cid not in incoming_component_ids:
                 pa.sample_components.remove(sc)
                 sc.delete()
 
+        # Create all component replicas first
+        component_map = {
+            cid: sc
+            for cid, sc in existing_components.items()
+            if cid in incoming_component_ids
+        }
+
         for cid in incoming_component_ids:
-            if cid in existing_components:
-                continue 
-
-            real = models.Component.objects.get(id=cid)
-
-            replica = models.SampleComponent.objects.create(
-                entry_analysis=None,
-                component=real,
-                name=real.name,
-                unit=real.unit,
-                minimum=real.minimum,
-                maximum=real.maximum,
-                decimal_places=real.decimal_places,
-                rounding=real.rounding,
-                description=real.description,
-                optional=real.optional,
-                calculated=real.calculated,
-                spec_limits=real.spec_limits,
-                custom_function=real.custom_function if real.calculated else None,
-                acceptance_criteria=real.acceptance_criteria,
-                type=real.type,
-            )
-
-            pa.sample_components.add(replica)
-
-            for fp in real.function_parameters.all():
-                mapped_real = fp.mapped_component
-                if not mapped_real:
-                    continue
-
-                mapped_replica = pa.sample_components.filter(
-                    component=mapped_real
-                ).first()
-
-                if mapped_replica:
-                    models.SampleComponentFunctionParameter.objects.create(
-                        sample_component=replica,
-                        parameter=fp.parameter,
-                        mapped_sample_component=mapped_replica,
-                    )
-
-    def _create_sample_component_replicas(self, pa, component_ids):
-        for cid in component_ids:
-            real = models.Component.objects.get(id=cid)
-
-            existing = pa.sample_components.filter(component=real).first()
-
-            if existing:
+            if cid in component_map:
                 continue
 
+            real = models.Component.objects.get(id=cid)
+
             replica = models.SampleComponent.objects.create(
                 entry_analysis=None,
                 component=real,
@@ -2719,30 +2680,54 @@ class ProductSerializer(serializers.ModelSerializer):
                 optional=real.optional,
                 calculated=real.calculated,
                 spec_limits=real.spec_limits,
-                custom_function=real.custom_function if real.calculated else None,
+                custom_function=(
+                    real.custom_function if real.calculated else None
+                ),
                 acceptance_criteria=real.acceptance_criteria,
-                type=real.type,
+                type="Numeric" if real.calculated else real.type,
             )
 
             pa.sample_components.add(replica)
+            component_map[cid] = replica
 
-            # function parameters mapping
+        # Map function parameters only after every replica exists
+        for cid in incoming_component_ids:
+            real = models.Component.objects.get(id=cid)
+            replica = component_map[cid]
+
+            if not real.calculated:
+                continue
+
             for fp in real.function_parameters.all():
                 mapped_real = fp.mapped_component
 
                 if not mapped_real:
                     continue
 
-                mapped_replica = pa.sample_components.filter(
-                    component=mapped_real
-                ).first()
+                mapped_replica = component_map.get(mapped_real.id)
 
-                if mapped_replica:
-                    models.SampleComponentFunctionParameter.objects.create(
-                        sample_component=replica,
-                        parameter=fp.parameter,
-                        mapped_sample_component=mapped_replica,
-                    )
+                if not mapped_replica:
+                    continue
+
+                models.SampleComponentFunctionParameter.objects.update_or_create(
+                    sample_component=replica,
+                    parameter=fp.parameter,
+                    defaults={
+                        "mapped_sample_component": mapped_replica
+                    }
+                )
+
+
+    def _create_sample_component_replicas(self, pa, component_ids):
+        # Reuse the same implementation to avoid duplicate mapping logic
+        self._save_analysis(
+            pa.product_sampling_grade,
+            {
+                "analysis_id": pa.analysis_id,
+                "display_order": pa.display_order,
+                "component_ids": component_ids,
+            }
+        )
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
