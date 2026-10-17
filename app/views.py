@@ -41,7 +41,7 @@ from weasyprint import HTML, CSS
 import tempfile
 import os,base64
 from django.db.models import Count, Sum, Avg, Q, F, ExpressionWrapper, DurationField
-from .filters import GenericSearchFilter
+from .filters import GenericSearchFilter, GenericAdvancedSearchFilter
 from .utility import create_entry_analyses,update_status_with_history
 
 from app.serializers import ComponentResultSerializer
@@ -1452,7 +1452,7 @@ class DynamicSampleFormEntryViewSet(viewsets.ModelViewSet):
     serializer_class = DynamicFormEntrySerializer
     permission_classes = [IsAuthenticated, HasModulePermission]
     parser_classes = [MultiPartParser, FormParser, JSONParser]
-    filter_backends = [GenericSearchFilter]
+    filter_backends = [GenericAdvancedSearchFilter]
     pagination_class = CustomPageNumberPagination
 
     def get_queryset(self):
@@ -1637,7 +1637,6 @@ class DynamicSampleFormEntryViewSet(viewsets.ModelViewSet):
                 if new_status == "release":
 
                     coa_templates = models.QueryReportTemplate.objects.filter(
-                        # name__icontains="coa"
                         name__iexact="COA New"
                     )
 
