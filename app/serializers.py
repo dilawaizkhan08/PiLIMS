@@ -1531,7 +1531,7 @@ class DynamicFormEntrySerializer(serializers.ModelSerializer):
         model = models.DynamicFormEntry
         fields = [
             "id", "sample_text_id","parent_sample_text_id", "is_followup","comment","form_name", "form_id", "data",
-            "status", "analyses_data", "analyst_id", "analyst_name", "created_at", "logged_by", "logged_by_name", "retaining_sample_location", "reports"
+            "status", "analyses_data", "analyst_id", "analyst_name", "created_at", "logged_by", "logged_by_name", "retaining_sample_location", "reports", "disposal"
         ]
 
     def get_parent_sample_text_id(self, obj):

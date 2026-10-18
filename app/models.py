@@ -775,6 +775,11 @@ class DynamicFormEntry(BaseModel):
         ("cancelled", "Cancelled"),
         ("reactivate", "Reactivate"),]
 
+    DISPOSAL_CHOICES = [
+        ("disposed", "Disposed"),
+        ("not_disposed", "Not Disposed"),
+    ]
+
     form = models.ForeignKey(SampleForm, on_delete=models.CASCADE)
     data = models.JSONField()
     sample_text_id = models.CharField(
@@ -804,6 +809,11 @@ class DynamicFormEntry(BaseModel):
         null=True,
         blank=True,
         related_name="samples"
+    )
+    disposal = models.CharField(
+        max_length=20,
+        choices=DISPOSAL_CHOICES,
+        default="not_disposed",
     )
 
 

@@ -1468,6 +1468,55 @@ class DynamicSampleFormEntryViewSet(viewsets.ModelViewSet):
             Q(form__user_groups__in=user.user_groups.all())
         ).distinct().order_by("-created_at")
 
+    @action(detail=False, methods=["post"], url_path="update-disposal")
+    def update_disposal(self, request):
+        ids = request.data.get("ids", [])
+        disposal = request.data.get("disposal")
+
+        if not ids:
+            return Response(
+                {"error": "ids are required"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        valid_disposal_values = ["disposed", "not_disposed"]
+
+        if disposal not in valid_disposal_values:
+            return Response(
+                {
+                    "error": (
+                        "Invalid disposal value. "
+                        "Allowed values: disposed, not_disposed"
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        entries = self.get_queryset().filter(id__in=ids)
+
+        found_ids = set(entries.values_list("id", flat=True))
+        missing_ids = set(ids) - found_ids
+
+        if missing_ids:
+            return Response(
+                {
+                    "error": "Some samples were not found or are not accessible.",
+                    "missing_ids": list(missing_ids)
+                },
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        updated_count = entries.update(disposal=disposal)
+
+        return Response(
+            {
+                "message": "Disposal status updated successfully.",
+                "disposal": disposal,
+                "updated_count": updated_count,
+                "updated_ids": ids
+            },
+            status=status.HTTP_200_OK
+        )
     # -----------------------------
     # Update Status Endpoint
     # -----------------------------
