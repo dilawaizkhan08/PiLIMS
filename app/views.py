@@ -2924,6 +2924,17 @@ class AnalysisResultSubmitView(TrackUserMixin, APIView):
             )
 
         # ---------------------------
+        # Initiated Status Check
+        # ---------------------------
+        if entry.status == "initiated":
+            return Response(
+                {
+                    "error": "Results cannot be entered while the sample status is initiated."
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # ---------------------------
         # Update Comment
         # ---------------------------
         comment = request.data.get("comment")

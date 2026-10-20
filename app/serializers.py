@@ -720,8 +720,49 @@ class ComponentSerializer(serializers.ModelSerializer):
 
         return component
 
+    
     def update(self, instance, validated_data):
+        parameters_data = validated_data.pop("parameters", None)
+
         instance = super().update(instance, validated_data)
+
+        # Add the same parameter mapping logic used in create()
+        if parameters_data is not None:
+            if instance.calculated and instance.custom_function:
+                expected_vars = set(instance.custom_function.variables)
+                provided_vars = {p["parameter"] for p in parameters_data}
+
+                missing = expected_vars - provided_vars
+                if missing:
+                    raise serializers.ValidationError({
+                        "parameters": f"Missing mappings for variables: {', '.join(missing)}"
+                    })
+
+                extra = provided_vars - expected_vars
+                if extra:
+                    raise serializers.ValidationError({
+                        "parameters": f"Unexpected variables: {', '.join(extra)}"
+                    })
+
+                # Remove old mappings before saving updated ones
+                instance.function_parameters.all().delete()
+
+                for param in parameters_data:
+                    var_name = param["parameter"]
+                    comp_id = param["component"]
+
+                    try:
+                        mapped_component = models.Component.objects.get(id=comp_id)
+                    except models.Component.DoesNotExist:
+                        raise serializers.ValidationError({
+                            "parameters": f"Component {comp_id} not found"
+                        })
+
+                    models.ComponentFunctionParameter.objects.create(
+                        component=instance,
+                        parameter=var_name,
+                        mapped_component=mapped_component
+                    )
 
         models.SampleComponent.objects.filter(component=instance).update(
             type=instance.type,
@@ -737,7 +778,7 @@ class ComponentSerializer(serializers.ModelSerializer):
             calculated=instance.calculated,
             custom_function=instance.custom_function,
             default_result=instance.default_result,
-            acceptance_criteria=instance.acceptance_criteria, 
+            acceptance_criteria=instance.acceptance_criteria,
         )
 
         return instance
@@ -1599,6 +1640,11 @@ class DynamicFormEntrySerializer(serializers.ModelSerializer):
     #   Update
     # -------------------------
     def update(self, instance, validated_data):
+        if instance.status == "initiated":
+            raise serializers.ValidationError({
+                "error": "Sample cannot be edited while its status is initiated."
+            })
+
         request_data = self.context.get("request").data
 
         # ✅ 1️⃣ Handle Analyst Assignment First
