@@ -5,6 +5,7 @@ import json
 from django.core.exceptions import FieldDoesNotExist
 from django.db.models import Q
 from rest_framework.exceptions import ValidationError
+from django.db.models.fields.json import KeyTransform
 
 MAX_DEPTH = 2  # how deep to follow related models
 
@@ -184,7 +185,7 @@ def build_condition(model, item):
     field = item.get("field")
     operator = item.get("operator", "exact")
 
-    if not isinstance(field, str):
+    if not isinstance(field, str) or not field:
         raise ValidationError({
             "search": "Each filter requires a field."
         })
@@ -246,12 +247,46 @@ def build_condition(model, item):
                 "search": "'isnull' value must be a boolean."
             })
 
-    condition = Q(**{
-        f"{field}__{lookup_operator}": value
-    })
+    # Handle JSONField keys containing spaces, e.g.:
+    # data__Batch Number
+    parts = field.split("__")
+
+    try:
+        first_field = model._meta.get_field(parts[0])
+    except FieldDoesNotExist:
+        first_field = None
+
+    if (
+        first_field
+        and first_field.get_internal_type() == "JSONField"
+        and len(parts) >= 2
+        and any(" " in part for part in parts[1:])
+    ):
+        from django.db.models import F
+        from django.db.models.fields.json import KeyTextTransform
+
+        json_key = "__".join(parts[1:])
+        json_expression = KeyTextTransform(json_key, F(parts[0]))
+
+        condition = Q(
+            **{
+                f"{parts[0]}__isnull": True
+            }
+        )
+
+        # Store the JSON lookup expression for the queryset filter.
+        condition = Q(
+            **{
+                f"{parts[0]}__{lookup_operator}": value
+            }
+        )
+    else:
+        condition = Q(**{
+            f"{field}__{lookup_operator}": value
+        })
 
     if operator in ("!=", "ne", "not_equal"):
-        condition = ~Q(**{f"{field}__exact": value})
+        condition = ~condition
 
     return condition
 
@@ -276,13 +311,28 @@ class GenericAdvancedSearchFilter(BaseFilterBackend):
                 )
             })
 
-        if not isinstance(payload, dict):
-            raise ValidationError({
-                "search": "Search must be a JSON object."
-            })
+        if isinstance(payload, list):
+            # Backward compatibility: accept a list of filters.
+            filters = payload
+            join = str(
+                request.query_params.get("join", "AND")
+            ).upper()
 
-        filters = payload.get("filters", [])
-        join = str(payload.get("join", "AND")).upper()
+        elif isinstance(payload, dict):
+            filters = payload.get("filters", [])
+            join = str(
+                payload.get(
+                    "join",
+                    request.query_params.get("join", "AND")
+                )
+            ).upper()
+
+        else:
+            raise ValidationError({
+                "search": (
+                    "Search must be a JSON object or a list of filters."
+                )
+            })
 
         if join not in ("AND", "OR"):
             raise ValidationError({

@@ -1468,6 +1468,7 @@ class DynamicSampleFormEntryViewSet(viewsets.ModelViewSet):
             Q(form__user_groups__in=user.user_groups.all())
         ).distinct().order_by("-created_at")
 
+    
     @action(detail=False, methods=["post"], url_path="update-disposal")
     def update_disposal(self, request):
         ids = request.data.get("ids", [])
@@ -1479,9 +1480,7 @@ class DynamicSampleFormEntryViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        valid_disposal_values = ["disposed", "not_disposed"]
-
-        if disposal not in valid_disposal_values:
+        if disposal not in ["disposed", "not_disposed"]:
             return Response(
                 {
                     "error": (
@@ -1506,6 +1505,24 @@ class DynamicSampleFormEntryViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_404_NOT_FOUND
             )
 
+        # Only released, rejected, or cancelled samples can be disposed.
+        allowed_statuses = ["release", "rejected", "cancelled"]
+
+        invalid_entries = entries.exclude(status__in=allowed_statuses)
+
+        if invalid_entries.exists():
+            return Response(
+                {
+                    "error": (
+                        "Disposal is only allowed for samples with status: release, rejected, or cancelled."
+                    ),
+                    "invalid_ids": list(
+                        invalid_entries.values_list("id", flat=True)
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
         updated_count = entries.update(disposal=disposal)
 
         return Response(
@@ -1517,6 +1534,7 @@ class DynamicSampleFormEntryViewSet(viewsets.ModelViewSet):
             },
             status=status.HTTP_200_OK
         )
+
     # -----------------------------
     # Update Status Endpoint
     # -----------------------------
@@ -1679,54 +1697,54 @@ class DynamicSampleFormEntryViewSet(viewsets.ModelViewSet):
             # -----------------------------
             # RELEASE / REJECTED
             # -----------------------------
-            if new_status in ["release", "rejected"]:
+            if new_status == "release":
 
-                update_status_with_history(entry, new_status, user, reason=reason)
+                report_templates = models.QueryReportTemplate.objects.filter(
+                    name__in=["COA New", "ATR for FG & BLEND"]
+                )
 
-                if new_status == "release":
+                # Generate ATR first, then COA
+                template_order = {
+                    "ATR for FG & BLEND": 1,
+                    "COA New": 2,
+                }
 
-                    coa_templates = models.QueryReportTemplate.objects.filter(
-                        name__iexact="COA New"
-                    )
+                report_templates = sorted(
+                    report_templates,
+                    key=lambda template: template_order.get(template.name, 99)
+                )
 
-                    for template in coa_templates:
+                for template in report_templates:
 
-                        # Avoid duplicate reports
-                        exists = models.GeneratedReport.objects.filter(
-                            sample=entry,
-                            template=template
-                        ).exists()
-
-                        if exists:
-                            continue
-
-                        try:
-                            generate_report(template.id, entry.id, request)
-                        except Exception as e:
-                            print(f"COA generation failed for entry {entry.id}: {e}")
-
-                # Investigation if rejected
-                if new_status == "rejected":
-                    models.Investigation.objects.create(
+                    # Avoid duplicate reports
+                    exists = models.GeneratedReport.objects.filter(
                         sample=entry,
-                        rejected_at=timezone.now(),
-                        rejection_reason=reason
-                    )
+                        template=template
+                    ).exists()
 
-                continue
+                    if exists:
+                        continue
 
-            # -----------------------------
-            # NORMAL STATUS
-            # -----------------------------
-            if new_status in PASSWORD_REQUIRED_STATUSES:
-                update_status_with_history(entry, new_status, user, reason=reason)
-            else:
-                update_status_with_history(entry, new_status, user)
+                    try:
+                        generate_report(template.id, entry.id, request)
+                    except Exception as e:
+                        print(
+                            f"Report generation failed for entry {entry.id}, "
+                            f"template '{template.name}': {e}"
+                        )
 
-        return Response({
-            "message": f"Status updated to {new_status}",
-            "updated_ids": ids
-        })
+                        # -----------------------------
+                        # NORMAL STATUS
+                        # -----------------------------
+                        if new_status in PASSWORD_REQUIRED_STATUSES:
+                            update_status_with_history(entry, new_status, user, reason=reason)
+                        else:
+                            update_status_with_history(entry, new_status, user)
+
+                    return Response({
+                        "message": f"Status updated to {new_status}",
+                        "updated_ids": ids
+                    })
     
     @action(detail=False, methods=["get"], url_path="stats")
     def get_stats(self, request):
@@ -5212,6 +5230,34 @@ class DynamicFormEntryQCReportPDFView(APIView):
         current_status = status_param if status_param else entry.status
         config = self.get_template_config(current_status)
 
+        # Get user and timestamp for the sample's actual current status
+        history = (
+            models.StatusHistory.objects
+            .filter(
+                entry=entry,
+                new_status=entry.status
+            )
+            .select_related("updated_by")
+            .order_by("-updated_at")
+            .first()
+        )
+
+        if history:
+            user = history.updated_by
+
+            changed_by = (
+                user.name
+                if user else "---"
+            )
+
+            changed_at = timezone.localtime(
+                history.updated_at
+            ).strftime("%d-%m-%Y %I:%M %p")
+
+            sign_by_date = f"{changed_by} / {changed_at}"
+        else:
+            sign_by_date = "---"
+
         
         if current_status in ["rejected", "hold"]:
             page_width = "10.1cm"
@@ -5364,7 +5410,7 @@ class DynamicFormEntryQCReportPDFView(APIView):
 
                     <div class="data-row" style="margin-top:30px;">
                         <span class="data-label">Sign by/date:</span>
-                        <span class="data-value"></span>
+                        <span class="data-value">{sign_by_date}</span>
                     </div>
 
                 </div>
@@ -5691,6 +5737,7 @@ class IncomingMaterialSampleInspectionViewSet(viewsets.ModelViewSet):
             checked_by=self.request.user.name,
             checked_sign_date=timezone.now().date(),
         )
+        
 
         process_inspection(
             inspection,

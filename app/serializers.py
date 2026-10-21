@@ -3239,6 +3239,8 @@ class IncomingMaterialSampleInspectionSerializer(serializers.ModelSerializer):
     generated_report_url = serializers.SerializerMethodField()
     qc_label_url = serializers.SerializerMethodField()
     received_total_unit_name = serializers.SerializerMethodField()
+    sample_created = serializers.SerializerMethodField()
+    sample_id = serializers.SerializerMethodField()
 
     class Meta:
         model = models.IncomingMaterialSampleInspection
@@ -3288,6 +3290,18 @@ class IncomingMaterialSampleInspectionSerializer(serializers.ModelSerializer):
             return request.build_absolute_uri(obj.qc_label_url)
 
         return obj.qc_label_url
+
+    def get_sample_created(self, obj):
+        return models.DynamicFormEntry.objects.filter(
+            inspection=obj
+        ).exists()
+
+    def get_sample_id(self, obj):
+        sample = models.DynamicFormEntry.objects.filter(
+            inspection=obj
+        ).first()
+
+        return sample.id if sample else None
 
     
 class SampleAnalysisResultSerializer(serializers.ModelSerializer):
