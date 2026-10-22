@@ -20,6 +20,7 @@ from django.core.files.base import ContentFile
 import json
 from .choices import ComponentTypes
 from app.utility import process_inspection
+from datetime import datetime
 
 def get_config(key, default=None):
     from .models import SystemConfiguration
@@ -3250,14 +3251,43 @@ class IncomingMaterialSampleInspectionSerializer(serializers.ModelSerializer):
             "updated_at",
         ]
 
+
     def to_internal_value(self, data):
         data = data.copy()
 
         if data.get("accepted_quantity") == "":
             data["accepted_quantity"] = None
 
-        return super().to_internal_value(data)
+        date_fields = [
+            "checked_sign_date",
+            "manufacturing_actual_date",
+            "expiry_actual_date",
+        ]
 
+        date_formats = [
+            "%Y-%m-%d",
+            "%d-%m-%Y",
+            "%d/%m/%Y",
+            "%Y-%m-%dT%H:%M:%S",
+            "%Y-%m-%dT%H:%M:%S.%f",
+        ]
+
+        for field in date_fields:
+            date_value = data.get(field)
+
+            if not date_value or not isinstance(date_value, str):
+                continue
+
+            for fmt in date_formats:
+                try:
+                    data[field] = datetime.strptime(
+                        date_value, fmt
+                    ).strftime("%Y-%m-%d")
+                    break
+                except ValueError:
+                    continue
+
+        return super().to_internal_value(data)
     
     def get_received_total_unit_name(self, obj):
         unit_value = obj.received_total_unit
